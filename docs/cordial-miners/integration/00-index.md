@@ -64,6 +64,10 @@ and easy to extend as new implementation notes are added.
     - Documents what can be pruned after finalized ordered output is exported
     - Explains structural closure preservation and `OrderingCache` invalidation triggers
     - Covers the equivocation-evidence / cache interaction: why evidence recording does not flush the cache
+19. [19-application-interface-layer.md](./19-application-interface-layer.md)
+    - Defines a generic application runtime boundary above finalized ordered output
+    - Describes app events, receipts, cursors, replay, rejection handling, and multi-app routing
+    - Positions future applications, including an AI marketplace, outside consensus and adapter internals
 
 ## Scope Of This Track
 
@@ -73,6 +77,7 @@ The integration notes in this folder focus on:
 - how live ingress is attached from this repository
 - how intercepted messages are translated into Cordial Miners state
 - how live state is compared, validated, and eventually ordered
+- how finalized ordered output can become a stable application-facing event stream
 
 ## Planned Follow-up Topics
 
@@ -82,3 +87,4 @@ Future notes in this folder are expected to cover:
 - transport wiring for ordered output (gRPC / IPC serving of `OrderedFinalizedOutput`)
 - push / notification delivery for ordered output consumers
 - proposer-facing integration only after the consumer boundary is validated
+- first `cordial-app-runtime` crate with in-memory replay and app receipts
