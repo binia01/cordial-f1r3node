@@ -59,6 +59,90 @@ app-specific state machines
 The application interface layer does not decide consensus. It only consumes
 already-finalized ordered output.
 
+### Overall Architecture
+
+```mermaid
+flowchart TB
+    external["External users / apps"] --> deploys["f1r3node deploys or app events"]
+    deploys --> ingress["Cordial deploy ingress"]
+    ingress --> mirror["Cordial f1r3node adapter"]
+    mirror --> blocklace["Cordial Miners blocklace"]
+    blocklace --> finality["Finality + tau ordering"]
+    finality --> ordered["OrderedFinalizedOutput"]
+    ordered --> extractor["App event extractor"]
+    extractor --> router["App router by app_id"]
+    router --> runtime["Cordial app runtime"]
+    runtime --> receipts["App receipts"]
+    runtime --> snapshots["App state snapshots"]
+
+    router --> marketplace["AI marketplace app"]
+    router --> ledger["Payment ledger app"]
+    router --> social["Social feed app"]
+    router --> reputation["PoR / reputation app"]
+
+    subgraph consensus["Consensus Layer"]
+        blocklace
+        finality
+        ordered
+    end
+
+    subgraph adapter["Integration Layer"]
+        ingress
+        mirror
+    end
+
+    subgraph app_layer["Application Layer"]
+        extractor
+        router
+        runtime
+        receipts
+        snapshots
+        marketplace
+        ledger
+        social
+        reputation
+    end
+```
+
+The important boundary is between `OrderedFinalizedOutput` and the app event
+extractor. Everything before that is consensus or node integration. Everything
+after that is application execution.
+
+### Interaction Sequence
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Node as f1r3node / deploy API
+    participant Ingress as Cordial deploy ingress
+    participant Adapter as Cordial adapter mirror
+    participant Core as Cordial Miners core
+    participant Runtime as App runtime
+    participant App as App state machine
+
+    User->>Node: Submit deploy / app event
+    Node->>Ingress: Observe deploy at ingress boundary
+    Ingress->>Ingress: Record signature and app envelope
+    Node->>Adapter: Block containing deploy becomes visible
+    Adapter->>Core: Insert mirrored block into blocklace
+    Core->>Core: Compute finality and tau order
+    Core-->>Adapter: OrderedFinalizedOutput
+    Adapter->>Runtime: Extract finalized AppEvent stream
+    Runtime->>Runtime: Check cursor and ordered_index
+    Runtime->>App: validate(event)
+    alt app event valid
+        App->>App: apply(event)
+        App-->>Runtime: Applied receipt + new snapshot
+    else app event invalid
+        App-->>Runtime: Rejected receipt
+    end
+    Runtime-->>User: App state / receipt is queryable
+```
+
+This sequence shows the main rule: app validation happens after consensus
+ordering. Invalid app events are rejected by the app runtime, not removed from
+the finalized Cordial history.
+
 ## Proposed Crate Boundary
 
 This layer should live in its own crate:
