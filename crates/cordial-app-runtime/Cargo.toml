@@ -1,0 +1,8 @@
+[package]
+name = "cordial-app-runtime"
+description = "Generic application runtime interface over Cordial Miners finalized ordered output"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
