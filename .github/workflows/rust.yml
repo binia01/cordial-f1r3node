@@ -41,11 +41,12 @@ jobs:
         cargo fmt -p cordial-f1r3node-adapter --check
         cargo fmt -p cordial-f1r3space-adapter --check
         cargo fmt -p cordial-por --check
+        cargo fmt -p cordial-app-runtime --check
 
     - name: Lint with Clippy
       working-directory: blocklace
       run: |
-        cargo clippy -p cordial-miners-core -p cordial-f1r3node-adapter -p cordial-f1r3space-adapter -p cordial-por --all-targets --all-features --no-deps -- -D warnings
+        cargo clippy -p cordial-miners-core -p cordial-f1r3node-adapter -p cordial-f1r3space-adapter -p cordial-por -p cordial-app-runtime --all-targets --all-features --no-deps -- -D warnings
 
     # --- BUILD & TEST ---
     - name: Build
