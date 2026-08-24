@@ -509,6 +509,7 @@ dependencies = [
  "rspace_plus_plus",
  "serde",
  "shared",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -777,6 +778,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
