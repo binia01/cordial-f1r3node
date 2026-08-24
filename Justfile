@@ -30,6 +30,13 @@ test-core:
 test-adapter:
     cargo +{{toolchain}} test -p cordial-f1r3node-adapter
 
+# Run end-to-end Rholang execution tests (Phase 4.2).
+# Requires a bootstrapped f1r3node RuntimeManager (LMDB + Rholang interpreter).
+# See docs/cordial-miners/integration/20-e2e-rholang-execution-test.md for setup.
+e2e-rholang:
+    cargo +{{toolchain}} test -p cordial-f1r3space-adapter --test test_e2e_execution -- --ignored --nocapture
+
+
 test-consensus-flag:
     cargo +{{toolchain}} test -p cordial-f1r3node-adapter parses_consensus_flag_for_cordial_miners -- --exact --nocapture
 
