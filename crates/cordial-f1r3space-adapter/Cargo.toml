@@ -15,7 +15,7 @@ edition.workspace = true
 # fail with a "file not found" on these paths.
 # ───────────────────────────────────────────────────────────────────────
 models = { path = "../../../f1r3node/models" }
-casper = { path = "../../../f1r3node/casper" }
+casper = { path = "../../../f1r3node/casper", features = ["test-utils"] }
 rholang = { path = "../../../f1r3node/rholang" }
 rspace_plus_plus = { path = "../../../f1r3node/rspace++" }
 crypto = { path = "../../../f1r3node/crypto" }
@@ -42,3 +42,7 @@ tracing   = "0.1"
 [dev-dependencies]
 
 tempfile = "3"
+tracing-subscriber = "0.3"
+
+# Needed for #[tokio::test] in test_e2e_execution.rs
+tokio = { version = "1", features = ["full"] }
