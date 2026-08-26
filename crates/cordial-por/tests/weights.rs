@@ -1,65 +1,42 @@
-//! Acceptance tests for exporting selected PoR consensus-group weights.
+//! Acceptance tests for exporting externally selected validator weights.
 
 use cordial_miners_core::NodeId;
-use cordial_por::{
-    consensus_group_weights,
-    types::{ConsensusGroup, ConsensusGroupMember},
-};
+use cordial_por::{ReputationState, selected_validator_weights};
 
 #[test]
-fn empty_consensus_group_exports_empty_weights() {
-    // An empty selection must not create validator weights.
-    let group = ConsensusGroup {
-        round: 1,
-        members: vec![],
-    };
+fn empty_selection_exports_empty_weights() {
+    let mut state = ReputationState::new(1);
+    state.set_reputation(NodeId(vec![1]), 750);
 
-    let weights = consensus_group_weights(&group);
+    let weights = selected_validator_weights(&state, &[]);
+
     assert!(weights.is_empty());
 }
 
 #[test]
-fn single_member_exports_exact_weight() {
-    let node = NodeId(vec![1u8]);
+fn single_selected_validator_exports_exact_weight() {
+    let node = NodeId(vec![1]);
+    let mut state = ReputationState::new(1);
+    state.set_reputation(node.clone(), 750);
 
-    let group = ConsensusGroup {
-        round: 1,
-        members: vec![ConsensusGroupMember {
-            node_id: node.clone(),
-            reputation: 750,
-        }],
-    };
+    let weights = selected_validator_weights(&state, std::slice::from_ref(&node));
 
-    let weights = consensus_group_weights(&group);
     assert_eq!(weights.len(), 1);
     assert_eq!(weights.get(&node), Some(&750));
 }
 
 #[test]
-fn multiple_members_export_exact_weights() {
-    let node_a = NodeId(vec![1u8]);
-    let node_b = NodeId(vec![2u8]);
-    let node_c = NodeId(vec![3u8]);
+fn multiple_selected_validators_export_exact_weights() {
+    let node_a = NodeId(vec![1]);
+    let node_b = NodeId(vec![2]);
+    let node_c = NodeId(vec![3]);
+    let mut state = ReputationState::new(1);
+    state.set_reputation(node_a.clone(), 900);
+    state.set_reputation(node_b.clone(), 600);
+    state.set_reputation(node_c.clone(), 300);
 
-    let group = ConsensusGroup {
-        round: 1,
-        members: vec![
-            ConsensusGroupMember {
-                node_id: node_a.clone(),
-                reputation: 900,
-            },
-            ConsensusGroupMember {
-                node_id: node_b.clone(),
-                reputation: 600,
-            },
-            ConsensusGroupMember {
-                node_id: node_c.clone(),
-                reputation: 300,
-            },
-        ],
-    };
-
-    let weights = consensus_group_weights(&group);
+    let weights =
+        selected_validator_weights(&state, &[node_a.clone(), node_b.clone(), node_c.clone()]);
 
     assert_eq!(weights.len(), 3);
     assert_eq!(weights.get(&node_a), Some(&900));
@@ -68,38 +45,41 @@ fn multiple_members_export_exact_weights() {
 }
 
 #[test]
-fn excludes_non_group_validators() {
-    let member = NodeId(vec![1u8]);
-    let non_member = NodeId(vec![2u8]);
+fn excludes_unselected_validators() {
+    let selected = NodeId(vec![1]);
+    let unselected = NodeId(vec![2]);
+    let mut state = ReputationState::new(1);
+    state.set_reputation(selected.clone(), 700);
+    state.set_reputation(unselected.clone(), 400);
 
-    // Only validators represented in `members` may appear in the output.
-    let group = ConsensusGroup {
-        round: 1,
-        members: vec![ConsensusGroupMember {
-            node_id: member.clone(),
-            reputation: 700,
-        }],
-    };
+    let weights = selected_validator_weights(&state, std::slice::from_ref(&selected));
 
-    let weights = consensus_group_weights(&group);
-
-    assert!(weights.contains_key(&member));
-    assert!(!weights.contains_key(&non_member));
+    assert!(weights.contains_key(&selected));
+    assert!(!weights.contains_key(&unselected));
 }
+
 #[test]
-fn preserves_reputation_values_exactly() {
-    let node = NodeId(vec![9u8]);
+fn omits_selected_validators_missing_from_reputation_state() {
+    let known = NodeId(vec![1]);
+    let unknown = NodeId(vec![2]);
+    let mut state = ReputationState::new(1);
+    state.set_reputation(known.clone(), 700);
 
-    let group = ConsensusGroup {
-        round: 7,
-        members: vec![ConsensusGroupMember {
-            node_id: node.clone(),
-            reputation: 987_654_321,
-        }],
-    };
+    let weights = selected_validator_weights(&state, &[known.clone(), unknown.clone()]);
 
-    let weights = consensus_group_weights(&group);
+    assert_eq!(weights.len(), 1);
+    assert_eq!(weights.get(&known), Some(&700));
+    assert!(!weights.contains_key(&unknown));
+}
 
-    // Exporting must not normalize, clamp, or otherwise transform reputation.
+#[test]
+fn duplicate_selection_does_not_change_exported_weight() {
+    let node = NodeId(vec![9]);
+    let mut state = ReputationState::new(7);
+    state.set_reputation(node.clone(), 987_654_321);
+
+    let weights = selected_validator_weights(&state, &[node.clone(), node.clone()]);
+
+    assert_eq!(weights.len(), 1);
     assert_eq!(weights.get(&node), Some(&987_654_321));
 }
