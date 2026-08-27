@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cordial-miners-core",
     "crates/cordial-por",
+    "crates/cordial-app-runtime",
     "crates/cordial-f1r3node-adapter",
     "crates/cordial-f1r3space-adapter",
 ]
