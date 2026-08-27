@@ -72,7 +72,7 @@ jobs:
           -p cordial-f1r3node-adapter
           -p cordial-f1r3space-adapter
           -p cordial-por
-          -p cordial-app-runtim
+          -p cordial-app-runtime
           --all-targets
           --all-features
           --no-deps
