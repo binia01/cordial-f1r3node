@@ -392,3 +392,6 @@ The first implementation should stay small:
 5. Add a tiny example app, such as an in-memory task board.
 
 Only after that should we build the AI marketplace-specific crate.
+
+The in-memory runtime-processing slice is now implemented and documented in
+[02-runtime-contract.md](./02-runtime-contract.md).
