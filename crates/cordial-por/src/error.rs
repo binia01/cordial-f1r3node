@@ -24,6 +24,17 @@ pub enum PorError {
     ReputationTransitionOverflow,
     MissingContributionEntry,
     InvalidTransitionRound,
+    // Clamp-specific errors
+    InvalidClampScale,
+    ClampOverflow,
+    // Reputation-block-specific errors
+    InvalidReputationBlockRound,
+    MissingReputationBlockRatingsHash,
+    MissingReputationBlockRoot,
+    // Audit-replay-specific errors
+    MissingReputationBlockEntry,
+    UnexpectedReputationBlockEntry,
+    ReputationValueMismatch,
 }
 
 impl fmt::Display for PorError {
@@ -91,6 +102,31 @@ impl fmt::Display for PorError {
                     "contribution round must immediately follow the previous reputation round"
                 )
             }
+            Self::InvalidClampScale => write!(f, "clamp scale must be greater than zero"),
+            Self::ClampOverflow => write!(f, "clamp arithmetic overflowed"),
+            Self::InvalidReputationBlockRound => write!(
+                f,
+                "reputation block header round does not match the reputation list round"
+            ),
+            Self::MissingReputationBlockRatingsHash => {
+                write!(f, "reputation block ratings hash is empty")
+            }
+            Self::MissingReputationBlockRoot => {
+                write!(f, "reputation block root is empty")
+            }
+            Self::MissingReputationBlockEntry => {
+                write!(f, "reputation block is missing a replayed reputation entry")
+            }
+            Self::UnexpectedReputationBlockEntry => {
+                write!(
+                    f,
+                    "reputation block contains an unexpected reputation entry"
+                )
+            }
+            Self::ReputationValueMismatch => write!(
+                f,
+                "reputation block entry does not match the replayed reputation value"
+            ),
         }
     }
 }

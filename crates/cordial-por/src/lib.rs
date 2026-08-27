@@ -4,6 +4,9 @@
 //!
 //! Consensus logic remains inside cordial-miners-core.
 
+pub mod audit;
+pub mod block;
+pub mod clamp;
 pub mod config;
 pub mod error;
 pub mod liquid_rank;
@@ -15,6 +18,7 @@ pub mod transition;
 pub mod types;
 pub mod weights;
 
+pub use audit::{replay_reputation_transition, verify_reputation_transition};
 pub use config::PorConfig;
 pub use error::PorError;
 pub use liquid_rank::compute_liquid_rank_contribution;
@@ -23,11 +27,13 @@ pub use normalization::normalize_rating_matrix;
 pub use ratings::{build_rating_batch, validate_rating};
 pub use state::ReputationState;
 
+pub use block::{build_reputation_block, validate_reputation_block};
 pub use types::{
     EquivocationPenalty, InactivityPenalty, NormalizedRatingEntry, NormalizedRatingMatrix,
     RatingBatch, RatingMatrix, RatingRecord, RatingScore, ReputationBlock, ReputationBlockHeader,
     ReputationEntry, ReputationList, ReputationRound, ReputationVector, ReputationWeight,
 };
 
+pub use clamp::{clamp_reputation_value, clamp_reputation_vector};
 pub use transition::blend_reputation_transition;
-pub use weights::reputation_weights;
+pub use weights::{reputation_weights, selected_validator_weights};
