@@ -40,6 +40,7 @@ axum.workspace = true
 
 # ── logging ───────────────────────────────────────────────────────────────
 tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 # ── error handling ────────────────────────────────────────────────────────
 thiserror    = "1"
@@ -49,6 +50,7 @@ tempfile  = "3"
 heed      = "0.20"
 criterion = { version = "0.5", features = ["html_reports"] }
 crypto    = { path = "../../../f1r3node/crypto" }
+tower     = { version = "0.5", features = ["util"] }
 
 [[bench]]
 name = "ordered_output"
