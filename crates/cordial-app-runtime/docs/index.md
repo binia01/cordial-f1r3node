@@ -17,16 +17,17 @@ instead of depending directly on consensus or `f1r3node` adapter internals.
      multi-app routing
    - Positions future applications, including an AI marketplace, outside the
      generic runtime itself
+2. [02-runtime-contract.md](./02-runtime-contract.md)
+   - Documents the implemented in-memory event-processing behavior
+   - Explains receipt, cursor, duplicate, rejection, and snapshot semantics
+   - Records why the runtime uses stable collections such as `BTreeMap` and
+     `BTreeSet`
+   - Lists the verification commands for this implementation slice
 
 ## Planned Documents
 
 Future notes should be added here as the crate grows:
 
-2. `02-runtime-contract.md`
-   - Event application rules
-   - Cursor advancement
-   - Duplicate event behavior
-   - Rejection receipt semantics
 3. `03-event-envelope.md`
    - App event encoding
    - App IDs and event types
@@ -42,9 +43,9 @@ Future notes should be added here as the crate grows:
    - AI marketplace direction
    - Payment ledger and social feed notes
 
-## Current Implementation Slice
+## Current Implementation State
 
-The current crate skeleton defines:
+The current crate defines:
 
 - `AppId`
 - `AppEventId`
@@ -57,11 +58,12 @@ The current crate skeleton defines:
 - `CordialApp`
 - `AppRuntime`
 
-The next implementation step is to add in-memory event processing with:
+`AppRuntime` now includes in-memory event processing with:
 
 - app registration
 - ordered event application
 - duplicate protection
 - app-layer rejection receipts
 - cursor advancement
+- receipt and snapshot queries
 - deterministic replay tests
