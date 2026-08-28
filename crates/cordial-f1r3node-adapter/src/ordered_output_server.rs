@@ -186,3 +186,43 @@ pub async fn serve(
         .await
         .map_err(std::io::Error::other)
 }
+
+// ── Poll cycle helper ─────────────────────────────────────────────────────────
+
+/// Outcome of a single [`poll_once`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PollOutcome {
+    /// Shared output was updated with a new, prefix-preserving result.
+    Updated { finalized_len: usize },
+    /// The newly computed output was rejected because it would regress the
+    /// previously stored prefix. The existing output is preserved unchanged.
+    PrefixRejected,
+    /// No finalized leader exists yet; shared output was not changed.
+    NoLeader,
+}
+
+/// Execute one poll cycle against an already-populated [`SharedOrderedOutput`].
+///
+/// This function is the testable core of the background poller in the binary.
+/// It accepts a pre-built `OrderedFinalizedOutput` (so tests can supply any
+/// block set without network access), attempts to push it into `shared` via
+/// `SharedOrderedOutput::update`, and returns a [`PollOutcome`] describing
+/// what happened.
+///
+/// The binary's spawn loop calls this indirectly via the same logic; extracting
+/// it here lets integration tests exercise prefix-rejection, no-leader, and
+/// stale-after-rejection paths without starting a server or connecting to gRPC.
+pub fn poll_once(
+    shared: &mut SharedOrderedOutput,
+    output: crate::ordered_output::OrderedFinalizedOutput,
+) -> PollOutcome {
+    if output.anchor.is_none() {
+        return PollOutcome::NoLeader;
+    }
+
+    let finalized_len = output.len();
+    match shared.update(output) {
+        Ok(()) => PollOutcome::Updated { finalized_len },
+        Err(_) => PollOutcome::PrefixRejected,
+    }
+}
