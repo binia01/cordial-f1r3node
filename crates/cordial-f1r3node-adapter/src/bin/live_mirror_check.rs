@@ -564,7 +564,9 @@ async fn main() -> Result<()> {
 fn derive_uniform_bonds(blocks: &[models::casper::LightBlockInfo]) -> HashMap<NodeId, u64> {
     let mut bonds = HashMap::new();
     for block in blocks {
-        if let Some(sender) = StringOps::decode_hex(block.sender.clone()) {
+        if let Some(sender) = StringOps::decode_hex(block.sender.clone())
+            && !sender.is_empty()
+        {
             bonds.entry(NodeId(sender)).or_insert(100);
         }
     }
