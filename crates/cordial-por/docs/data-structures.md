@@ -179,18 +179,42 @@ The `src/transition.rs` module computes the next vector with:
 R_next_i = (alpha * P_i + (scale - alpha) * R_k_i) / scale
 ```
 
-It requires both vectors to contain the same node set in canonical `NodeId`
-order and requires the contribution round to immediately follow the previous
-reputation round. The calculation rejects invalid scale or alpha values and
-uses checked `u128` fixed-point intermediates before converting each result
-back to `ReputationWeight`. The contribution vector supplies the output order
-and round.
+It requires both vectors to be in canonical `NodeId` order and requires the
+contribution round to immediately follow the previous reputation round. The
+calculation rejects invalid scale or alpha values and uses checked `u128`
+fixed-point intermediates before converting each result back to
+`ReputationWeight`. The output covers the union of the two node sets, in
+canonical order, and takes its round from the contribution vector.
 
-This transition uses a strict node-set policy: the contribution and previous
-reputation vectors must contain the same canonical `NodeId` set. A round with
-missing contribution entries is rejected; no fallback or no-rating reputation
-policy is introduced here. Full contribution coverage is an upstream
-requirement.
+Rounds are sparse in practice: a node that receives no ratings produces no
+Liquid-Rank contribution entry. Nodes present on only one side are resolved
+through `PorConfig::missing_entry_policy` rather than rejecting the round:
+
+| Policy | Node with no contribution | Node with no previous reputation |
+|--------|---------------------------|----------------------------------|
+| `Reject` | `MissingContributionEntry` | `MissingPreviousReputation` |
+| `CarryForward` (default) | `P_i := R_k_i`, and the pipeline clamp copies `R_k_i` so the finalized reputation is unchanged | seeded from `initial_reputation` |
+| `Neutral` | `P_i := initial_reputation` | seeded from `initial_reputation` |
+
+Naming the fallback is the point: the earlier strict rejection existed to stop
+reputation being carried forward *silently* when ratings were incomplete, and a
+configured policy keeps that property while letting sparse rounds proceed. The
+policy lives in `PorConfig` because it is part of the replayed input for
+`verify_reputation_transition` — two validators must not be able to disagree
+about a reputation block because they resolved a missing entry differently.
+
+Absence of ratings is not evidence of inactivity: a node can be online and
+simply not interacted with. Punishing genuine inactivity belongs to the
+`InactivityPenalty` stage, which carries the missed-round count.
+
+The sigmoid clamp is not idempotent. Clamping an already-finalized CarryForward
+value would shrink it every sparse round — at production defaults
+(`scale = 1_000_000_000`, `R = 200_000_000`) that is a drop to `196_116_135`,
+about 1.94% per round, which is an implicit inactivity penalty. The pipeline
+therefore clamps with `clamp_reputation_transition`, which copies the previous
+finalized reputation for CarryForward entries rather than trusting the blended
+value, and still clamps rated nodes, newly seeded nodes, and every entry under
+`Reject` or `Neutral`.
 
 The `src/clamp.rs` module applies the paper sigmoid-style clamp with:
 
@@ -207,6 +231,11 @@ clamp_fixed = round((r * scale) / sqrt(scale^2 + r^2))
 It uses deterministic integer arithmetic only, rejects zero scale, reports
 checked arithmetic overflow as `PorError::ClampOverflow`, preserves vector
 round and ordering, and does not mutate `ReputationState`.
+`clamp_reputation_vector` clamps every entry. The audit replay and any other
+full-pipeline caller use `clamp_reputation_transition`, which takes the same
+previous and contribution vectors as the blend and restores CarryForward
+entries from previous reputation so a hand-built blend cannot preserve an
+arbitrary unclamped value.
 
 The `src/state.rs` module applies a finalized vector with:
 
@@ -241,11 +270,12 @@ ratings + previous reputation + config -> expected ReputationList
 ```
 
 `replay_reputation_transition` runs batching, matrix construction,
-normalization, Liquid Rank, alpha blending, and clamping for one round, so a
-shuffled rating set yields the same list. `verify_reputation_transition` applies
-`validate_reputation_block` to the proposed block first, so an audited block is
-held to the same structural rules as a constructed one, then compares the
-replayed list against `ReputationBlock.reputation_list`. Node-set and value
+normalization, Liquid Rank, alpha blending, and `clamp_reputation_transition`
+for one round, so a shuffled rating set yields the same list.
+`verify_reputation_transition` applies `validate_reputation_block` to the
+proposed block first, so an audited block is held to the same structural rules
+as a constructed one, then compares the replayed list against
+`ReputationBlock.reputation_list`. Node-set and value
 differences are reported separately as `MissingReputationBlockEntry`,
 `UnexpectedReputationBlockEntry`, and `ReputationValueMismatch`. Replay is
 read-only: it does not mutate `ReputationState`, publish blocks, or perform

@@ -1,16 +1,31 @@
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    PorConfig, PorError, ReputationEntry, ReputationVector, blend_reputation_transition,
+    MissingEntryPolicy, PorConfig, PorError, ReputationEntry, ReputationVector,
+    blend_reputation_transition,
 };
 
 fn cfg(scale: u64, alpha: u64) -> PorConfig {
+    cfg_with(scale, alpha, 0, MissingEntryPolicy::default())
+}
+
+fn cfg_with(
+    scale: u64,
+    alpha: u64,
+    initial_reputation: u64,
+    missing_entry_policy: MissingEntryPolicy,
+) -> PorConfig {
     PorConfig {
         scale,
-        initial_reputation: 0,
+        initial_reputation,
         liquid_rank_alpha: alpha,
         minimum_rating: 0,
         maximum_rating: scale,
+        missing_entry_policy,
     }
+}
+
+fn reject(scale: u64, alpha: u64) -> PorConfig {
+    cfg_with(scale, alpha, 0, MissingEntryPolicy::Reject)
 }
 
 fn entry(node: u8, reputation: u64) -> ReputationEntry {
@@ -58,7 +73,7 @@ fn missing_previous_reputation_is_rejected() {
     let previous = vector(6, vec![entry(1, 50)]);
 
     assert_eq!(
-        blend_reputation_transition(&contribution, &previous, &cfg(100, 60)),
+        blend_reputation_transition(&contribution, &previous, &reject(100, 60)),
         Err(PorError::MissingPreviousReputation)
     );
 }
@@ -69,7 +84,7 @@ fn extra_previous_reputation_entry_is_rejected() {
     let previous = vector(6, vec![entry(1, 50), entry(2, 70), entry(3, 20)]);
 
     assert_eq!(
-        blend_reputation_transition(&contribution, &previous, &cfg(100, 50)),
+        blend_reputation_transition(&contribution, &previous, &reject(100, 50)),
         Err(PorError::MissingContributionEntry)
     );
 }
@@ -80,7 +95,7 @@ fn different_equal_length_node_sets_are_rejected() {
     let previous = vector(6, vec![entry(1, 50), entry(3, 70)]);
 
     assert_eq!(
-        blend_reputation_transition(&contribution, &previous, &cfg(100, 50)),
+        blend_reputation_transition(&contribution, &previous, &reject(100, 50)),
         Err(PorError::MissingPreviousReputation)
     );
 }
@@ -212,4 +227,59 @@ fn sums_weighted_terms_before_dividing() {
     let next = blend_reputation_transition(&contribution, &previous, &cfg(100, 50)).unwrap();
 
     assert_eq!(next.values, vec![entry(1, 1)]);
+}
+
+#[test]
+fn carry_forward_leaves_an_unrated_node_unchanged() {
+    let contribution = vector(7, vec![entry(1, 90)]);
+    let previous = vector(6, vec![entry(1, 50), entry(2, 80)]);
+    let config = cfg_with(100, 50, 20, MissingEntryPolicy::CarryForward);
+
+    let next = blend_reputation_transition(&contribution, &previous, &config).unwrap();
+
+    assert_eq!(next.values, vec![entry(1, 70), entry(2, 80)]);
+}
+
+#[test]
+fn neutral_drifts_an_unrated_node_toward_initial_reputation() {
+    let contribution = vector(7, vec![entry(1, 90)]);
+    let previous = vector(6, vec![entry(1, 50), entry(2, 80)]);
+    let config = cfg_with(100, 50, 20, MissingEntryPolicy::Neutral);
+
+    let next = blend_reputation_transition(&contribution, &previous, &config).unwrap();
+
+    assert_eq!(next.values, vec![entry(1, 70), entry(2, 50)]);
+}
+
+#[test]
+fn new_node_is_seeded_from_initial_reputation() {
+    let contribution = vector(7, vec![entry(1, 90), entry(2, 60)]);
+    let previous = vector(6, vec![entry(1, 50)]);
+    let config = cfg_with(100, 50, 20, MissingEntryPolicy::CarryForward);
+
+    let next = blend_reputation_transition(&contribution, &previous, &config).unwrap();
+
+    assert_eq!(next.values, vec![entry(1, 70), entry(2, 40)]);
+}
+
+#[test]
+fn output_covers_the_union_in_canonical_order() {
+    let contribution = vector(7, vec![entry(1, 90), entry(3, 60)]);
+    let previous = vector(6, vec![entry(2, 40), entry(3, 80)]);
+    let config = cfg_with(100, 50, 20, MissingEntryPolicy::CarryForward);
+
+    let next = blend_reputation_transition(&contribution, &previous, &config).unwrap();
+
+    assert_eq!(next.values, vec![entry(1, 55), entry(2, 40), entry(3, 70)]);
+}
+
+#[test]
+fn reject_policy_still_refuses_a_new_node() {
+    let contribution = vector(7, vec![entry(1, 90), entry(2, 60)]);
+    let previous = vector(6, vec![entry(1, 50)]);
+
+    assert_eq!(
+        blend_reputation_transition(&contribution, &previous, &reject(100, 50)),
+        Err(PorError::MissingPreviousReputation)
+    );
 }

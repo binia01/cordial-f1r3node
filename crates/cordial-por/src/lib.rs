@@ -19,7 +19,7 @@ pub mod types;
 pub mod weights;
 
 pub use audit::{replay_reputation_transition, verify_reputation_transition};
-pub use config::PorConfig;
+pub use config::{MissingEntryPolicy, PorConfig};
 pub use error::PorError;
 pub use liquid_rank::compute_liquid_rank_contribution;
 pub use matrix::build_rating_matrix;
@@ -34,6 +34,6 @@ pub use types::{
     ReputationEntry, ReputationList, ReputationRound, ReputationVector, ReputationWeight,
 };
 
-pub use clamp::{clamp_reputation_value, clamp_reputation_vector};
+pub use clamp::{clamp_reputation_transition, clamp_reputation_value, clamp_reputation_vector};
 pub use transition::blend_reputation_transition;
 pub use weights::{reputation_weights, selected_validator_weights};

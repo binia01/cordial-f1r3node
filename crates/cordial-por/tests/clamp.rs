@@ -1,7 +1,7 @@
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    PorConfig, PorError, ReputationEntry, ReputationVector, clamp_reputation_value,
-    clamp_reputation_vector,
+    MissingEntryPolicy, PorConfig, PorError, ReputationEntry, ReputationVector,
+    clamp_reputation_transition, clamp_reputation_value, clamp_reputation_vector,
 };
 
 // This integration test file consolidates all clamp-related tests which were
@@ -132,4 +132,120 @@ fn overflow_on_intermediate_addition_returns_error() {
         Err(PorError::ClampOverflow) => {}
         other => panic!("expected ClampOverflow from vector clamp, got {other:?}"),
     }
+}
+
+fn entry(node: u8, reputation: u64) -> ReputationEntry {
+    ReputationEntry::new(NodeId(vec![node]), reputation)
+}
+
+fn vector(round: u64, values: Vec<ReputationEntry>) -> ReputationVector {
+    ReputationVector { round, values }
+}
+
+fn cfg(policy: MissingEntryPolicy) -> PorConfig {
+    PorConfig {
+        missing_entry_policy: policy,
+        ..PorConfig::default()
+    }
+}
+
+/// Independent regression constant from `clamp_small_value_behavior`: clamping
+/// the production initial reputation (0.2 * scale) yields 196_116_135.
+const CLAMPED_INITIAL: u64 = 196_116_135;
+
+#[test]
+fn carry_forward_skips_clamp_for_an_unrated_node() {
+    let previous = vector(6, vec![entry(1, 300_000_000), entry(2, 200_000_000)]);
+    let contribution = vector(7, vec![entry(1, 400_000_000)]);
+    let blended = vector(7, vec![entry(1, 360_000_000), entry(2, 200_000_000)]);
+
+    let out = clamp_reputation_transition(
+        &blended,
+        &previous,
+        &contribution,
+        &cfg(MissingEntryPolicy::CarryForward),
+    )
+    .unwrap();
+
+    assert_eq!(
+        out.values,
+        vec![
+            entry(1, clamp_reputation_value(360_000_000, S).unwrap()),
+            entry(2, 200_000_000),
+        ]
+    );
+}
+
+#[test]
+fn carry_forward_copies_previous_not_a_hand_built_blend() {
+    let previous = vector(6, vec![entry(1, 200_000_000)]);
+    let contribution = vector(7, Vec::new());
+    let blended = vector(7, vec![entry(1, 999_000_000)]);
+
+    let out = clamp_reputation_transition(
+        &blended,
+        &previous,
+        &contribution,
+        &cfg(MissingEntryPolicy::CarryForward),
+    )
+    .unwrap();
+
+    assert_eq!(out.values, vec![entry(1, 200_000_000)]);
+}
+
+#[test]
+fn carry_forward_still_clamps_a_rated_node() {
+    let previous = vector(6, vec![entry(1, 200_000_000)]);
+    let contribution = vector(7, vec![entry(1, 400_000_000)]);
+    let blended = vector(7, vec![entry(1, 200_000_000)]);
+
+    let out = clamp_reputation_transition(
+        &blended,
+        &previous,
+        &contribution,
+        &cfg(MissingEntryPolicy::CarryForward),
+    )
+    .unwrap();
+
+    assert_eq!(out.values, vec![entry(1, CLAMPED_INITIAL)]);
+}
+
+#[test]
+fn carry_forward_still_clamps_a_new_node() {
+    let previous = vector(6, vec![entry(1, 200_000_000)]);
+    let contribution = vector(7, vec![entry(1, 400_000_000), entry(2, 200_000_000)]);
+    let blended = vector(7, vec![entry(1, 320_000_000), entry(2, 200_000_000)]);
+
+    let out = clamp_reputation_transition(
+        &blended,
+        &previous,
+        &contribution,
+        &cfg(MissingEntryPolicy::CarryForward),
+    )
+    .unwrap();
+
+    assert_eq!(
+        out.values,
+        vec![
+            entry(1, clamp_reputation_value(320_000_000, S).unwrap()),
+            entry(2, CLAMPED_INITIAL),
+        ]
+    );
+}
+
+#[test]
+fn neutral_still_clamps_an_unrated_node() {
+    let previous = vector(6, vec![entry(1, 200_000_000)]);
+    let contribution = vector(7, Vec::new());
+    let blended = vector(7, vec![entry(1, 200_000_000)]);
+
+    let out = clamp_reputation_transition(
+        &blended,
+        &previous,
+        &contribution,
+        &cfg(MissingEntryPolicy::Neutral),
+    )
+    .unwrap();
+
+    assert_eq!(out.values, vec![entry(1, CLAMPED_INITIAL)]);
 }

@@ -1,7 +1,7 @@
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    NormalizedRatingEntry, NormalizedRatingMatrix, PorConfig, PorError, ReputationEntry,
-    ReputationVector, compute_liquid_rank_contribution,
+    MissingEntryPolicy, NormalizedRatingEntry, NormalizedRatingMatrix, PorConfig, PorError,
+    ReputationEntry, ReputationVector, compute_liquid_rank_contribution,
 };
 
 fn cfg(scale: u64) -> PorConfig {
@@ -11,6 +11,7 @@ fn cfg(scale: u64) -> PorConfig {
         liquid_rank_alpha: 0,
         minimum_rating: 0,
         maximum_rating: scale,
+        missing_entry_policy: MissingEntryPolicy::default(),
     }
 }
 

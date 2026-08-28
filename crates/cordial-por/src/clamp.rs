@@ -16,7 +16,7 @@
 //!   conversion back to `u64` remains, but intermediate overflows are treated
 //!   as errors per the policy above.
 
-use crate::config::PorConfig;
+use crate::config::{MissingEntryPolicy, PorConfig};
 use crate::error::PorError;
 use crate::types::{ReputationEntry, ReputationVector, ReputationWeight};
 
@@ -135,6 +135,11 @@ pub fn clamp_reputation_value(
 ///
 /// Does not mutate the input and returns a new ReputationVector with clamped
 /// reputation values. Uses PorConfig.scale for the fixed-point scale.
+///
+/// This clamps every entry. After an alpha blend, use
+/// [`clamp_reputation_transition`] instead: the sigmoid is not idempotent, so
+/// clamping a CarryForward value that is already the previous finalized
+/// reputation would decay it every round.
 pub fn clamp_reputation_vector(
     reputation: &ReputationVector,
     config: &PorConfig,
@@ -154,4 +159,69 @@ pub fn clamp_reputation_vector(
         round: reputation.round,
         values,
     })
+}
+
+/// Clamp a blended transition, restoring CarryForward entries from previous.
+///
+/// `CarryForward` means the finalized reputation is the previous value. The
+/// sigmoid `R / sqrt(1 + R^2)` is not idempotent for `R > 0`, so clamping that
+/// already-finalized value would shrink it every sparse round — an implicit
+/// inactivity penalty. Those entries are therefore taken from
+/// `previous_reputation`, not from `blended`, so a hand-built blended vector
+/// cannot preserve an arbitrary unclamped value. Rated nodes, newly seeded
+/// nodes, and every entry under `Reject` or `Neutral` are still clamped.
+///
+/// `previous_reputation` and `contribution` must be the same vectors passed to
+/// [`crate::blend_reputation_transition`], in canonical `NodeId` order.
+pub fn clamp_reputation_transition(
+    blended: &ReputationVector,
+    previous_reputation: &ReputationVector,
+    contribution: &ReputationVector,
+    config: &PorConfig,
+) -> Result<ReputationVector, PorError> {
+    if config.missing_entry_policy != MissingEntryPolicy::CarryForward {
+        return clamp_reputation_vector(blended, config);
+    }
+
+    let scale = config.scale;
+    if scale == 0 {
+        return Err(PorError::InvalidClampScale);
+    }
+
+    let mut previous_index = 0;
+    let mut contribution_index = 0;
+    let mut values = Vec::with_capacity(blended.values.len());
+
+    for entry in &blended.values {
+        advance_to(&mut previous_index, &previous_reputation.values, entry);
+        advance_to(&mut contribution_index, &contribution.values, entry);
+
+        let in_previous = has_node_at(previous_reputation, previous_index, entry);
+        let in_contribution = has_node_at(contribution, contribution_index, entry);
+        let reputation = if in_previous && !in_contribution {
+            previous_reputation.values[previous_index].reputation
+        } else {
+            clamp_reputation_value(entry.reputation, scale)?
+        };
+
+        values.push(ReputationEntry::new(entry.node_id.clone(), reputation));
+    }
+
+    Ok(ReputationVector {
+        round: blended.round,
+        values,
+    })
+}
+
+fn advance_to(index: &mut usize, entries: &[ReputationEntry], target: &ReputationEntry) {
+    while *index < entries.len() && entries[*index].node_id < target.node_id {
+        *index += 1;
+    }
+}
+
+fn has_node_at(vector: &ReputationVector, index: usize, target: &ReputationEntry) -> bool {
+    matches!(
+        vector.values.get(index),
+        Some(entry) if entry.node_id == target.node_id
+    )
 }

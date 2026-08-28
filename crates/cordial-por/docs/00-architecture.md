@@ -140,7 +140,7 @@ flowchart TD
 ### Implemented And Future PoR Stages
 
 > **Implementation Note:**  
-> The stages shown with dotted edges in the architecture above are part of the intended PoR architecture described in the paper (arXiv:2108.03542 and related Liquid-Rank literature). The current crate implements the data-preparation path, Liquid-Rank contribution `P = S * R`, the pure fixed-point alpha-blend transition, deterministic fixed-point sigmoid clamping, explicit application of finalized vectors to `ReputationState`, construction of a `ReputationBlock` from a finalized reputation list, and audit replay of the whole transition against a proposed `ReputationBlock`. The transition requires matching canonical node sets and consecutive rounds. These stages do not apply a no-rating fallback or publish blocks.
+> The stages shown with dotted edges in the architecture above are part of the intended PoR architecture described in the paper (arXiv:2108.03542 and related Liquid-Rank literature). The current crate implements the data-preparation path, Liquid-Rank contribution `P = S * R`, the pure fixed-point alpha-blend transition, deterministic fixed-point sigmoid clamping, explicit application of finalized vectors to `ReputationState`, construction of a `ReputationBlock` from a finalized reputation list, and audit replay of the whole transition against a proposed `ReputationBlock`. The transition requires consecutive rounds and resolves sparse node sets through a configured no-rating fallback policy. These stages do not publish blocks.
 
 - Rating validation and deterministic round batching
 - Rating matrix construction
@@ -159,14 +159,14 @@ flowchart TD
 
 | Module | Responsibility | Inputs | Outputs | Dependencies | Public interfaces |
 |--------|----------------|--------|---------|--------------|-------------------|
-| `config` | Holds fixed-point scale and initial reputation | scale, initial value | `PorConfig` | none | `PorConfig::{new, default}` |
+| `config` | Holds fixed-point scale, initial reputation, and the no-rating fallback policy | scale, initial value, policy | `PorConfig`, `MissingEntryPolicy` | `types` | `PorConfig::{new, default}`, `MissingEntryPolicy` |
 | `types` | Deterministic PoR data model | — | ratings, matrices, reputation entries, blocks | `cordial-miners-core::NodeId` | re-exported types |
 | `ratings` | Validate signed rating records and build deterministic round batches | `RatingRecord`, `PorConfig` | `RatingBatch` | `config`, `types`, `error` | `validate_rating`, `build_rating_batch` |
 | `matrix` | Build canonical matrix representation from validated batches | `RatingBatch` | `RatingMatrix` | `types`, `error` | `build_rating_matrix` |
 | `normalization` | Apply Section 4.2 modified normalization per recipient row | `RatingMatrix`, `PorConfig` | `NormalizedRatingMatrix` | `config`, `types`, `error` | `normalize_rating_matrix` |
 | `liquid_rank` | Compute paper-guided contribution vector `P = S * R` | `NormalizedRatingMatrix`, previous `ReputationVector`, `PorConfig` | contribution `ReputationVector` | `config`, `types`, `error` | `compute_liquid_rank_contribution` |
-| `transition` | Blend contribution with previous reputation using checked fixed-point arithmetic, matching node sets, and consecutive rounds | contribution `ReputationVector`, previous `ReputationVector`, `PorConfig` | next-round `ReputationVector` | `config`, `types`, `error` | `blend_reputation_transition` |
-| `clamp` | Apply deterministic fixed-point sigmoid clamp to reputation values | `ReputationVector`, `PorConfig` | clamped `ReputationVector` | `config`, `types`, `error` | `clamp_reputation_value`, `clamp_reputation_vector` |
+| `transition` | Blend contribution with previous reputation using checked fixed-point arithmetic and consecutive rounds, resolving sparse node sets through the configured policy | contribution `ReputationVector`, previous `ReputationVector`, `PorConfig` | next-round `ReputationVector` | `config`, `types`, `error` | `blend_reputation_transition` |
+| `clamp` | Apply deterministic fixed-point sigmoid clamp to reputation values; the pipeline clamp restores CarryForward entries from previous reputation so an already-finalized value is not decayed and a hand-built blend cannot preserve an arbitrary unclamped value | `ReputationVector`, previous and contribution vectors, `PorConfig` | clamped `ReputationVector` | `config`, `types`, `error` | `clamp_reputation_value`, `clamp_reputation_vector`, `clamp_reputation_transition` |
 | `state` | In-memory reputation snapshot keyed by `NodeId`; consumes finalized vectors into state | round, validator → weight, finalized `ReputationVector` | `ReputationState` | `types`, `error` | `new`, `round`, `reputation_list`, `reputation_list_mut`, `pending_ratings`, `latest_block`, `add_rating`, `set_reputation`, `apply_reputation_vector` |
 | `block` | Validate a reputation block and build one from a finalized reputation list and header | `ReputationBlockHeader`, `ReputationList` | `ReputationBlock` | `types`, `error` | `build_reputation_block`, `validate_reputation_block` |
 | `audit` | Replay the deterministic transition and verify it against a proposed reputation block | previous `ReputationVector`, `&[RatingRecord]`, `ReputationBlock`, `PorConfig` | expected `ReputationList` / verification result | `ratings`, `matrix`, `normalization`, `liquid_rank`, `transition`, `clamp`, `block`, `types`, `error` | `replay_reputation_transition`, `verify_reputation_transition` |
@@ -181,8 +181,8 @@ flowchart TD
 3. A deterministic `RatingMatrix` is built with `build_rating_matrix`.
 4. The matrix is normalized per recipient with `normalize_rating_matrix`.
 5. The Liquid-Rank contribution vector is computed with `compute_liquid_rank_contribution`.
-6. The next vector is computed with `blend_reputation_transition`, which requires matching canonical node sets and consecutive rounds; this is a pure calculation and does not mutate state.
-7. The next vector can be clamped with `clamp_reputation_vector`; this is also a pure calculation and does not mutate state.
+6. The next vector is computed with `blend_reputation_transition`, which requires consecutive rounds and covers the union of both node sets, resolving nodes missing from either side through `PorConfig::missing_entry_policy`; this is a pure calculation and does not mutate state.
+7. The next vector is clamped with `clamp_reputation_transition`, which applies the sigmoid to rated and newly seeded nodes and restores CarryForward entries from previous reputation. The previous value is copied rather than taken from the blend, so a hand-built blended vector cannot preserve an arbitrary unclamped value. The sigmoid is not idempotent, so clamping those entries would decay them every sparse round. This is a pure calculation and does not mutate state.
 8. The finalized vector is applied with `ReputationState::apply_reputation_vector`, which validates canonical ordering and moves the vector entries into the state snapshot.
 9. A `ReputationBlock` can be assembled with `build_reputation_block`, which validates the header/list round match, required block hash fields, and canonical reputation-list ordering.
 10. Any validator can replay steps 2-7 with `replay_reputation_transition` and check a proposed block with `verify_reputation_transition`, which applies the same `validate_reputation_block` rules as construction before comparing the reputation list entry for entry. Both are read-only.
@@ -195,7 +195,7 @@ flowchart TD
 
 - Reputation state representation (`ReputationState`).
 - Fixed-point scale and initial-reputation configuration.
-- Rating validation, deterministic matrix construction, paper-guided rating normalization, Liquid-Rank contribution calculation, pure alpha-blend transition calculation, deterministic sigmoid clamping, explicit finalized-vector application to `ReputationState`, reputation-block construction and validation, and deterministic audit replay of a proposed reputation block.
+- Rating validation, deterministic matrix construction, paper-guided rating normalization, Liquid-Rank contribution calculation, pure alpha-blend transition calculation with a configured no-rating fallback, deterministic sigmoid clamping (restoring CarryForward entries from previous reputation so finalized reputation is not decayed on a sparse round), explicit finalized-vector application to `ReputationState`, reputation-block construction and validation, and deterministic audit replay of a proposed reputation block.
 - Conversion of the current reputation map into the weight map expected by Cordial Miners.
 - Future PoR algorithms (penalties, audit, and selection) once implemented.
 

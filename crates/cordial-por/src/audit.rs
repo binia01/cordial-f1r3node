@@ -10,7 +10,7 @@
 
 use crate::{
     block::validate_reputation_block,
-    clamp::clamp_reputation_vector,
+    clamp::clamp_reputation_transition,
     config::PorConfig,
     error::PorError,
     liquid_rank::compute_liquid_rank_contribution,
@@ -24,10 +24,11 @@ use crate::{
 /// Replay the deterministic reputation transition for a single round.
 ///
 /// Runs the whole calculation path — batch, matrix, normalization, Liquid-Rank
-/// contribution, alpha blend, sigmoid clamp — and returns the expected
-/// reputation list. Every rating record must belong to `round`, and `round`
-/// must immediately follow `previous_reputation.round`. Input ratings may
-/// arrive in any order because batching sorts them canonically.
+/// contribution, alpha blend, then the pipeline clamp
+/// (`clamp_reputation_transition`) — and returns the expected reputation list.
+/// Every rating record must belong to `round`, and `round` must immediately
+/// follow `previous_reputation.round`. Input ratings may arrive in any order
+/// because batching sorts them canonically.
 pub fn replay_reputation_transition(
     previous_reputation: &ReputationVector,
     ratings: &[RatingRecord],
@@ -39,7 +40,8 @@ pub fn replay_reputation_transition(
     let normalized = normalize_rating_matrix(&matrix, config)?;
     let contribution = compute_liquid_rank_contribution(&normalized, previous_reputation, config)?;
     let blended = blend_reputation_transition(&contribution, previous_reputation, config)?;
-    let clamped = clamp_reputation_vector(&blended, config)?;
+    let clamped =
+        clamp_reputation_transition(&blended, previous_reputation, &contribution, config)?;
 
     Ok(ReputationList {
         round: clamped.round,
