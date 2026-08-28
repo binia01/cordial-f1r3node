@@ -170,4 +170,4 @@ demo-cordial-local-clean:
     rm -rf {{demo_data}}
 
 demo-cordial-local-node:
-    ../f1r3node/target/debug/node run -s --host 127.0.0.1 --api-host 127.0.0.1 --network-id cordial-demo --data-dir {{demo_data}} --bonds-file docker/genesis/cordial-bonds.txt --wallets-file docker/genesis/cordial-wallets.txt --validator-private-key 0101010101010101010101010101010101010101010101010101010101010101 --allow-private-addresses --no-upnp --consensus cordial-miners --native-token-name F1R3CAP --native-token-symbol F1R3 --native-token-decimals 8
+    ../f1r3node/target/debug/node run -s --host 127.0.0.1 --api-host 127.0.0.1 --network-id cordial-demo --data-dir {{demo_data}} --bonds-file docker/genesis/cordial-bonds.txt --wallets-file docker/genesis/cordial-wallets.txt --validator-private-key 0101010101010101010101010101010101010101010101010101010101010101 --allow-private-addresses --no-upnp --required-signatures 0 --native-token-name F1R3CAP --native-token-symbol F1R3 --native-token-decimals 8
