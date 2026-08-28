@@ -17,9 +17,9 @@ use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use cordial_f1r3node_adapter::ordered_output::OrderedFinalizedOutput;
 use cordial_f1r3node_adapter::ordered_output_server::{
-    OrderedOutputServerState, ordered_output_router,
+    OrderedOutputServerState, PollOutcome, ordered_output_router, poll_once,
 };
-use cordial_f1r3node_adapter::shared_ordered_output::SharedOrderedOutput;
+use cordial_f1r3node_adapter::shared_ordered_output::{ReadOrderedOutput, SharedOrderedOutput};
 use cordial_miners_core::types::{BlockIdentity, NodeId};
 use tokio::sync::Mutex;
 use tower::ServiceExt as _;
@@ -241,4 +241,81 @@ async fn is_stale_false_for_recent_timestamp() {
     let response = app.oneshot(req).await.unwrap();
     let json = body_json(response).await;
     assert_eq!(json["is_stale"], false);
+}
+
+// ── poll_once — poll cycle helper ─────────────────────────────────────────────
+
+#[test]
+fn poll_once_updates_shared_when_output_has_anchor() {
+    let mut shared = SharedOrderedOutput::new();
+    let output = make_output(vec![make_block(1), make_block(2)], Some(make_block(0)));
+
+    let outcome = poll_once(&mut shared, output.clone());
+
+    assert_eq!(outcome, PollOutcome::Updated { finalized_len: 2 });
+    assert_eq!(shared.latest(), Some(&output));
+}
+
+#[test]
+fn poll_once_returns_no_leader_when_anchor_is_none() {
+    let mut shared = SharedOrderedOutput::new();
+    let output = make_output(vec![], None);
+
+    let outcome = poll_once(&mut shared, output);
+
+    assert_eq!(outcome, PollOutcome::NoLeader);
+    // Shared must remain empty — no output should have been stored.
+    assert!(shared.latest().is_none());
+}
+
+#[test]
+fn poll_once_rejects_regressing_output_and_preserves_previous() {
+    // Establish an initial prefix: [block1, block2].
+    let initial = make_output(vec![make_block(1), make_block(2)], Some(make_block(0)));
+    let mut shared = SharedOrderedOutput::from_output(initial.clone());
+
+    // Poll with a reordered output — this must be rejected.
+    let reordered = make_output(vec![make_block(2), make_block(1)], Some(make_block(0)));
+    let outcome = poll_once(&mut shared, reordered);
+
+    assert_eq!(outcome, PollOutcome::PrefixRejected);
+    // The previous (correct) output must be preserved unchanged.
+    assert_eq!(shared.latest(), Some(&initial));
+}
+
+#[test]
+fn poll_once_accepts_appended_output_that_preserves_prefix() {
+    // Start with [block1].
+    let first = make_output(vec![make_block(1)], Some(make_block(0)));
+    let mut shared = SharedOrderedOutput::from_output(first);
+
+    // Append block2 — the prefix is preserved.
+    let appended = make_output(vec![make_block(1), make_block(2)], Some(make_block(0)));
+    let outcome = poll_once(&mut shared, appended.clone());
+
+    assert_eq!(outcome, PollOutcome::Updated { finalized_len: 2 });
+    assert_eq!(shared.latest(), Some(&appended));
+}
+
+#[test]
+fn poll_once_after_rejection_shared_output_is_not_stale_due_to_old_timestamp() {
+    // Establish an initial output with a very recent timestamp.
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let initial = make_output(vec![make_block(1)], Some(make_block(0))).with_timestamp(now_ns);
+    let mut shared = SharedOrderedOutput::from_output(initial);
+
+    // Try to push a regressing output — it must be rejected.
+    let regressed = make_output(vec![make_block(2)], Some(make_block(9)));
+    let outcome = poll_once(&mut shared, regressed);
+    assert_eq!(outcome, PollOutcome::PrefixRejected);
+
+    // The preserved output must still be fresh (not stale).
+    let stale_threshold_ns = 30_000_000_000u128; // 30 s
+    assert!(
+        !shared.is_stale(stale_threshold_ns),
+        "preserved output should not be stale"
+    );
 }
