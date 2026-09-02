@@ -5,9 +5,9 @@
 - **Document ID**: `crates/cordial-por/docs/01-tiered-slashing-and-key-ejection.md`
 - **Status**: Approved Architecture Specification
 - **Related Specs**:
-  - [`00-architecture.md`](file:///home/bini/Documents/repos/cordial-f1r3node/crates/cordial-por/docs/00-architecture.md)
-  - [`data-structures.md`](file:///home/bini/Documents/repos/cordial-f1r3node/crates/cordial-por/docs/data-structures.md)
-  - [`docs/cordial-miners/16-slashing-integration.md`](file:///home/bini/Documents/repos/cordial-f1r3node/docs/cordial-miners/16-slashing-integration.md)
+  - [`00-architecture.md`](./00-architecture.md)
+  - [`data-structures.md`](./data-structures.md)
+  - [`docs/cordial-miners/16-slashing-integration.md`](../../../docs/cordial-miners/16-slashing-integration.md)
 
 ---
 
