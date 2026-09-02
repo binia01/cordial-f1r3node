@@ -95,7 +95,8 @@ cargo run --bin ordered_output_server -- \
 |---|---|---|
 | `--grpc-url` | `http://127.0.0.1:40401` | f1r3node gRPC endpoint to mirror |
 | `--addr` | `127.0.0.1:7080` | HTTP bind address |
-| `--depth` | `128` | Block history depth to fetch on startup |
+| `--bonds-file` | *(none)* | Path to a `<public_key> <stake>` bonds file (same as the node's `--bonds-file`); seeds real stake weights for finality. When omitted, every observed sender is weighted uniformly at 100. |
+| `--depth` | `100` | Block history depth to fetch on startup |
 | `--wave-length` | `3` | Consensus wavelength for tau ordering |
 | `--poll-interval-ms` | `2000` | How often to recompute ordered output |
 | `--shard-id` | `root` | Shard to observe |
@@ -113,6 +114,50 @@ curl http://127.0.0.1:7080/ordered-output/status | jq .
 # Watch staleness in real time (poll every 2 s)
 watch -n 2 'curl -s http://127.0.0.1:7080/ordered-output/status | jq "{len,is_stale}"'
 ```
+
+### Local demo walkthrough
+
+The full local stack (f1r3node + ordered-output server) works with a single
+empty block — **no deploy submission is needed**:
+
+```bash
+# Terminal 1 — start the local demo node (cordial-miners consensus).
+just demo-cordial-local-node
+
+# Terminal 2 — wait for the HTTP API, then propose one empty block.
+curl -fsS http://127.0.0.1:40403/api/status
+curl -s -X POST http://127.0.0.1:40405/api/propose
+# -> "Success! Block <hash> created and added."
+
+# Terminal 3 — run the ordered-output HTTP server.
+just demo-cordial-ordered-output-server
+# or: cargo run --bin ordered_output_server -- --grpc-url http://127.0.0.1:40401 --addr 127.0.0.1:7080 --bonds-file docker/genesis/cordial-bonds.txt
+
+# Verify (the server recomputes finality itself from mirrored blocks; the
+# first poll cycle already serves a finalized ordered output):
+just demo-cordial-ordered-output-status
+curl -s http://127.0.0.1:7080/ordered-output/status | jq .
+```
+
+Expected: `/ordered-output/status` returns **200** with `len: 1`,
+`is_stale: false`, and `/latest` returns the block 0 hash as its single entry +
+anchor. `bond_count` is `4` when `--bonds-file` is passed (the four bonded
+validators from `docker/genesis/cordial-bonds.txt`); without it the server
+falls back to counting observed senders and reports `bond_count: 1`.
+
+Important notes for this demo:
+
+- **Do not use `submit_live_deploy` / `--deploy-lifespan` here.** `cordial-miners`
+  skips Casper engine initialization (f1r3node `node_runtime.rs`), so the RSpace
+  is never bootstrapped. The PreCharge/Refund system deploys generated for a user
+  deploy cannot be played, and the node's propose fails with
+  `System runtime error: Unable to consume results of system deploy`. A single
+  block with zero deploys avoids that path entirely.
+- **`isReady` stays `false`** in the f1r3node status output — the node itself
+  does not drive Cordial finality. The HTTP server derives bonds from the senders
+  it observes and computes weighted-tau finality locally; a lone block finalizes
+  immediately through self-ratification, so the endpoints serve output without
+  waiting for the node.
 
 ## Startup Sequence
 
