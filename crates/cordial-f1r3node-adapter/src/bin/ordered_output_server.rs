@@ -39,28 +39,36 @@
 //! The server never panics on startup if no finalized output exists yet — the
 //! handlers return `503` until the first finalized leader is observed.
 //!
-//! ## Bond stability
+//! ## Bonds
 //!
-//! Bonds are bootstrapped from the initial window and **never shrink**. Each
-//! poll cycle merges newly observed senders into the existing bond map. This
-//! means validators that temporarily stop appearing in the recent window do not
-//! cause bond_count to drop, preventing spurious finality-threshold changes.
-//! This is intentionally simple for a read-only mirroring tool; production use
-//! should derive bonds from the node's genesis/bond contract state.
+//! Real stake weights are preferred. Pass `--bonds-file` (the same
+//! `<public_key> <stake>` file the node reads with `--bonds-file`) and the
+//! server seeds its bond map from it via `BondsParser`, exactly matching the
+//! node's consensus view. Without it, the server falls back to a **uniform
+//! weight of 100 per observed sender** so a read-only mirror can still compute
+//! finality without knowing the genesis state.
+//!
+//! The bond map is bootstrapped once and **never shrinks**. Each poll cycle
+//! merges newly observed senders into the existing bond map (existing entries,
+//! including any seeded from `--bonds-file`, keep their weight). This means
+//! validators that temporarily stop appearing in the recent window do not cause
+//! bond_count to drop, preventing spurious finality-threshold changes.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use casper::rust::util::bonds_parser::BondsParser;
 use clap::Parser;
 use cordial_f1r3node_adapter::grpc_ingest::BlocklaceAdapter;
 use cordial_f1r3node_adapter::live_grpc::{
     LiveGrpcBlockClient, trusted_block_from_light_block_info_with_options,
 };
 use cordial_f1r3node_adapter::live_ingress::LiveIngress;
-use cordial_f1r3node_adapter::ordered_output_server::serve;
+use cordial_f1r3node_adapter::ordered_output_server::{PollOutcome, poll_once, serve};
 use cordial_f1r3node_adapter::shard_conf::CasperShardConf;
 use cordial_f1r3node_adapter::shared_ordered_output::SharedOrderedOutput;
 use cordial_miners_core::Block;
@@ -103,6 +111,13 @@ struct Args {
     /// Age in seconds before `/ordered-output/status` reports `is_stale: true`.
     #[arg(long, default_value_t = 30)]
     stale_threshold_secs: u64,
+
+    /// Path to a bonds file (same `<public_key> <stake>` format used by the
+    /// node's `--bonds-file`). Seeded into the bond map with real stake
+    /// weights; when omitted, every observed sender is weighted uniformly at
+    /// 100 so a read-only mirror can still compute finality.
+    #[arg(long)]
+    bonds_file: Option<PathBuf>,
 }
 
 // ── Passthrough adapter ───────────────────────────────────────────────────────
@@ -121,11 +136,27 @@ impl BlocklaceAdapter<BlockIdentity> for PassthroughAdapter {
 
 // ── Startup helpers ───────────────────────────────────────────────────────────
 
+/// Load a bond map from a `<public_key> <stake>` bonds file, mirroring the
+/// node's `--bonds-file` handling (non-positive stakes are skipped).
+fn load_bonds_from_file(path: &Path) -> Result<HashMap<NodeId, u64>> {
+    let parsed = BondsParser::parse(path)
+        .with_context(|| format!("failed to parse bonds file {}", path.display()))?;
+    let mut bonds = HashMap::new();
+    for (public_key, stake) in parsed {
+        if stake > 0 {
+            bonds.insert(NodeId(public_key.bytes.to_vec()), stake as u64);
+        }
+    }
+    Ok(bonds)
+}
+
 /// Merge newly observed block senders into an existing bond map.
 ///
-/// Bonds are assigned a weight of 100 per validator. The map only grows —
-/// validators that drop out of the recent window keep their bond entry so that
-/// finality thresholds remain stable across poll cycles.
+/// Senders already present keep their weight (real stakes seeded from
+/// `--bonds-file`, or a previously inserted sender). New senders are assigned
+/// the uniform fallback weight of 100. The map only grows — validators that
+/// drop out of the recent window keep their bond entry so that finality
+/// thresholds remain stable across poll cycles.
 fn merge_bonds(bonds: &mut HashMap<NodeId, u64>, blocks: &[models::casper::LightBlockInfo]) {
     for block in blocks {
         if let Some(sender) = StringOps::decode_hex(block.sender.clone())
@@ -185,7 +216,19 @@ async fn main() -> Result<()> {
 
     let shared = Arc::new(Mutex::new(SharedOrderedOutput::new()));
     let ingress = Arc::new(Mutex::new(ingress));
-    let bonds = Arc::new(Mutex::new(HashMap::new()));
+    let initial_bonds = match &args.bonds_file {
+        Some(path) => {
+            let bonds = load_bonds_from_file(path)
+                .with_context(|| format!("failed to load bonds from {}", path.display()))?;
+            tracing::info!(path = %path.display(), count = bonds.len(), "loaded bonds from file");
+            bonds
+        }
+        None => {
+            tracing::info!("no --bonds-file provided; uniform weight 100 per observed sender");
+            HashMap::new()
+        }
+    };
+    let bonds = Arc::new(Mutex::new(initial_bonds));
 
     // ── Background polling task ───────────────────────────────────────────────
     {
@@ -268,23 +311,21 @@ async fn main() -> Result<()> {
 
                 match output_res {
                     Ok(output) => {
-                        let len = output.len();
-                        let has_anchor = output.anchor.is_some();
                         let mut guard = shared.lock().await;
-                        match guard.update(output) {
-                            Ok(()) => {
-                                if has_anchor {
-                                    tracing::debug!(
-                                        finalized_blocks = len,
-                                        "ordered output updated"
-                                    );
-                                }
+                        match poll_once(&mut guard, output) {
+                            PollOutcome::Updated { finalized_len } => {
+                                tracing::debug!(
+                                    finalized_blocks = finalized_len,
+                                    "ordered output updated"
+                                );
                             }
-                            Err(err) => {
+                            PollOutcome::PrefixRejected => {
                                 tracing::warn!(
-                                    error = %err,
                                     "ordered output update rejected (prefix violation) — keeping previous"
                                 );
+                            }
+                            PollOutcome::NoLeader => {
+                                tracing::debug!("no finalized leader yet");
                             }
                         }
                     }
