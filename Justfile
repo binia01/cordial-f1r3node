@@ -170,4 +170,14 @@ demo-cordial-local-clean:
     rm -rf {{demo_data}}
 
 demo-cordial-local-node:
-    ../f1r3node/target/debug/node run -s --host 127.0.0.1 --api-host 127.0.0.1 --network-id cordial-demo --data-dir {{demo_data}} --bonds-file docker/genesis/cordial-bonds.txt --wallets-file docker/genesis/cordial-wallets.txt --validator-private-key 0101010101010101010101010101010101010101010101010101010101010101 --allow-private-addresses --no-upnp --required-signatures 0 --native-token-name F1R3CAP --native-token-symbol F1R3 --native-token-decimals 8
+    ../f1r3node/target/debug/node run -s --host 127.0.0.1 --api-host 127.0.0.1 --network-id cordial-demo --data-dir {{demo_data}} --bonds-file docker/genesis/cordial-bonds.txt --wallets-file docker/genesis/cordial-wallets.txt --validator-private-key 0101010101010101010101010101010101010101010101010101010101010101 --allow-private-addresses --no-upnp --consensus cordial-miners --required-signatures 0 --native-token-name F1R3CAP --native-token-symbol F1R3 --native-token-decimals 8
+
+# Run the ordered-output HTTP server against the local demo node (see
+# docs/cordial-miners/integration/19-ordered-output-http-server.md).
+demo-cordial-ordered-output-server:
+    cargo run --bin ordered_output_server -- --grpc-url http://127.0.0.1:40401 --addr 127.0.0.1:7080 --bonds-file docker/genesis/cordial-bonds.txt
+
+demo-cordial-ordered-output-status:
+    curl -s http://127.0.0.1:7080/ordered-output/status | jq .
+    @printf '%s\n' "--- latest ---"
+    curl -s http://127.0.0.1:7080/ordered-output/latest | jq '{anchor_hash: .anchor.content_hash, len: (.blocks|length), wavelength, bond_count, total_mirrored_blocks}'
