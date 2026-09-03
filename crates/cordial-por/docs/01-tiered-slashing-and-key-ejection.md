@@ -20,13 +20,22 @@ The initial Cordial consensus slashing implementation applies an immediate 100% 
 - A minor software bug, failover configuration error, or network partition causing a single honest node operator to double-sign results in total capital wipeout.
 - If multiple honest nodes experience the same client bug concurrently, the network risks losing its consensus supermajority ($>66.7\%$ active weight), causing a catastrophic liveness halt.
 
-### Ethereum PoS Foundations
+### Inspiration from Ethereum PoS
 
-This specification transitions `cordial-por` from binary slashing to a **Tiered Correlation Slashing with Permanent Key Ejection** model **directly based on Ethereum Proof-of-Stake (PoS)** (Casper FFG / LMD-GHOST anti-correlation mechanism):
+This specification transitions `cordial-por` from binary slashing to a **Tiered Correlation Slashing with Permanent Key Ejection** model **inspired by Ethereum Proof-of-Stake (PoS)** anti-correlation principles (Casper FFG / LMD-GHOST):
 
-- **Anti-Correlation Scaling**: In Ethereum PoS, slashing penalties scale based on how many validators equivocate within a sliding window. An isolated double-sign incurs a minor initial penalty (~1 ETH out of 32 ETH), while correlated equivocations involving a large fraction of the validator set scale up to a 100% penalty (full 32 ETH burn).
-- **Permanent Ejection + Fresh Key Re-Registration**: Slashed Ethereum validators are permanently exited and barred from re-entering under the same key. However, the operator retains their un-slashed capital (75% for an isolated fault) and can register a fresh validator key.
-- **Inactivity Leak**: Offline nodes undergo slow fixed-point decay ($\gamma$) without key ejection, preserving liveness without sudden state locks.
+**What Ethereum actually does:**
+
+- **Anti-Correlation Scaling**: Ethereum applies a small immediate penalty (~1/32 of effective balance ≈ 1 ETH out of 32 ETH), followed by a later **correlation penalty** proportional to the total slashings within a ~36-day removal window. An isolated double-sign results in a total penalty well below 0.1% of stake, while correlated equivocations involving a large fraction of the validator set scale up toward a 100% penalty (full 32 ETH burn).
+- **Permanent Ejection**: Slashed Ethereum validators are forcibly exited and barred from re-entering under the same key. The operator retains their remaining (largely un-slashed) capital and can register a fresh validator key, but Ethereum does not define a specific percentage-based transfer mechanism.
+- **Inactivity Leak**: Offline validators undergo gradual quadratic balance decay without slashing, preserving liveness without sudden state locks.
+
+**What Cordial defines on top of these principles:**
+
+- **25% Step Function Penalty**: Rather than Ethereum's continuous proportional formula, Cordial applies a fixed 25% immediate reputation reduction for isolated faults (see §2).
+- **30% Correlation Threshold**: If >30% of active weight equivocates in a single round, the penalty escalates to 100% (complete wipeout).
+- **75% Capital Transfer to Fresh Key**: Operators retain 75% of their reputation/capital after an isolated fault and can transfer it to a newly registered validator key.
+- **Inactivity Decay**: Offline nodes undergo slow fixed-point decay ($\gamma$) without key ejection, preserving liveness without sudden state locks.
 
 ---
 
@@ -34,7 +43,7 @@ This specification transitions `cordial-por` from binary slashing to a **Tiered 
 
 ### Metric Matrix
 
-| Metric | Legacy Binary Model | Proposed Model (Ethereum PoS-based) |
+| Metric | Legacy Binary Model | Proposed Cordial Model (Ethereum-inspired) |
 | :--- | :--- | :--- |
 | **Initial Equivocation Penalty** | 100% loss | **25% immediate reputation/stake reduction** |
 | **Network Correlation Scaling** | None | **If $>30\%$ of active weight equivocates in round $k$, penalty scales to 100%** |
