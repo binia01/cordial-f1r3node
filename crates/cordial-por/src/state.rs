@@ -70,13 +70,38 @@ impl ReputationState {
             .binary_search_by(|entry| entry.node_id.cmp(&node_id))
         {
             Ok(index) => {
-                self.reputation_list.entries[index].reputation = reputation;
+                // Do not un-eject a permanently excluded node via set_reputation.
+                if !self.reputation_list.entries[index].is_excluded {
+                    self.reputation_list.entries[index].reputation = reputation;
+                }
             }
             Err(index) => {
                 self.reputation_list
                     .entries
                     .insert(index, ReputationEntry::new(node_id, reputation));
             }
+        }
+    }
+
+    /// Permanently eject a validator key from the active set.
+    ///
+    /// Sets `is_excluded = true` and zeroes the node's reputation weight.
+    /// Ejection is irreversible: no subsequent call can restore the key.
+    ///
+    /// Returns `PorError::UnknownNode` if the node is not present in the
+    /// current state.
+    pub fn eject_validator(&mut self, node_id: &NodeId) -> Result<(), PorError> {
+        match self
+            .reputation_list
+            .entries
+            .binary_search_by(|entry| entry.node_id.cmp(node_id))
+        {
+            Ok(index) => {
+                self.reputation_list.entries[index].is_excluded = true;
+                self.reputation_list.entries[index].reputation = 0;
+                Ok(())
+            }
+            Err(_) => Err(PorError::UnknownNode),
         }
     }
 
@@ -87,13 +112,38 @@ impl ReputationState {
     /// ownership of the vector entries, and replaces the state's reputation
     /// list; it does not recompute ratings, Liquid Rank, transition, or
     /// clamping.
+    ///
+    /// Entries already marked `is_excluded = true` in the incoming vector are
+    /// preserved as ejected. If a node was ejected in the previous state but
+    /// arrives with `is_excluded = false` in the new vector, ejection is
+    /// re-applied to maintain the invariant that ejection is permanent.
     pub fn apply_reputation_vector(&mut self, vector: ReputationVector) -> Result<(), PorError> {
         validate_reputation_vector(&vector)?;
 
+        // Build a fast lookup of currently ejected node ids before replacing.
+        let ejected: std::collections::HashSet<NodeId> = self
+            .reputation_list
+            .entries
+            .iter()
+            .filter(|e| e.is_excluded)
+            .map(|e| e.node_id.clone())
+            .collect();
+
+        // Replace the list, then re-apply ejection for any previously excluded node.
         self.current_round = vector.round;
         self.reputation_list = ReputationList {
             round: vector.round,
-            entries: vector.values,
+            entries: vector
+                .values
+                .into_iter()
+                .map(|mut entry| {
+                    if ejected.contains(&entry.node_id) {
+                        entry.is_excluded = true;
+                        entry.reputation = 0;
+                    }
+                    entry
+                })
+                .collect(),
         };
 
         Ok(())
