@@ -321,4 +321,3 @@ fn evidence_by_round_returns_multiple_pairs_for_same_validator() {
     assert!(round_5.iter().all(|e| e.round == 5));
     assert!(round_5.iter().all(|e| e.validator == validator));
 }
-
