@@ -283,3 +283,42 @@ fn equivocating_validators_in_round_is_deduplicated() {
     );
     assert_eq!(*validators[0], validator);
 }
+
+#[test]
+fn evidence_by_round_returns_multiple_pairs_for_same_validator() {
+    // One validator records two distinct equivocation pairs in the same round.
+    // evidence_by_round must return 2 separate EquivocationEvidence records —
+    // one per unique conflicting pair — even though they share the same creator.
+    let validator = node(1);
+    let mut pool = CordialEvidencePool::new();
+
+    // first distinct pair in round 5
+    assert!(pool.record_equivocation(
+        validator.clone(),
+        5,
+        vec![
+            block(validator.clone(), 1, vec![0xaa]),
+            block(validator.clone(), 2, vec![0xbb]),
+        ],
+    ));
+    // second, distinct pair in the same round 5
+    assert!(pool.record_equivocation(
+        validator.clone(),
+        5,
+        vec![
+            block(validator.clone(), 3, vec![0xcc]),
+            block(validator.clone(), 4, vec![0xdd]),
+        ],
+    ));
+
+    let round_5 = pool.evidence_by_round(5);
+    assert_eq!(
+        round_5.len(),
+        2,
+        "expected 2 distinct evidence records for the same validator in round 5"
+    );
+    // both records must belong to round 5 and to our validator
+    assert!(round_5.iter().all(|e| e.round == 5));
+    assert!(round_5.iter().all(|e| e.validator == validator));
+}
+
