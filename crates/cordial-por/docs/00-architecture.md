@@ -14,6 +14,12 @@ Cordial Miners approval, ratification, finality, τ-ordering and blocklace conse
 - Remain a pure library; no networking, no block production, no finality logic.
 - Provide a stable scaffold for PoR calculation stages while keeping state mutation, publication, and consensus selection separate.
 
+## Related Specifications
+
+- [`data-structures.md`](./data-structures.md): paper-aligned PoR data structures and calculation pipeline.
+- [`01-tiered-slashing-and-key-ejection.md`](./01-tiered-slashing-and-key-ejection.md): slashing, inactivity, and permanent key ejection policy.
+- [`02-interaction-model-and-rating-policy.md`](./02-interaction-model-and-rating-policy.md): interaction model and rating admission policy.
+
 ## High-Level Architecture
 
 ```mermaid
