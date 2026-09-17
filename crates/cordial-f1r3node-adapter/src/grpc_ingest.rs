@@ -42,6 +42,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage as F1r3nodeBloc
 use crate::block_translation::{
     BlockMessage as AdapterBlockMessage, message_from_f1r3node, message_to_block,
 };
+use crate::crypto_bridge::compute_block_hash;
 
 /// A pure, stateless validator for protobuf blocks from f1r3node.
 ///
@@ -201,19 +202,15 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
         Ok(block)
     }
 
-    /// Verify the wire-format block_hash matches the recomputed hash from content,
-    /// and that the translated identity also matches.
-    ///
-    /// Checks both the raw wire `block_msg.block_hash` (before translation can discard it)
-    /// and the translated `block.identity.content_hash`, using Blake2b-256 (f1r3node alignment).
+    /// Verify the wire-format block_hash matches either the f1r3node-compatible hash
+    /// computed from the `BlockMessage` fields via `compute_block_hash`, or the
+    /// internal Cordial `hash_content` (when constructed by `block_to_message`).
+    /// Also verifies that the translated block's internal content_hash is self-consistent.
     fn validate_adapter_content_hash(
         &self,
         block_msg: &AdapterBlockMessage,
         block: &Block,
     ) -> Result<()> {
-        let recomputed = crypto::hash_content(&block.content);
-
-        // Verify wire-format hash against recomputed hash (catches tampering of block_hash field)
         if block_msg.block_hash.len() != 32 {
             return Err(anyhow!(
                 "Content hash mismatch: wire block_hash has invalid length {}",
@@ -222,17 +219,27 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
         }
         let mut wire_hash = [0u8; 32];
         wire_hash.copy_from_slice(&block_msg.block_hash);
-        if wire_hash != recomputed {
+
+        let recomputed_internal = crypto::hash_content(&block.content);
+        let recomputed_wire = compute_block_hash(block_msg);
+
+        // Accept either the f1r3node wire hash or the Cordial internal content hash
+        // to preserve compatibility across both wire-domain and adapter-domain messages.
+        if wire_hash != recomputed_wire && wire_hash != recomputed_internal {
             return Err(anyhow!(
-                "Content hash mismatch: wire block_hash {wire_hash:?} does not match recomputed {recomputed:?}"
+                "Content hash mismatch: wire block_hash does not match \
+                 f1r3node-compatible recomputation (compute_block_hash) or internal content hash"
             ));
         }
 
-        // Sanity-check translated identity
-        if block.identity.content_hash != recomputed {
+        // Sanity-check that the translated block's internal content_hash
+        // matches what hash_content() produces over the translated content.
+        if block.identity.content_hash != recomputed_internal {
             return Err(anyhow!(
-                "Content hash mismatch: translated identity {:?} does not match recomputed {recomputed:?}",
-                block.identity.content_hash
+                "Internal content hash mismatch: translated identity {:?} \
+                 does not match recomputed hash_content {:?}",
+                block.identity.content_hash,
+                recomputed_internal
             ));
         }
 
