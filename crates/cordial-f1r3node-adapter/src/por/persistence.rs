@@ -8,8 +8,9 @@
 //! by a directory sync. A history append creates a new immutable round file.
 //! Startup validates both stores and reconciles the one supported crash window
 //! in which the snapshot committed immediately before its history entry. The
-//! separately committed activation marker allows a newer state snapshot to be
-//! safely retried against a fresh Cordial ingress after failure or restart.
+//! separately committed activation marker retains the actual active weight map,
+//! allowing a newer state snapshot to be safely retried against a fresh
+//! Cordial ingress after failure or restart.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -87,6 +88,11 @@ pub enum DurablePorStateError {
 
     #[error("activated PoR round {0} does not match the committed reputation checkpoint")]
     ActivationCheckpointMismatch(u64),
+    #[error("activated PoR round {0} has weights that do not match its committed state")]
+    ActivationProjectionMismatch(u64),
+
+    #[error("committed PoR round {committed_round} has no durable active-weight projection")]
+    MissingActivatedWeights { committed_round: u64 },
 
     #[error("durable PoR state requires startup recovery after a storage failure")]
     RecoveryRequired,
@@ -277,11 +283,38 @@ impl DurablePorState {
         Ok(self.activated_weights.as_ref())
     }
 
+    /// Restore the exact projection proven by the durable activation record.
+    ///
+    /// This must run before startup recomputes finality. If state committed
+    /// after the last activation, the older recorded projection remains the
+    /// only valid basis for deciding whether the pending weights are safe.
+    pub fn restore_activated_weights<A>(
+        &mut self,
+        ingress: &mut LiveIngress<A>,
+    ) -> Result<Option<PorWeightActivationOutcome>, DurablePorStateError> {
+        self.ensure_healthy()?;
+
+        let Some(activated) = self.activated_weights.clone() else {
+            if self.state.round() != 0 {
+                return Err(DurablePorStateError::MissingActivatedWeights {
+                    committed_round: self.state.round(),
+                });
+            }
+            return Ok(None);
+        };
+
+        ingress
+            .restore_activated_por_weights(activated.weights())
+            .map_err(DurablePorStateError::Activation)?;
+        self.process_activation = Some(activated);
+        Ok(Some(PorWeightActivationOutcome::Restored))
+    }
+
     /// Whether the committed reputation round is newer than the activation marker.
     ///
-    /// Startup must still call [`Self::activate_weights`] when this returns
-    /// `false`, because Cordial's in-memory bonds need restoration in every
-    /// process. This query identifies the state-commit/activation crash window.
+    /// Startup must first call [`Self::restore_activated_weights`] because
+    /// Cordial's in-memory bonds need restoration in every process. This query
+    /// then identifies the state-commit/activation crash window.
     pub fn has_unactivated_committed_round(&self) -> Result<bool, DurablePorStateError> {
         self.ensure_healthy()?;
         match &self.activated_weights {
@@ -301,8 +334,9 @@ impl DurablePorState {
     /// weights are replaced only after all Cordial safety checks pass. The
     /// activation record is then atomically persisted. An ordinary activation
     /// rejection is retryable. A marker-write failure fail-closes this owner,
-    /// because the durable result may be ambiguous; restart safely reapplies
-    /// the latest committed state before recording it again.
+    /// because the durable result may be ambiguous; restart restores the prior
+    /// active projection before evaluating and recording the latest committed
+    /// state.
     pub fn activate_weights<A>(
         &mut self,
         ingress: &mut LiveIngress<A>,
@@ -433,15 +467,27 @@ fn validate_activation_record(
             committed_round: state.round(),
         });
     }
-    if activated.reputation_round() == state.round()
-        && !activated
+    if activated.reputation_round() == state.round() {
+        if !activated
             .matches_state_checkpoint(state)
             .map_err(PorWeightActivationError::from)
             .map_err(DurablePorStateError::Activation)?
-    {
-        return Err(DurablePorStateError::ActivationCheckpointMismatch(
-            state.round(),
-        ));
+        {
+            return Err(DurablePorStateError::ActivationCheckpointMismatch(
+                state.round(),
+            ));
+        }
+
+        let mut validators: Vec<_> = activated.weights().keys().cloned().collect();
+        validators.sort();
+        let projected = authorized_validator_weights(state, &validators)
+            .map_err(PorWeightActivationError::from)
+            .map_err(DurablePorStateError::Activation)?;
+        if &projected != activated.weights() {
+            return Err(DurablePorStateError::ActivationProjectionMismatch(
+                state.round(),
+            ));
+        }
     }
     Ok(())
 }

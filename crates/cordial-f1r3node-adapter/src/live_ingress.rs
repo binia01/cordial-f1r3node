@@ -100,6 +100,7 @@ pub enum PorWeightActivationError {
     InvalidWavelength,
     UnknownFinalizedAnchor,
     FinalizedWaveBehind { required: u64, available: u64 },
+    ActivatedValidatorSetMismatch { configured: usize, recorded: usize },
     WouldRewriteFinalizedOutput,
 }
 
@@ -131,6 +132,13 @@ impl std::fmt::Display for PorWeightActivationError {
             Self::WouldRewriteFinalizedOutput => write!(
                 f,
                 "PoR weight activation would rewrite the published Cordial finalized prefix"
+            ),
+            Self::ActivatedValidatorSetMismatch {
+                configured,
+                recorded,
+            } => write!(
+                f,
+                "durably activated PoR weights contain {recorded} validators, but Cordial configured {configured}"
             ),
         }
     }
@@ -531,6 +539,32 @@ impl<A> LiveIngress<A> {
         {
             repo.put_finalized_cursor(anchor)?;
         }
+        Ok(())
+    }
+
+    /// Restore a projection that a durable activation record proves was already active.
+    ///
+    /// This intentionally bypasses prospective-finality checks: the projection
+    /// was checked before its activation record was committed. Membership must
+    /// still match exactly because PoR never owns validator selection.
+    pub(crate) fn restore_activated_por_weights(
+        &mut self,
+        weights: &HashMap<NodeId, u64>,
+    ) -> Result<(), PorWeightActivationError> {
+        let same_membership = self.bonds.len() == weights.len()
+            && self
+                .bonds
+                .keys()
+                .all(|validator| weights.contains_key(validator));
+        if !same_membership {
+            return Err(PorWeightActivationError::ActivatedValidatorSetMismatch {
+                configured: self.bonds.len(),
+                recorded: weights.len(),
+            });
+        }
+
+        self.bonds = weights.clone();
+        self.ordering_cache = OrderingCache::default();
         Ok(())
     }
 

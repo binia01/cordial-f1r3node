@@ -26,7 +26,9 @@ pub const POR_REPUTATION_BLOCK_HISTORY_DIRECTORY: &str = "reputation-blocks";
 const REPUTATION_BLOCK_FILE_PREFIX: &str = "reputation-block-";
 const REPUTATION_BLOCK_FILE_SUFFIX: &str = ".bin";
 const REPUTATION_BLOCK_ROUND_DIGITS: usize = 20;
-const REPUTATION_BLOCK_TEMP_FILE_NAME: &str = ".reputation-block.bin.tmp";
+const LEGACY_REPUTATION_BLOCK_TEMP_FILE_NAME: &str = ".reputation-block.bin.tmp";
+const REPUTATION_BLOCK_TEMP_FILE_PREFIX: &str = ".reputation-block-";
+const REPUTATION_BLOCK_TEMP_FILE_SUFFIX: &str = ".bin.tmp";
 
 /// Outcome of an idempotent history append.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,13 +104,13 @@ struct RecoveredHistory {
 /// Filesystem-backed, append-only canonical reputation-block history.
 ///
 /// One store instance serializes appenders. Final round files are created with
-/// a hard link from a fully synced temporary file, so an existing committed
-/// round is never replaced. A failed operation after that link is created
-/// fail-closes the instance until it is reopened and recovered.
+/// a hard link from a fully synced, round-scoped temporary file, so an existing
+/// committed round is never replaced and a stale alias is never truncated for
+/// another round. Startup unlinks stale temporary names before recovery. A
+/// failed append fail-closes the instance until it is reopened and recovered.
 #[derive(Debug)]
 pub struct PorReputationBlockHistory {
     directory: PathBuf,
-    temporary_path: PathBuf,
     recovered: Mutex<RecoveredHistory>,
 }
 
@@ -120,10 +122,10 @@ impl PorReputationBlockHistory {
         fs::create_dir_all(&directory)?;
         File::open(data_dir)?.sync_all()?;
         File::open(&por_directory)?.sync_all()?;
+        cleanup_temporary_files(&directory)?;
 
         let recovered = recover_history(&directory)?;
         Ok(Self {
-            temporary_path: directory.join(REPUTATION_BLOCK_TEMP_FILE_NAME),
             directory,
             recovered: Mutex::new(recovered),
         })
@@ -248,25 +250,12 @@ impl PorReputationBlockHistory {
             return self.existing_outcome(block);
         }
 
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
+        let temporary_path = self
+            .directory
+            .join(reputation_block_temp_file_name(block.header.round));
+        if let Err(error) =
+            commit_block_file(&self.directory, &temporary_path, &committed_path, &encoded)
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-
-        let mut temporary = options.open(&self.temporary_path)?;
-        temporary.write_all(&encoded)?;
-        temporary.sync_all()?;
-        drop(temporary);
-
-        fs::hard_link(&self.temporary_path, &committed_path)?;
-        if let Err(error) = fs::remove_file(&self.temporary_path) {
-            recovered.recovery_required = true;
-            return Err(error.into());
-        }
-        if let Err(error) = File::open(&self.directory).and_then(|directory| directory.sync_all()) {
             recovered.recovery_required = true;
             return Err(error.into());
         }
@@ -302,6 +291,68 @@ impl PorReputationBlockHistory {
     }
 }
 
+fn cleanup_temporary_files(directory: &Path) -> Result<(), PorReputationBlockHistoryError> {
+    let mut removed = false;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = match entry.file_name().to_str() {
+            Some(name) => name.to_owned(),
+            None => continue,
+        };
+        if !is_reputation_block_temp_file_name(&name) {
+            continue;
+        }
+        fs::remove_file(entry.path())?;
+        removed = true;
+    }
+    if removed {
+        File::open(directory)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn commit_block_file(
+    directory: &Path,
+    temporary_path: &Path,
+    committed_path: &Path,
+    encoded: &[u8],
+) -> Result<(), std::io::Error> {
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut temporary = options.open(temporary_path)?;
+    temporary.write_all(encoded)?;
+    temporary.sync_all()?;
+    drop(temporary);
+
+    fs::hard_link(temporary_path, committed_path)?;
+    fs::remove_file(temporary_path)?;
+    File::open(directory)?.sync_all()
+}
+
+fn reputation_block_temp_file_name(round: u64) -> String {
+    format!("{REPUTATION_BLOCK_TEMP_FILE_PREFIX}{round:020}{REPUTATION_BLOCK_TEMP_FILE_SUFFIX}")
+}
+
+fn is_reputation_block_temp_file_name(name: &str) -> bool {
+    if name == LEGACY_REPUTATION_BLOCK_TEMP_FILE_NAME {
+        return true;
+    }
+    let Some(digits) = name
+        .strip_prefix(REPUTATION_BLOCK_TEMP_FILE_PREFIX)
+        .and_then(|name| name.strip_suffix(REPUTATION_BLOCK_TEMP_FILE_SUFFIX))
+    else {
+        return false;
+    };
+    digits.len() == REPUTATION_BLOCK_ROUND_DIGITS
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn recover_history(directory: &Path) -> Result<RecoveredHistory, PorReputationBlockHistoryError> {
     let mut retained = BTreeMap::new();
     for entry in fs::read_dir(directory)? {
@@ -311,7 +362,7 @@ fn recover_history(directory: &Path) -> Result<RecoveredHistory, PorReputationBl
             Some(name) => name,
             None => continue,
         };
-        if name == REPUTATION_BLOCK_TEMP_FILE_NAME {
+        if is_reputation_block_temp_file_name(name) {
             continue;
         }
 

@@ -1,10 +1,10 @@
-//! Durable record of the PoR projection activated in Cordial.
+//! Durable record of the exact PoR projection activated in Cordial.
 //!
 //! The reputation-state snapshot and this record deliberately commit at
 //! different times. State commits first. Cordial then accepts the projected
-//! weights, and only then is the activation record replaced. A crash between
-//! either step leaves a committed reputation round that startup can safely
-//! reapply.
+//! weights, and only then is the activation record replaced. The record retains
+//! the canonical weight map so startup can restore the actual prior consensus
+//! weights before evaluating a newer committed round.
 
 use std::{
     collections::HashMap,
@@ -19,7 +19,9 @@ use cordial_miners_core::{
     crypto::{Blake2b256Hasher, Hasher},
 };
 use cordial_por::{
-    PorError, ReputationCommitment, ReputationState, ReputationWeight, reputation_block_hash,
+    MAX_REPUTATION_STATE_ENTRIES, MAX_REPUTATION_STATE_NODE_ID_LEN,
+    MAX_REPUTATION_STATE_SNAPSHOT_LEN, PorError, ReputationCommitment, ReputationState,
+    ReputationWeight, reputation_block_hash,
 };
 use thiserror::Error;
 
@@ -30,13 +32,13 @@ pub const POR_WEIGHT_ACTIVATION_FILE_NAME: &str = "weight-activation.bin";
 
 const POR_WEIGHT_ACTIVATION_TEMP_FILE_NAME: &str = ".weight-activation.bin.tmp";
 const POR_WEIGHT_ACTIVATION_MAGIC: &[u8] = b"cordial-por-weight-activation";
-const POR_WEIGHT_ACTIVATION_VERSION: u16 = 1;
-const POR_WEIGHT_ACTIVATION_CHECKSUM_DOMAIN: &[u8] = b"cordial-por:weight-activation-record:v1";
+const POR_WEIGHT_ACTIVATION_VERSION: u16 = 2;
+const POR_WEIGHT_ACTIVATION_CHECKSUM_DOMAIN: &[u8] = b"cordial-por:weight-activation-record:v2";
 const POR_WEIGHT_COMMITMENT_DOMAIN: &[u8] = b"cordial-por:authorized-weight-map:v1";
-const MAX_POR_WEIGHT_ACTIVATION_RECORD_LEN: usize = 256;
+const MAX_POR_WEIGHT_ACTIVATION_RECORD_LEN: usize = MAX_REPUTATION_STATE_SNAPSHOT_LEN;
 const CHECKSUM_LEN: usize = 32;
 
-/// Identity of one PoR weight projection accepted by Cordial.
+/// Recoverable identity of one PoR weight projection accepted by Cordial.
 ///
 /// The checkpoint hash binds the committed reputation calculation. The weight
 /// commitment additionally binds the exact Cordial-supplied validator set and
@@ -46,6 +48,7 @@ pub struct PorWeightActivationRecord {
     reputation_round: u64,
     checkpoint_hash: Option<ReputationCommitment>,
     source_finalized_wave: Option<u64>,
+    weights: HashMap<NodeId, ReputationWeight>,
     weights_commitment: ReputationCommitment,
 }
 
@@ -66,6 +69,11 @@ impl PorWeightActivationRecord {
         self.weights_commitment
     }
 
+    /// Exact validator-weight map that was accepted by Cordial.
+    pub fn weights(&self) -> &HashMap<NodeId, ReputationWeight> {
+        &self.weights
+    }
+
     pub(crate) fn from_state_and_weights(
         state: &ReputationState,
         weights: &HashMap<NodeId, ReputationWeight>,
@@ -81,6 +89,7 @@ impl PorWeightActivationRecord {
         Ok(Self {
             reputation_round: state.round(),
             checkpoint_hash,
+            weights: weights.clone(),
             source_finalized_wave,
             weights_commitment: authorized_weight_commitment(weights),
         })
@@ -125,6 +134,12 @@ pub enum PorWeightActivationStoreError {
 
     #[error("malformed PoR weight-activation record")]
     MalformedRecord,
+
+    #[error("PoR weight-activation record is {actual} bytes, exceeding the {maximum}-byte limit")]
+    RecordTooLarge { actual: usize, maximum: usize },
+
+    #[error("PoR weight-activation projection commitment mismatch")]
+    ProjectionCommitmentMismatch,
 
     #[error("unsupported PoR weight-activation record version {0}")]
     UnsupportedVersion(u16),
@@ -187,6 +202,12 @@ impl PorWeightActivationStore {
         record: &PorWeightActivationRecord,
     ) -> Result<(), PorWeightActivationStoreError> {
         let encoded = encode_activation_record(record);
+        if encoded.len() > MAX_POR_WEIGHT_ACTIVATION_RECORD_LEN {
+            return Err(PorWeightActivationStoreError::RecordTooLarge {
+                actual: encoded.len(),
+                maximum: MAX_POR_WEIGHT_ACTIVATION_RECORD_LEN,
+            });
+        }
         let _writer = self
             .writer
             .lock()
@@ -241,6 +262,14 @@ fn encode_activation_record(record: &PorWeightActivationRecord) -> Vec<u8> {
         _ => unreachable!("activation record checkpoint fields are constructed together"),
     }
     payload.extend_from_slice(&record.weights_commitment);
+    let mut entries: Vec<_> = record.weights.iter().collect();
+    entries.sort_by_key(|(node_id, _)| *node_id);
+    put_len(&mut payload, entries.len());
+    for (node_id, weight) in entries {
+        put_len(&mut payload, node_id.0.len());
+        payload.extend_from_slice(&node_id.0);
+        payload.extend_from_slice(&weight.to_be_bytes());
+    }
 
     let mut encoded = Vec::new();
     encoded.extend_from_slice(POR_WEIGHT_ACTIVATION_MAGIC);
@@ -315,8 +344,32 @@ fn decode_activation_record(
         _ => return Err(PorWeightActivationStoreError::MalformedRecord),
     };
     let weights_commitment = take_commitment(payload, &mut cursor)?;
-    if cursor != payload.len() {
+    let entry_count = take_len(payload, &mut cursor, MAX_REPUTATION_STATE_ENTRIES)?;
+    if entry_count == 0 {
         return Err(PorWeightActivationStoreError::MalformedRecord);
+    }
+    let mut weights = HashMap::with_capacity(entry_count);
+    let mut previous_node_id: Option<NodeId> = None;
+    let mut total_weight = 0u128;
+    for _ in 0..entry_count {
+        let node_id_len = take_len(payload, &mut cursor, MAX_REPUTATION_STATE_NODE_ID_LEN)?;
+        let node_id = NodeId(take_bytes(payload, &mut cursor, node_id_len)?.to_vec());
+        if previous_node_id
+            .as_ref()
+            .is_some_and(|previous| previous >= &node_id)
+        {
+            return Err(PorWeightActivationStoreError::MalformedRecord);
+        }
+        let weight = take_u64(payload, &mut cursor)?;
+        total_weight += u128::from(weight);
+        weights.insert(node_id.clone(), weight);
+        previous_node_id = Some(node_id);
+    }
+    if cursor != payload.len() || total_weight == 0 {
+        return Err(PorWeightActivationStoreError::MalformedRecord);
+    }
+    if authorized_weight_commitment(&weights) != weights_commitment {
+        return Err(PorWeightActivationStoreError::ProjectionCommitmentMismatch);
     }
 
     Ok(PorWeightActivationRecord {
@@ -324,12 +377,42 @@ fn decode_activation_record(
         checkpoint_hash,
         source_finalized_wave,
         weights_commitment,
+        weights,
     })
 }
 
 fn put_len(target: &mut Vec<u8>, len: usize) {
     let len = u64::try_from(len).expect("in-memory activation value length fits in u64");
     target.extend_from_slice(&len.to_be_bytes());
+}
+
+fn take_len(
+    payload: &[u8],
+    cursor: &mut usize,
+    maximum: usize,
+) -> Result<usize, PorWeightActivationStoreError> {
+    let value = take_u64(payload, cursor)?;
+    let value =
+        usize::try_from(value).map_err(|_| PorWeightActivationStoreError::MalformedRecord)?;
+    if value > maximum {
+        return Err(PorWeightActivationStoreError::MalformedRecord);
+    }
+    Ok(value)
+}
+
+fn take_bytes<'a>(
+    payload: &'a [u8],
+    cursor: &mut usize,
+    len: usize,
+) -> Result<&'a [u8], PorWeightActivationStoreError> {
+    let end = cursor
+        .checked_add(len)
+        .ok_or(PorWeightActivationStoreError::MalformedRecord)?;
+    let bytes = payload
+        .get(*cursor..end)
+        .ok_or(PorWeightActivationStoreError::MalformedRecord)?;
+    *cursor = end;
+    Ok(bytes)
 }
 
 fn take_byte(payload: &[u8], cursor: &mut usize) -> Result<u8, PorWeightActivationStoreError> {

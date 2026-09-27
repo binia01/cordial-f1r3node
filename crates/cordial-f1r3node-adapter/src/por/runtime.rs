@@ -1,9 +1,10 @@
 //! Production lifecycle owner for PoR state and Cordial weight activation.
 //!
-//! Construction restores the durable reputation state, publishes the current
-//! Cordial finalized view, and reapplies the committed PoR projection before
-//! the ingress can be exposed to live traffic. Completed local or attested
-//! rounds always commit state first and immediately attempt weight activation.
+//! Construction restores the durable reputation state and the previously
+//! activated projection, recomputes the Cordial finalized view under those
+//! weights, and activates any newer committed projection before ingress can be
+//! exposed. Completed local or attested rounds always commit state first and
+//! immediately attempt weight activation.
 
 use std::path::Path;
 
@@ -92,10 +93,17 @@ impl<A> PorRuntime<A> {
         validate_shard_id(&shard_id)?;
 
         let mut state = DurablePorState::open(data_dir, initial_state)?;
+        let restored_activation = state.restore_activated_weights(&mut ingress)?;
         ingress
             .latest_finalized_ordered_output(wavelength)
             .map_err(PorRuntimeError::FinalizedOutput)?;
-        let startup_activation = state.activate_weights(&mut ingress)?;
+        let startup_activation = match (
+            state.has_unactivated_committed_round()?,
+            restored_activation,
+        ) {
+            (false, Some(restored)) => restored,
+            _ => state.activate_weights(&mut ingress)?,
+        };
 
         Ok(Self {
             ingress,
