@@ -13,6 +13,7 @@
 //! its sidecar, so a snapshot id is directly comparable against both.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::trace;
@@ -73,6 +74,18 @@ impl WeightSnapshot {
         }
     }
 
+    /// Build a snapshot with a chosen id, to force a 64-bit fingerprint
+    /// collision that is impractical to find by search.
+    #[cfg(test)]
+    pub(crate) fn from_bonds_with_id(bonds: &HashMap<NodeId, u64>, id: WeightSnapshotId) -> Self {
+        let sorted: BTreeMap<NodeId, u64> =
+            bonds.iter().map(|(node, w)| (node.clone(), *w)).collect();
+        Self {
+            id,
+            bonds: Arc::new(sorted),
+        }
+    }
+
     /// The canonical fingerprint of this table.
     pub fn id(&self) -> &WeightSnapshotId {
         &self.id
@@ -115,6 +128,15 @@ impl WeightSnapshot {
             .iter()
             .map(|(node, weight)| (node.clone(), *weight))
             .collect()
+    }
+}
+
+/// Hashes the fingerprint only. Equal snapshots share an id, so this stays
+/// consistent with `Eq`; colliding tables share a bucket and `Eq` separates
+/// them.
+impl Hash for WeightSnapshot {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }
 
@@ -217,6 +239,32 @@ mod tests {
             snapshot.id().as_str(),
             trace::weight_table_hash(&HashMap::new())
         );
+    }
+
+    /// Equal snapshots hash alike; colliding-but-different ones stay unequal.
+    #[test]
+    fn hash_agrees_with_equality() {
+        use std::collections::hash_map::DefaultHasher;
+
+        fn digest(snapshot: &WeightSnapshot) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            snapshot.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let left = WeightSnapshot::from_bonds(&table());
+        let right = WeightSnapshot::from_bonds(&table());
+        assert_eq!(left, right);
+        assert_eq!(digest(&left), digest(&right));
+
+        // A forced id collision between two genuinely different tables.
+        let mut other = table();
+        other.insert(node(3), 301);
+        let colliding = WeightSnapshot::from_bonds_with_id(&other, left.id().clone());
+
+        assert_eq!(left.id(), colliding.id(), "collision not forced");
+        assert_eq!(digest(&left), digest(&colliding), "same id must hash alike");
+        assert_ne!(left, colliding, "different tables must not compare equal");
     }
 
     #[test]

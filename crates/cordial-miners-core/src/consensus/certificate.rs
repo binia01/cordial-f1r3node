@@ -14,6 +14,8 @@
 //! The field list mirrors the canonical trace's `ThresholdCertificateEvent`
 //! one-for-one, so the object and the event it serializes into cannot drift.
 
+use std::collections::BTreeSet;
+
 use crate::consensus::weight_snapshot::{WeightSnapshot, WeightSnapshotId};
 use crate::trace;
 use crate::types::{BlockIdentity, NodeId};
@@ -42,6 +44,10 @@ impl CertificateKind {
 /// Everything needed to re-check the decision is here: who supported it, with
 /// which blocks, how much stake that was, out of what total, and which weight
 /// table those numbers were measured against.
+///
+/// Fields are public and `new` does not deduplicate, so a certificate from
+/// outside this module is not self-validating: check it with
+/// [`verify_quorum_against`](Self::verify_quorum_against).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThresholdCertificate {
     pub kind: CertificateKind,
@@ -113,14 +119,14 @@ impl ThresholdCertificate {
         self.approvers.len()
     }
 
-    /// Re-check the strict two-thirds threshold from the carried numbers
-    /// alone, with no blocklace and no recomputation.
+    /// The strict two-thirds inequality over the numbers as carried.
     ///
-    /// This is the point of the whole type: `3 * support > 2 * total` is
-    /// arithmetic anyone can verify. It deliberately spells the rule out
-    /// rather than calling the consensus predicate, so it stays an
-    /// independent check rather than an echo of the code that produced it.
-    pub fn verify_quorum(&self) -> bool {
+    /// Says nothing about whether they are truthful — a certificate naming one
+    /// validator while claiming five validators' stake passes. Prefer
+    /// [`verify_quorum_against`](Self::verify_quorum_against) unless this
+    /// process produced the numbers. Spelled out rather than delegated to the
+    /// consensus predicate, so it stays an independent check.
+    pub fn satisfies_threshold(&self) -> bool {
         let (Some(support), Some(threshold)) = (
             self.approver_weight.checked_mul(3),
             self.total_weight.checked_mul(2),
@@ -129,6 +135,38 @@ impl ThresholdCertificate {
         };
 
         self.total_weight > 0 && support > threshold
+    }
+
+    /// Recompute the quorum from the listed approvers against `weights`.
+    ///
+    /// Establishes that the distinct validators in `approvers` hold
+    /// `approver_weight` of `total_weight` under this table and clear the
+    /// threshold. Two things it does not establish:
+    ///
+    /// 1. That `approver_blocks` approve or ratify [`Self::leader`] — that
+    ///    needs the blocklace and is separate evidence verification.
+    /// 2. That `weights` governed this decision. The matching id is a 64-bit
+    ///    fingerprint: it catches accidents, not substitution.
+    pub fn verify_quorum_against(&self, weights: &WeightSnapshot) -> bool {
+        if weights.id() != &self.weight_snapshot {
+            return false;
+        }
+
+        // A Vec with no dedup in `new`, so a repeat would count twice.
+        let distinct: BTreeSet<&NodeId> = self.approvers.iter().collect();
+        if distinct.len() != self.approvers.len() {
+            return false;
+        }
+
+        let Some(support) = self.approvers.iter().try_fold(0u128, |total, creator| {
+            total.checked_add(u128::from(weights.weight_of(creator)))
+        }) else {
+            return false;
+        };
+
+        support == self.approver_weight
+            && weights.total() == Some(self.total_weight)
+            && self.satisfies_threshold()
     }
 }
 
@@ -168,15 +206,58 @@ mod tests {
     }
 
     /// The capability gap 1 exists to create: check a finality decision from
-    /// the certificate alone, with no blocklace in sight.
+    /// the certificate plus the weight table, with no blocklace in sight.
     #[test]
-    fn quorum_verifies_from_the_certificate_alone() {
+    fn quorum_verifies_against_the_weight_table() {
         let cert = certificate(&[1, 2, 3, 4, 5]);
         assert_eq!(cert.approver_weight, 500);
         assert_eq!(cert.total_weight, 700);
         assert_eq!(cert.approver_count(), 5);
         // 3 * 500 = 1500 > 2 * 700 = 1400
-        assert!(cert.verify_quorum());
+        assert!(cert.satisfies_threshold());
+        assert!(cert.verify_quorum_against(&weights(100, 7)));
+    }
+
+    /// Five validators' stake claimed while only one is listed.
+    #[test]
+    fn overstated_support_passes_the_arithmetic_but_fails_verification() {
+        let mut forged = certificate(&[1, 2, 3, 4, 5]);
+        forged.approvers = vec![node(1)]; // approver_weight stays at 500
+
+        assert!(
+            forged.satisfies_threshold(),
+            "the inequality still holds over the carried numbers"
+        );
+        assert!(
+            !forged.verify_quorum_against(&weights(100, 7)),
+            "recomputing from the listed approvers gives 100, not 500"
+        );
+    }
+
+    #[test]
+    fn a_repeated_approver_is_not_counted_twice() {
+        let mut forged = certificate(&[1]);
+        forged.approvers = vec![node(1); 5];
+        forged.approver_weight = 500;
+
+        assert!(forged.satisfies_threshold());
+        assert!(!forged.verify_quorum_against(&weights(100, 7)));
+    }
+
+    #[test]
+    fn an_understated_total_fails_verification() {
+        let mut forged = certificate(&[1, 2, 3, 4]);
+        forged.total_weight = 500; // the real table totals 700
+
+        assert!(forged.satisfies_threshold()); // 1200 > 1000
+        assert!(!forged.verify_quorum_against(&weights(100, 7)));
+    }
+
+    #[test]
+    fn verification_rejects_a_table_the_certificate_does_not_name() {
+        let cert = certificate(&[1, 2, 3, 4, 5]);
+        // Same validators, different stakes, so a different fingerprint.
+        assert!(!cert.verify_quorum_against(&weights(50, 7)));
     }
 
     #[test]
@@ -184,7 +265,7 @@ mod tests {
         let cert = certificate(&[1, 2, 3, 4]);
         assert_eq!(cert.approver_weight, 400);
         // 3 * 400 = 1200, not > 2 * 700 = 1400 — a simple majority is not enough
-        assert!(!cert.verify_quorum());
+        assert!(!cert.satisfies_threshold());
     }
 
     #[test]
@@ -199,7 +280,7 @@ mod tests {
             &weights(100, 9),
         );
         assert_eq!((cert.approver_weight, cert.total_weight), (600, 900));
-        assert!(!cert.verify_quorum());
+        assert!(!cert.satisfies_threshold());
     }
 
     #[test]
@@ -250,6 +331,6 @@ mod tests {
             &WeightSnapshot::from_bonds(&bonds),
         );
         assert_eq!(cert.total_weight, 0);
-        assert!(!cert.verify_quorum());
+        assert!(!cert.satisfies_threshold());
     }
 }

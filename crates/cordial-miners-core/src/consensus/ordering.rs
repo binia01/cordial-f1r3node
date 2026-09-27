@@ -11,7 +11,7 @@ use crate::consensus::finality::{
 };
 use crate::consensus::round::depth;
 use crate::consensus::wave::wave_of_round;
-use crate::consensus::weight_snapshot::WeightSnapshotId;
+use crate::consensus::weight_snapshot::WeightSnapshot;
 #[cfg(feature = "trace")]
 use crate::trace::{self, EmitOutputEvent, TauOrderEvent, TraceEvent};
 use crate::types::{BlockIdentity, NodeId};
@@ -50,7 +50,10 @@ struct PreviousLeaderCacheKey {
 struct WeightedPreviousLeaderCacheKey {
     current_leader: BlockIdentity,
     wavelength: u64,
-    weight_snapshot: WeightSnapshotId,
+    /// The snapshot, not just its id: the id is a 64-bit hash, so `Eq` must
+    /// compare the real table or a collision returns another table's
+    /// ordering. Cloning is a pointer bump.
+    weight_snapshot: WeightSnapshot,
     leader_selection_id: u64,
 }
 
@@ -67,7 +70,8 @@ struct TauOutputCacheKey {
 struct WeightedTauOutputCacheKey {
     latest_leader: BlockIdentity,
     wavelength: u64,
-    weight_snapshot: WeightSnapshotId,
+    /// See [`WeightedPreviousLeaderCacheKey::weight_snapshot`].
+    weight_snapshot: WeightSnapshot,
     leader_selection_id: u64,
 }
 
@@ -93,6 +97,9 @@ where
 {
     wavelength: u64,
     bonds: &'a HashMap<NodeId, u64>,
+    /// Captured once per run; rebuilding it per cache lookup would copy the
+    /// whole bond table each time.
+    weights: &'a WeightSnapshot,
     leader_selection_id: u64,
     leader_selection: F,
 }
@@ -295,7 +302,7 @@ where
     let key = WeightedPreviousLeaderCacheKey {
         current_leader: current_leader.clone(),
         wavelength: config.wavelength,
-        weight_snapshot: WeightSnapshotId::of_bonds(config.bonds),
+        weight_snapshot: config.weights.clone(),
         leader_selection_id: config.leader_selection_id,
     };
 
@@ -550,9 +557,11 @@ where
         return Ok(Vec::new());
     };
 
+    let weights = WeightSnapshot::from_bonds(bonds);
     let config = WeightedTauConfig {
         wavelength,
         bonds,
+        weights: &weights,
         leader_selection_id: 0,
         leader_selection,
     };
@@ -617,10 +626,11 @@ where
         return Ok(Vec::new());
     };
 
+    let weights = WeightSnapshot::from_bonds(bonds);
     let key = WeightedTauOutputCacheKey {
         latest_leader: latest_leader.clone(),
         wavelength,
-        weight_snapshot: WeightSnapshotId::of_bonds(bonds),
+        weight_snapshot: weights.clone(),
         leader_selection_id,
     };
     if let Some(ordered) = cache.weighted_tau_output_by_latest_leader.get(&key) {
@@ -630,6 +640,7 @@ where
     let config = WeightedTauConfig {
         wavelength,
         bonds,
+        weights: &weights,
         leader_selection_id,
         leader_selection,
     };
@@ -839,4 +850,115 @@ fn checkpoint_predecessor<'a>(
     }
 
     Some(checkpoint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: u8) -> NodeId {
+        NodeId(vec![id])
+    }
+
+    fn block(seed: u8) -> BlockIdentity {
+        let mut content_hash = [0u8; 32];
+        content_hash[0] = seed;
+        BlockIdentity {
+            content_hash,
+            creator: node(seed),
+            signature: vec![],
+        }
+    }
+
+    fn table(entries: &[(u8, u64)]) -> HashMap<NodeId, u64> {
+        entries
+            .iter()
+            .map(|(id, weight)| (node(*id), *weight))
+            .collect()
+    }
+
+    /// Two different weight tables forced to share a fingerprint, since a
+    /// real collision is impractical to find by search.
+    fn colliding_pair() -> (WeightSnapshot, WeightSnapshot) {
+        // Same total, different distribution: these can finalize different
+        // leaders and so order differently.
+        let even = WeightSnapshot::from_bonds(&table(&[(1, 100), (2, 100), (3, 100)]));
+        let skewed = WeightSnapshot::from_bonds_with_id(
+            &table(&[(1, 150), (2, 75), (3, 75)]),
+            even.id().clone(),
+        );
+
+        assert_eq!(even.id(), skewed.id(), "collision was not forced");
+        assert_ne!(even, skewed, "the two tables must still differ");
+        (even, skewed)
+    }
+
+    #[test]
+    fn colliding_snapshots_keep_separate_weighted_tau_entries() {
+        let (even, skewed) = colliding_pair();
+
+        let key_even = WeightedTauOutputCacheKey {
+            latest_leader: block(1),
+            wavelength: 3,
+            weight_snapshot: even,
+            leader_selection_id: 0,
+        };
+        let key_skewed = WeightedTauOutputCacheKey {
+            weight_snapshot: skewed,
+            ..key_even.clone()
+        };
+
+        assert_ne!(
+            key_even, key_skewed,
+            "equal ids must not make the keys equal"
+        );
+
+        let mut cache: HashMap<
+            WeightedTauOutputCacheKey,
+            Result<Vec<BlockIdentity>, OrderingError>,
+        > = HashMap::new();
+
+        cache.insert(key_even.clone(), Ok(vec![block(1)]));
+        assert!(
+            !cache.contains_key(&key_skewed),
+            "the skewed table must not read the even table's ordering"
+        );
+
+        cache.insert(key_skewed.clone(), Ok(vec![block(2)]));
+        assert_eq!(cache.get(&key_even), Some(&Ok(vec![block(1)])));
+        assert_eq!(cache.get(&key_skewed), Some(&Ok(vec![block(2)])));
+        assert_eq!(cache.len(), 2, "both entries must coexist");
+    }
+
+    #[test]
+    fn colliding_snapshots_keep_separate_previous_leader_entries() {
+        let (even, skewed) = colliding_pair();
+
+        let key_even = WeightedPreviousLeaderCacheKey {
+            current_leader: block(1),
+            wavelength: 3,
+            weight_snapshot: even,
+            leader_selection_id: 0,
+        };
+        let key_skewed = WeightedPreviousLeaderCacheKey {
+            weight_snapshot: skewed,
+            ..key_even.clone()
+        };
+
+        assert_ne!(key_even, key_skewed);
+
+        let mut cache: HashMap<WeightedPreviousLeaderCacheKey, Option<BlockIdentity>> =
+            HashMap::new();
+
+        cache.insert(key_even.clone(), Some(block(1)));
+        assert!(
+            !cache.contains_key(&key_skewed),
+            "the skewed table must not read the even table's previous leader"
+        );
+
+        cache.insert(key_skewed.clone(), Some(block(2)));
+        assert_eq!(cache.get(&key_even), Some(&Some(block(1))));
+        assert_eq!(cache.get(&key_skewed), Some(&Some(block(2))));
+        assert_eq!(cache.len(), 2);
+    }
 }
