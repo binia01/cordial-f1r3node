@@ -1,0 +1,19 @@
+name = "LeanVerification"
+version = "0.1.0"
+defaultTargets = ["LeanVerification"]
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "v4.33.0"
+
+[[lean_lib]]
+name = "LeanVerification"
+
+[[lean_exe]]
+name = "replay_runner"
+root = "replay_runner"
+
+[[lean_exe]]
+name = "conformance_tests"
+root = "conformance_tests"

@@ -3,12 +3,16 @@ use std::collections::HashSet;
 
 use crate::block::Block;
 use crate::blocklace::Blocklace;
+use crate::consensus::certificate::ThresholdCertificate;
 use crate::consensus::cordiality::{
-    WeightedRatificationMemo, super_ratifies, weighted_super_ratifies,
-    weighted_super_ratifies_with_memo,
+    WeightedRatificationMemo, super_ratifies, weighted_super_ratification_certificate_with_memo,
+    weighted_super_ratifies_certificate_with_snapshot,
 };
 use crate::consensus::round::{blocks_at_depth, compute_all_depths, depth};
 use crate::consensus::wave::{last_round_of_wave, leader_blocks_of_wave, wave_of_round};
+use crate::consensus::weight_snapshot::WeightSnapshot;
+#[cfg(feature = "trace")]
+use crate::trace::{self, ComputeFinalityEvent, TraceEvent};
 use crate::types::{BlockIdentity, NodeId};
 
 type RoundIndex = HashMap<u64, Vec<Block>>;
@@ -102,7 +106,25 @@ where
         .flat_map(|round| blocks_at_depth(blocklace, round))
         .collect();
 
-    super_ratifies(blocklace, &witness_blocks, &candidate_block, n, f)
+    let result = super_ratifies(blocklace, &witness_blocks, &candidate_block, n, f);
+
+    #[cfg(feature = "trace")]
+    trace::emit(TraceEvent::ComputeFinality(ComputeFinalityEvent {
+        node_id: trace::hex(&candidate.creator.0),
+        wave,
+        wavelength,
+        block_hash: trace::hex(&candidate.content_hash),
+        decision: if result {
+            "finalized".into()
+        } else {
+            "not_finalized".into()
+        },
+        certificate_id: None,
+        output_prefix_hash: None,
+        weight_table_hash: None,
+    }));
+
+    result
 }
 
 /// Return the final leader block for a wave, if one exists.
@@ -206,20 +228,29 @@ pub fn is_weighted_final_leader<F>(
 where
     F: Fn(u64) -> Option<NodeId>,
 {
-    let candidate_block = match blocklace.get(candidate) {
-        Some(block) => block,
-        None => return false,
-    };
+    weighted_final_leader_certificate(blocklace, candidate, wavelength, bonds, leader_selection)
+        .is_some()
+}
 
-    let candidate_round = match depth(blocklace, candidate) {
-        Some(d) => d,
-        None => return false,
-    };
-
-    let wave = match wave_of_round(candidate_round, wavelength) {
-        Some(w) => w,
-        None => return false,
-    };
+/// Weighted finality with the certificate that justifies it.
+///
+/// Returns `None` when the candidate is not a finalized leader — whether
+/// because it fails the structural checks below or because super-ratification
+/// was not reached. On success the returned certificate carries the evidence,
+/// so the decision can be re-checked without re-deriving it from the DAG.
+pub fn weighted_final_leader_certificate<F>(
+    blocklace: &Blocklace,
+    candidate: &BlockIdentity,
+    wavelength: u64,
+    bonds: &HashMap<NodeId, u64>,
+    leader_selection: F,
+) -> Option<ThresholdCertificate>
+where
+    F: Fn(u64) -> Option<NodeId>,
+{
+    let candidate_block = blocklace.get(candidate)?;
+    let candidate_round = depth(blocklace, candidate)?;
+    let wave = wave_of_round(candidate_round, wavelength)?;
 
     // Candidate must be one of the actual leader blocks for its wave
     let leader_blocks = leader_blocks_of_wave(blocklace, wave, wavelength, &leader_selection);
@@ -227,13 +258,10 @@ where
         .iter()
         .any(|leader_block| leader_block.identity == *candidate)
     {
-        return false;
+        return None;
     }
 
-    let last_round = match last_round_of_wave(wave, wavelength) {
-        Some(r) => r,
-        None => return false,
-    };
+    let last_round = last_round_of_wave(wave, wavelength)?;
 
     // PERF/PAPER NOTE:
     // Same optimization as is_final_leader — blocks before candidate_round
@@ -244,7 +272,35 @@ where
         .flat_map(|round| blocks_at_depth(blocklace, round))
         .collect();
 
-    weighted_super_ratifies(blocklace, &witness_blocks, &candidate_block, bonds)
+    let weights = WeightSnapshot::from_bonds(bonds);
+    let certificate = weighted_super_ratifies_certificate_with_snapshot(
+        blocklace,
+        &witness_blocks,
+        &candidate_block,
+        &weights,
+    );
+
+    #[cfg(feature = "trace")]
+    trace::emit(TraceEvent::ComputeFinality(ComputeFinalityEvent {
+        node_id: trace::hex(&candidate.creator.0),
+        wave,
+        wavelength,
+        block_hash: trace::hex(&candidate.content_hash),
+        decision: if certificate.is_some() {
+            "finalized".into()
+        } else {
+            "not_finalized".into()
+        },
+        // The id of the certificate this decision actually rests on, rather
+        // than a second derivation of the same formula.
+        certificate_id: certificate
+            .as_ref()
+            .map(|certificate| certificate.certificate_id.clone()),
+        output_prefix_hash: None,
+        weight_table_hash: Some(weights.id().to_string()),
+    }));
+
+    certificate
 }
 
 /// Return the weighted final leader block for a wave, if one exists.
@@ -290,6 +346,9 @@ where
     let max_round = depths.values().copied().max()?;
     let rounds = build_round_index(blocklace, &depths);
     let latest_wave = wave_of_round(max_round, wavelength)?;
+    // One capture governs the whole scan: every wave below is judged against
+    // the same table, so a weight change mid-scan cannot split the decision.
+    let weights = WeightSnapshot::from_bonds(bonds);
 
     // A single memo is shared across all wave iterations.  The observe_cache,
     // approves_cache, and creator_blocks_cache entries are keyed on block
@@ -320,8 +379,31 @@ where
         };
 
         let witness_blocks = witness_blocks_from_index(&rounds, candidate_round, last_round);
-        if weighted_super_ratifies_with_memo(blocklace, &witness_blocks, &leader, bonds, &mut memo)
-        {
+        let certificate = weighted_super_ratification_certificate_with_memo(
+            blocklace,
+            &witness_blocks,
+            &leader,
+            &weights,
+            &mut memo,
+        );
+        #[cfg(feature = "trace")]
+        trace::emit(TraceEvent::ComputeFinality(ComputeFinalityEvent {
+            node_id: trace::hex(&leader.identity.creator.0),
+            wave,
+            wavelength,
+            block_hash: trace::hex(&leader.identity.content_hash),
+            decision: if certificate.is_some() {
+                "finalized".into()
+            } else {
+                "not_finalized".into()
+            },
+            certificate_id: certificate
+                .as_ref()
+                .map(|certificate| certificate.certificate_id.clone()),
+            output_prefix_hash: None,
+            weight_table_hash: Some(weights.id().to_string()),
+        }));
+        if certificate.is_some() {
             return Some(leader.identity);
         }
     }

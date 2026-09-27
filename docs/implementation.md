@@ -8,6 +8,17 @@ The blocklace is a DAG-based data structure used in Byzantine fault-tolerant dis
 
 ---
 
+## Weighted quorum verification
+
+In `cordial-miners-core`, `ThresholdCertificate::satisfies_threshold()` replaces
+`verify_quorum()` and checks only the carried numbers. Use
+`verify_quorum_against(&weights)` to reject duplicate approvers and recompute
+support and total stake against a `WeightSnapshot`. The caller must independently
+establish that the snapshot applies to the decision and verify the supporting
+blocks' approval or ratification of the target; this method does neither.
+Both weighted ordering caches compare the full snapshot table for equality, so
+colliding FNV snapshot fingerprints cannot reuse another table's cached result.
+
 ## Project Structure
 
 The repo is a Cargo workspace with three crates, layered from bottom to top:
