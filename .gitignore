@@ -4,3 +4,6 @@ docker/.env
 docker/certs/
 docker/keys/
 docs/cordial-miners/generated/
+/reviews
+/presentations
+/lean/issues

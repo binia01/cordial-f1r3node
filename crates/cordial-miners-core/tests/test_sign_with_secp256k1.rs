@@ -1,6 +1,6 @@
 use cordial_miners_core::BlockContent;
 use cordial_miners_core::crypto::{hash_content, sign, verify};
-use k256::ecdsa::SigningKey;
+use k256::ecdsa::{Signature, SigningKey};
 use rand::rngs::OsRng;
 use std::collections::HashSet;
 
@@ -28,12 +28,15 @@ fn secp_sign_and_verify_roundtrip() {
 }
 
 #[test]
-fn secp_signature_length_is_der_variable() {
-    let (private_key, _) = generate_secp_keypair();
+fn secp_signature_uses_canonical_der_encoding() {
+    let (private_key, public_key) = generate_secp_keypair();
     let hash = [0xab; 32];
     let signature = sign(&hash, &private_key);
-    // Secp256k1 DER signatures are usually 70-72 bytes, not 64.
-    assert!(signature.len() >= 70 && signature.len() <= 72);
+    // DER integers omit leading zero bytes, so valid signatures can be shorter
+    // than the usual 70-72 bytes. Check the encoding itself, not that range.
+    let parsed = Signature::from_der(&signature).expect("signature must be DER encoded");
+    assert_eq!(parsed.to_der().as_bytes(), signature.as_slice());
+    assert!(verify(&hash, &public_key, &signature));
 }
 
 #[test]

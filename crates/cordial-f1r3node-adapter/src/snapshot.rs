@@ -618,7 +618,7 @@ fn latest_single_validator_finalized_block_id_from_depths(
     validator: &NodeId,
     wavelength: u64,
 ) -> Option<BlockIdentity> {
-    if wavelength == 0 {
+    if has_same_round_fork(depths, validator) {
         return None;
     }
 
