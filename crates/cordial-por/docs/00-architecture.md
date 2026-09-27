@@ -209,7 +209,8 @@ Future:
 16. `DurablePorState::apply_attested_checkpoint` re-audits the checkpoint against current state and context before using the snapshot-first, history-second commit sequence.
 17. `authorized_validator_weights` projects the committed PoR state onto Cordial's existing validator identities, and `LiveIngress::apply_por_weights` activates the values only after source-wave and finalized-prefix safety checks.
 18. `DurablePorState::activate_weights` persists the exact activated round and validator-weight projection after Cordial accepts it, making failed activation and restart recovery idempotently retryable.
-19. Concrete peer-network binding and durable attestation retention remain future stages.
+19. `PorRuntime` restores weights before exposing ingress and makes every successful round commit immediately attempt activation.
+20. Concrete peer-network binding and durable attestation retention remain future stages.
 
 ## Adapter Finalization Boundary
 
@@ -369,6 +370,37 @@ current, startup reapplies it to fresh ingress memory; only a second identical
 call in the same process returns `AlreadyActive`. This makes the
 state-commit/weight-activation crash window recoverable without treating PoR as
 consensus.
+
+## Adapter Runtime Ownership
+
+`PorRuntime<A>` is the production ownership boundary for `LiveIngress<A>` and
+`DurablePorState`. `PorRuntime::open` validates immutable shard settings,
+restores the state snapshot and activation marker, recomputes the current
+Cordial finalized output, and reapplies the committed projection before it
+returns access to ingress. A non-genesis state whose source finality is not
+present fails startup instead of accepting traffic with bootstrap weights.
+
+The host finality loop passes each closed `CompletedPorRatingRound` to
+`commit_completed_round` (or an attested result to
+`commit_attested_checkpoint`). Both methods durably commit first and
+immediately attempt activation. Their `CommittedPorRound` result separates the
+successful state commit from the activation result: a transient activation
+failure is explicitly pending and can be retried with
+`retry_weight_activation`; it is never reported as though the reputation
+transition rolled back.
+
+The resulting runtime sequence is:
+
+```text
+construct pre-hydrated LiveIngress
+  -> PorRuntime::open
+  -> publish/verify current Cordial finality
+  -> restore committed PoR weights
+  -> expose ingress to live traffic
+  -> observe and close a finalized rating round
+  -> commit PoR state
+  -> activate and record the new weights
+```
 
 ## Ownership Boundaries
 

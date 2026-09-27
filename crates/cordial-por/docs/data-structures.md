@@ -525,6 +525,27 @@ a repeated identical call in that process is `AlreadyActive`. If Cordial
 changes membership, a new canonical projection and commitment can be recorded
 for the same PoR round. PoR still changes only values.
 
+### Production Runtime Owner
+
+`por::runtime::PorRuntime<A>` owns `LiveIngress<A>`, `DurablePorState`,
+the immutable `PorConfig`, shard identifier, and Cordial wavelength together.
+This removes the unsafe host-level gap where ingress could begin processing
+traffic before restored reputation weights were installed, or where a completed
+round could be committed without an activation attempt.
+
+Construction publishes the current ordered output before activation so the
+existing source-wave and finalized-prefix checks remain authoritative. Empty
+validator membership, missing reputation entries, unavailable source finality,
+or an incompatible finalized prefix fail construction. A wavelength that does
+not match Cordial's fixed runtime wavelength, and invalid shard settings, are
+rejected before a fresh state directory is initialized.
+
+`commit_completed_round` and `commit_attested_checkpoint` return
+`CommittedPorRound`. Its outer success means the reputation transition
+committed before activation was attempted; its nested result states whether
+that round reached Cordial immediately. `activation_pending()` and
+`retry_weight_activation()` make recovery explicit without replaying or
+recommitting the rating transition.
 
 ## Durable Reputation State Snapshot
 
