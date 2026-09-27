@@ -1,19 +1,38 @@
 //! Proof-of-Reputation integration at the f1r3node adapter boundary.
 //!
-//! This facade groups finalized evidence, rating signing and collection,
-//! lifecycle policy, and transport implementations without moving those
-//! adapter-owned responsibilities into the protocol-math crate.
+//! This facade groups finalized evidence, rating collection, optional checkpoint
+//! attestation, persistence, and transport without moving those adapter-owned
+//! responsibilities into the protocol-math crate.
 
+pub mod activation;
+pub mod checkpoint;
 pub mod collector;
 pub mod finality;
+pub mod history;
 pub mod interactions;
 pub mod lifecycle;
+pub mod persistence;
 pub mod ratings;
+pub mod runtime;
 pub mod transition;
 pub mod transport;
 
+pub use activation::{
+    POR_WEIGHT_ACTIVATION_FILE_NAME, PorWeightActivationOutcome, PorWeightActivationRecord,
+    PorWeightActivationStore, PorWeightActivationStoreError,
+};
+pub use checkpoint::{
+    AttestedPorCheckpoint, DEFAULT_POR_CHECKPOINT_THRESHOLD_DENOMINATOR,
+    DEFAULT_POR_CHECKPOINT_THRESHOLD_NUMERATOR, PorCheckpointCollector,
+    PorCheckpointConflictEvidence, PorCheckpointError, PorCheckpointObservation,
+    PorCheckpointPolicy, PorCheckpointProgress,
+};
 pub use collector::{BlockProductionRatingCollector, PorRatingCollectorError};
 pub use finality::{FinalizedRatingRound, PorFinalityError, PorFinalityTracker};
+pub use history::{
+    POR_REPUTATION_BLOCK_HISTORY_DIRECTORY, PorReputationBlockAppendOutcome,
+    PorReputationBlockHistory, PorReputationBlockHistoryError,
+};
 pub use interactions::{
     PorInteractionError, admit_finalized_block_production_interactions,
     extract_block_production_evidence, validate_finalized_rating_round,
@@ -29,17 +48,33 @@ pub use lifecycle::{
     CompletedPorRatingRound, PorRatingRoundCloseReason, PorRatingRoundCoordinator,
     PorRatingRoundError, PorRatingRoundStatus,
 };
+pub use persistence::{
+    DurablePorState, DurablePorStateError, POR_STATE_DIRECTORY, POR_STATE_FILE_NAME, PorStateStore,
+    PorStateStoreError,
+};
 pub use ratings::{
     PorRatingError, build_finalized_block_production_rating_batch, build_verified_rating_batch,
     rating_signing_hash, sign_admitted_interaction, validate_signed_rating,
     verify_rating_signature,
 };
-pub use transition::{
-    AppliedPorReputationRound, PorReputationBlockCommitments, apply_completed_reputation_round,
-};
+pub use runtime::{CommittedPorRound, PorRuntime, PorRuntimeError};
+pub use transition::{AppliedPorReputationRound, apply_completed_reputation_round};
 pub use transport::channel::{
     ChannelRatingEnvelopeBroadcaster, ChannelRatingEnvelopeReceiver, PorRatingChannelError,
     RatingEnvelopeReceiveOutcome, bounded_rating_envelope_channel,
+};
+pub use transport::reputation_block::{
+    MAX_REPUTATION_BLOCK_PUBLICATION_LEN, PorReputationBlockPublicationError,
+    PorReputationBlockTransportError, REPUTATION_BLOCK_PUBLICATION_DOMAIN,
+    REPUTATION_BLOCK_PUBLICATION_VERSION, ReputationBlockEnvelopeBroadcaster,
+    ReputationBlockPublicationV1, broadcast_reputation_block,
+    broadcast_reputation_block_publication, receive_reputation_block_envelope,
+    reputation_block_publication_signing_hash,
+};
+pub use transport::reputation_block_channel::{
+    ChannelReputationBlockEnvelopeBroadcaster, ChannelReputationBlockEnvelopeReceiver,
+    PorReputationBlockChannelError, ReputationBlockReceiveOutcome,
+    bounded_reputation_block_envelope_channel,
 };
 pub use transport::wire::{
     BLOCK_PRODUCTION_RATING_ENVELOPE_DOMAIN, BLOCK_PRODUCTION_RATING_ENVELOPE_VERSION,

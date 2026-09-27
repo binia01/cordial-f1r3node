@@ -4,6 +4,8 @@ use cordial_miners_core::NodeId;
 
 use crate::{
     audit::verify_reputation_transition,
+    block::{ReputationBlockContext, validate_reputation_block},
+    commitments::{validate_reputation_entries, validate_reputation_vector},
     config::PorConfig,
     error::PorError,
     types::{
@@ -35,8 +37,8 @@ pub struct ReputationState {
 
     /// Permanent ejection registry.
     ///
-    /// Keys present here are excluded from the consensus weighted path
-    /// regardless of what `reputation_list` contains.
+    /// Keys present here export zero reputation through the Cordial-authorized
+    /// projection regardless of what `reputation_list` contains.
     excluded_keys: BTreeSet<NodeId>,
 
     pending_ratings: Vec<RatingRecord>,
@@ -121,7 +123,7 @@ impl ReputationState {
         }
     }
 
-    /// Permanently eject a validator key from the active set.
+    /// Permanently zero and exclude a validator key from active reputation.
     ///
     /// Records `node_id` in the `excluded_keys` registry so that ejection
     /// survives future calls to `apply_reputation_vector` and
@@ -231,6 +233,8 @@ impl ReputationState {
     /// validation, replay, or application error, the state remains unchanged.
     pub fn apply_reputation_block(
         &mut self,
+        shard_id: &[u8],
+        source_finalized_wave: u64,
         ratings: &[RatingRecord],
         block: ReputationBlock,
         config: &PorConfig,
@@ -239,7 +243,17 @@ impl ReputationState {
             round: self.current_round,
             values: self.reputation_list.entries.clone(),
         };
-        verify_reputation_transition(&previous, ratings, &block, config)?;
+        verify_reputation_transition(
+            &previous,
+            ratings,
+            &block,
+            ReputationBlockContext {
+                shard_id,
+                source_finalized_wave,
+                previous_block: self.latest_block.as_ref(),
+            },
+            config,
+        )?;
 
         let vector = ReputationVector {
             round: block.reputation_list.round,
@@ -252,22 +266,63 @@ impl ReputationState {
         *self = staged;
         Ok(())
     }
+
+    pub(crate) fn validate_snapshot_invariants(&self) -> Result<(), PorError> {
+        if !self.pending_ratings.is_empty() {
+            return Err(PorError::ReputationStateSnapshotHasPendingRatings);
+        }
+        if self.reputation_list.round != self.current_round {
+            return Err(PorError::ReputationStateSnapshotRoundMismatch);
+        }
+        validate_reputation_entries(&self.reputation_list.entries)?;
+
+        for entry in &self.reputation_list.entries {
+            let is_registered = self.excluded_keys.contains(&entry.node_id);
+            if entry.is_excluded != is_registered || (is_registered && entry.reputation != 0) {
+                return Err(PorError::ReputationStateSnapshotExclusionMismatch);
+            }
+        }
+        for excluded in &self.excluded_keys {
+            if self
+                .reputation_list
+                .entries
+                .binary_search_by(|entry| entry.node_id.cmp(excluded))
+                .is_err()
+            {
+                return Err(PorError::ReputationStateSnapshotExclusionMismatch);
+            }
+        }
+
+        if let Some(block) = &self.latest_block {
+            validate_reputation_block(block)?;
+            if block.header.round != self.current_round {
+                return Err(PorError::ReputationStateSnapshotBlockRoundMismatch);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn from_snapshot_parts(
+        current_round: ReputationRound,
+        reputation_list: ReputationList,
+        excluded_keys: BTreeSet<NodeId>,
+        latest_block: Option<ReputationBlock>,
+    ) -> Result<Self, PorError> {
+        let state = Self {
+            current_round,
+            reputation_list,
+            excluded_keys,
+            pending_ratings: Vec::new(),
+            latest_block,
+        };
+        state.validate_snapshot_invariants()?;
+        Ok(state)
+    }
 }
 
 impl Default for ReputationState {
     fn default() -> Self {
         Self::new(0)
     }
-}
-
-fn validate_reputation_vector(vector: &ReputationVector) -> Result<(), PorError> {
-    for entries in vector.values.windows(2) {
-        match entries[0].node_id.cmp(&entries[1].node_id) {
-            std::cmp::Ordering::Less => {}
-            std::cmp::Ordering::Equal => return Err(PorError::DuplicateReputationEntry),
-            std::cmp::Ordering::Greater => return Err(PorError::UnsortedReputationVector),
-        }
-    }
-
-    Ok(())
 }

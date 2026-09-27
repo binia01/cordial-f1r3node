@@ -3,8 +3,7 @@
 //! This module defines the paper-aligned PoR vocabulary:
 //! ratings, reputation snapshots, penalties, and reputation blocks.
 //!
-//! No reputation calculation logic exists here.
-//! Committee selection and leader selection are implemented in future modules.
+//! No reputation calculation or Cordial consensus logic exists here.
 
 use cordial_miners_core::NodeId;
 
@@ -18,6 +17,9 @@ pub type ReputationRound = u64;
 ///
 /// 500_000_000 represents 0.5 reputation.
 pub type ReputationWeight = u64;
+
+/// Fixed-size Blake2b-256 commitment used by reputation blocks.
+pub type ReputationCommitment = [u8; 32];
 
 /// Fixed-point rating value.
 pub type RatingScore = u64;
@@ -161,15 +163,29 @@ pub struct InactivityPenalty {
 
 /// Metadata describing a reputation block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-
 pub struct ReputationBlockHeader {
+    /// Canonical reputation-block format version.
+    pub version: u16,
+
+    /// Shard whose finalized activity produced this reputation update.
+    pub shard_id: Vec<u8>,
+
+    /// Finalized Cordial wave containing the rated interactions.
+    pub source_finalized_wave: u64,
+
     pub round: ReputationRound,
 
-    pub previous_reputation_hash: Option<Vec<u8>>,
+    /// Hash of the preceding reputation block, or `None` for the first block.
+    pub previous_reputation_hash: Option<ReputationCommitment>,
 
-    pub ratings_hash: Vec<u8>,
+    /// Commitment to every protocol parameter used by transition replay.
+    pub config_hash: ReputationCommitment,
 
-    pub reputation_root: Vec<u8>,
+    /// Commitment to the canonical signed rating batch.
+    pub ratings_hash: ReputationCommitment,
+
+    /// Commitment to the canonical reputation list.
+    pub reputation_root: ReputationCommitment,
 }
 
 /// Reputation block.
@@ -181,16 +197,6 @@ pub struct ReputationBlockHeader {
 pub struct ReputationBlock {
     pub header: ReputationBlockHeader,
     pub reputation_list: ReputationList,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConsensusGroupMember {
-    pub node_id: NodeId,
-    pub reputation: ReputationWeight,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConsensusGroup {
-    pub round: ReputationRound,
-    pub members: Vec<ConsensusGroupMember>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RatingMatrix {
@@ -218,10 +224,4 @@ pub struct NormalizedRatingEntry {
 pub struct NormalizedRatingMatrix {
     pub round: ReputationRound,
     pub ratings: Vec<NormalizedRatingEntry>,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaderSelection {
-    pub round: ReputationRound,
-
-    pub leader: NodeId,
 }

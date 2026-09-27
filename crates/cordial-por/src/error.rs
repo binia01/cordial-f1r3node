@@ -1,5 +1,7 @@
 use std::fmt;
 
+use cordial_miners_core::NodeId;
+
 /// Errors for Proof-of-Reputation validation and calculation stages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PorError {
@@ -37,13 +39,43 @@ pub enum PorError {
     InvalidClampScale,
     ClampOverflow,
     // Reputation-block-specific errors
+    UnsupportedReputationBlockWireVersion(u16),
+    ReputationBlockWireTooLarge,
+    MalformedReputationBlockWire,
+    ReputationBlockWireChecksumMismatch,
+    UnsupportedReputationBlockVersion(u16),
+    MissingReputationBlockShardId,
+    ReputationBlockShardIdTooLong,
+    InvalidReputationBlockSourceWave,
     InvalidReputationBlockRound,
-    MissingReputationBlockRatingsHash,
-    MissingReputationBlockRoot,
+    InvalidPreviousReputationBlockRound,
+    PreviousReputationBlockShardMismatch,
+    ReputationBlockShardMismatch,
+    ReputationBlockSourceWaveMismatch,
+    ReputationBlockPreviousHashMismatch,
+    ReputationBlockConfigHashMismatch,
+    ReputationBlockRatingsHashMismatch,
+    ReputationBlockRootMismatch,
+    ReputationExclusionMismatch,
+    CommitmentLengthOverflow,
+    // Durable-state snapshot errors
+    UnsupportedReputationStateSnapshotVersion(u16),
+    ReputationStateSnapshotTooLarge,
+    MalformedReputationStateSnapshot,
+    ReputationStateSnapshotChecksumMismatch,
+    ReputationStateSnapshotRoundMismatch,
+    ReputationStateSnapshotExclusionMismatch,
+    ReputationStateSnapshotBlockRoundMismatch,
+    ReputationStateSnapshotHasPendingRatings,
     // Audit-replay-specific errors
     MissingReputationBlockEntry,
     UnexpectedReputationBlockEntry,
     ReputationValueMismatch,
+    // Cordial weight-activation errors
+    EmptyAuthorizedValidatorSet,
+    MissingAuthorizedValidatorReputation(NodeId),
+    ZeroAuthorizedValidatorWeight,
+    AuthorizedValidatorWeightOverflow,
     // Key-ejection errors
     /// The requested node is not present in the current `ReputationState`.
     UnknownNode,
@@ -150,15 +182,111 @@ impl fmt::Display for PorError {
             }
             Self::InvalidClampScale => write!(f, "clamp scale must be greater than zero"),
             Self::ClampOverflow => write!(f, "clamp arithmetic overflowed"),
+            Self::UnsupportedReputationBlockWireVersion(version) => {
+                write!(f, "unsupported reputation block wire version {version}")
+            }
+            Self::ReputationBlockWireTooLarge => {
+                write!(
+                    f,
+                    "reputation block wire envelope exceeds the protocol limit"
+                )
+            }
+            Self::MalformedReputationBlockWire => {
+                write!(f, "reputation block wire envelope is malformed")
+            }
+            Self::ReputationBlockWireChecksumMismatch => {
+                write!(f, "reputation block wire checksum does not match")
+            }
+            Self::UnsupportedReputationBlockVersion(version) => {
+                write!(f, "unsupported reputation block version {version}")
+            }
+            Self::MissingReputationBlockShardId => {
+                write!(f, "reputation block shard id is empty")
+            }
+            Self::ReputationBlockShardIdTooLong => {
+                write!(f, "reputation block shard id exceeds the protocol limit")
+            }
+            Self::InvalidReputationBlockSourceWave => write!(
+                f,
+                "reputation block round does not immediately follow its finalized source wave"
+            ),
             Self::InvalidReputationBlockRound => write!(
                 f,
                 "reputation block header round does not match the reputation list round"
             ),
-            Self::MissingReputationBlockRatingsHash => {
-                write!(f, "reputation block ratings hash is empty")
+            Self::InvalidPreviousReputationBlockRound => write!(
+                f,
+                "previous reputation block does not immediately precede the proposed block"
+            ),
+            Self::PreviousReputationBlockShardMismatch => {
+                write!(f, "previous reputation block belongs to a different shard")
             }
-            Self::MissingReputationBlockRoot => {
-                write!(f, "reputation block root is empty")
+            Self::ReputationBlockShardMismatch => {
+                write!(
+                    f,
+                    "reputation block shard id does not match the audit context"
+                )
+            }
+            Self::ReputationBlockSourceWaveMismatch => write!(
+                f,
+                "reputation block source wave does not match the audit context"
+            ),
+            Self::ReputationBlockPreviousHashMismatch => {
+                write!(
+                    f,
+                    "reputation block does not extend the expected previous block"
+                )
+            }
+            Self::ReputationBlockConfigHashMismatch => {
+                write!(
+                    f,
+                    "reputation block configuration commitment does not match"
+                )
+            }
+            Self::ReputationBlockRatingsHashMismatch => {
+                write!(f, "reputation block rating-batch commitment does not match")
+            }
+            Self::ReputationBlockRootMismatch => {
+                write!(f, "reputation block list commitment does not match")
+            }
+            Self::ReputationExclusionMismatch => {
+                write!(f, "reputation block exclusion flag does not match replay")
+            }
+            Self::CommitmentLengthOverflow => {
+                write!(f, "canonical reputation commitment input is too large")
+            }
+            Self::UnsupportedReputationStateSnapshotVersion(version) => {
+                write!(f, "unsupported reputation state snapshot version {version}")
+            }
+            Self::ReputationStateSnapshotTooLarge => {
+                write!(f, "reputation state snapshot exceeds the protocol limit")
+            }
+            Self::MalformedReputationStateSnapshot => {
+                write!(f, "reputation state snapshot is malformed")
+            }
+            Self::ReputationStateSnapshotChecksumMismatch => {
+                write!(f, "reputation state snapshot checksum does not match")
+            }
+            Self::ReputationStateSnapshotRoundMismatch => {
+                write!(f, "reputation state snapshot rounds do not match")
+            }
+            Self::ReputationStateSnapshotExclusionMismatch => {
+                write!(
+                    f,
+                    "reputation state snapshot exclusion registry is inconsistent"
+                )
+            }
+            Self::ReputationStateSnapshotBlockRoundMismatch => {
+                write!(
+                    f,
+                    "reputation state snapshot latest block is from another round"
+                )
+            }
+            Self::ReputationStateSnapshotHasPendingRatings => {
+                write!(
+                    f,
+                    "reputation state with pending ratings cannot be snapshotted"
+                )
             }
             Self::MissingReputationBlockEntry => {
                 write!(f, "reputation block is missing a replayed reputation entry")
@@ -173,6 +301,22 @@ impl fmt::Display for PorError {
                 f,
                 "reputation block entry does not match the replayed reputation value"
             ),
+            Self::EmptyAuthorizedValidatorSet => {
+                write!(f, "Cordial authorized validator set is empty")
+            }
+            Self::MissingAuthorizedValidatorReputation(node_id) => write!(
+                f,
+                "Cordial authorized validator {node_id:?} is missing from reputation state"
+            ),
+            Self::ZeroAuthorizedValidatorWeight => {
+                write!(
+                    f,
+                    "Cordial authorized validators have zero total reputation weight"
+                )
+            }
+            Self::AuthorizedValidatorWeightOverflow => {
+                write!(f, "Cordial authorized validator weight total overflowed")
+            }
             Self::UnknownNode => write!(f, "node is not present in the current reputation state"),
         }
     }

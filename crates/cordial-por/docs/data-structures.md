@@ -14,7 +14,8 @@ rating transactions
   -> liquid-rank contribution vector
   -> alpha-blended next reputation vector
   -> clamped reputation vector
-  -> reputation state snapshot
+  -> committed reputation block
+  -> audited reputation state snapshot
 ```
 
 This stage validates `RatingRecord` instances and assembles a single-round
@@ -56,7 +57,12 @@ Relevant sections:
 - Section 4.1.3, "Block Publication"
 - Section 4.2, "Reputation System"
 
-The strict paper-first flow remains:
+Sections 4.1.1 and 4.1.2 describe the paper's standalone consensus
+mechanism. This repository uses those sections as background only: Cordial
+Miners already owns validator membership and leader selection, while PoR
+implements the Section 4.2 reputation path as a weight engine.
+
+The adopted reputation flow is:
 
 ```text
 rating transactions
@@ -72,10 +78,12 @@ rating transactions
   -> reputation block
 ```
 
-The current implementation is in scope through normalized rating matrix
-construction, liquid-rank contribution calculation, pure alpha blending, and
-deterministic fixed-point clamping, plus explicit application of a finalized
-vector to `ReputationState`. Reputation block publication remains future work.
+The current implementation covers this complete local calculation, commitment,
+audit, state-application, durable snapshot path, canonical reputation-block
+envelope, append-only block history, optional signed checkpoint attestation, and
+fail-closed projection onto Cordial's existing authorized validator set.
+Concrete peer-network binding and durable attestation retention remain future
+work.
 
 ## File-Level Plan
 
@@ -87,6 +95,7 @@ Planned types:
 
 - `ReputationRound`
 - `ReputationWeight`
+- `ReputationCommitment`
 - `RatingScore`
 - `RatingRecord`
 - `RatingBatch`
@@ -98,9 +107,6 @@ Planned types:
 - `ReputationVector`
 - `ReputationBlockHeader`
 - `ReputationBlock`
-- `ConsensusGroup`
-- `ConsensusGroupMember`
-- `LeaderSelection`
 
 Rules:
 
@@ -132,10 +138,6 @@ Planned fields:
 - `initial_reputation`
 - liquid-rank `alpha`
 - rating bounds
-- consensus group quota, paper default: reputation sum greater than 50 percent
-  of total network reputation
-- block publication quorum, paper default: greater than two-thirds of selected
-  group reputation
 
 ### `src/state.rs`
 
@@ -158,9 +160,11 @@ Own conversion from reputation state to Cordial Miners weighted-path inputs.
 
 Planned role:
 
-- export `HashMap<NodeId, u64>`
-- keep the boundary explicit: `cordial-por` computes weights,
-  `cordial-miners-core` consumes weights
+- export the raw reputation-state map for inspection and transition results
+- project weights onto validator identities supplied by Cordial
+- reject missing identities or a zero-total projection without mutation
+- keep the boundary explicit: `cordial-por` computes numeric weights, while
+  `cordial-miners-core` owns membership and consumes those values
 
 This file should not implement ratification, finality, or tau ordering.
 
@@ -252,15 +256,413 @@ normalization, Liquid Rank, alpha blending, or clamping.
 The `src/block.rs` module assembles a reputation block with:
 
 ```text
-ReputationBlockHeader + ReputationList -> ReputationBlock
+ReputationBlockContext + RatingBatch + ReputationList + PorConfig
+  -> ReputationBlock
 ```
 
-`validate_reputation_block` checks that the header round matches the list round,
-requires non-empty `ratings_hash` and `reputation_root` fields, and enforces the
-canonical `NodeId` ordering by rejecting duplicate or unsorted entries.
-`build_reputation_block` runs those checks and then consumes the header and
-finalized list. Neither recomputes the reputation pipeline, mutates
-`ReputationState`, or publishes a block.
+`build_reputation_block` accepts protocol inputs rather than caller-supplied
+hashes. It derives the source round from the finalized wave, commits the
+configuration, signed rating batch, and reputation list, and links the block to
+the canonical hash of the immediately preceding block when one exists. A
+previous block must belong to the same shard and immediately preceding round.
+
+`validate_reputation_block` checks the v1 format version, non-empty bounded
+shard identifier, finalized-wave-to-round relation, header/list round match,
+canonical `NodeId` ordering, and the recomputed reputation-list commitment.
+Structural validation cannot prove external facts such as which shard or wave
+the caller expected; `verify_reputation_transition` checks those against its
+`ReputationBlockContext`. Neither operation mutates `ReputationState` or
+publishes a block.
+
+## Canonical Reputation Commitments
+
+All v1 commitments use Blake2b-256. Integers are unsigned big-endian, collection
+counts and byte lengths are `u64`, optional values use a one-byte `0`/`1`
+discriminant, and Boolean values use `0`/`1`. Domain separators are included
+verbatim as the first bytes of their preimages.
+
+```text
+config_commitment = H(
+    "cordial-por:config-commitment:v1"
+    || scale_u64
+    || initial_reputation_u64
+    || liquid_rank_alpha_u64
+    || minimum_rating_u64
+    || maximum_rating_u64
+    || missing_entry_policy_u8
+)
+
+rating_batch_commitment = H(
+    "cordial-por:rating-batch-commitment:v1"
+    || round_u64
+    || rating_count_u64
+    || each(
+        canonical_rating_payload_len_u64
+        || canonical_rating_payload
+        || signature_len_u64
+        || signature
+    )
+)
+
+reputation_list_commitment = H(
+    "cordial-por:reputation-list-commitment:v1"
+    || round_u64
+    || entry_count_u64
+    || each(node_id_len_u64 || node_id || reputation_u64 || is_excluded_u8)
+)
+
+reputation_block_hash = H(
+    "cordial-por:reputation-block-commitment:v1"
+    || version_u16
+    || shard_id_len_u64 || shard_id
+    || source_finalized_wave_u64
+    || round_u64
+    || previous_hash_presence_u8 || [previous_hash_32]
+    || config_hash_32
+    || ratings_hash_32
+    || reputation_root_32
+)
+```
+
+Ratings are first validated and sorted by `(recipient, rater)`, so the batch
+commitment is independent of arrival order. It commits the exact signatures as
+well as the canonical signed payloads. Reputation entries must already be in
+strict `NodeId` order; the list commitment includes `is_excluded`, making
+exclusion part of the auditable state. Golden vectors in
+`tests/commitments.rs` lock the v1 formats against accidental changes.
+
+## Canonical Reputation Block Wire Envelope
+
+`src/block.rs` exposes `encode_reputation_block` and
+`decode_reputation_block` as the transport-independent publication boundary.
+The wire envelope version is separate from the reputation-block header version,
+so framing can evolve without changing the committed block semantics.
+
+The outer v1 envelope is:
+
+```text
+"cordial-por-block"             17 bytes
+wire_version                     u16 big-endian (= 1)
+payload_length                   u64 big-endian
+payload                          payload_length bytes
+checksum                         Blake2b-256
+```
+
+The checksum preimage is:
+
+```text
+"cordial-por:reputation-block-envelope:v1"
+|| "cordial-por-block"
+|| wire_version_u16
+|| payload_length_u64
+|| payload
+```
+
+The canonical payload is:
+
+```text
+block_version_u16
+shard_id_length_u64 || shard_id
+source_finalized_wave_u64
+round_u64
+previous_hash_presence_u8 || [previous_hash_32]
+config_hash_32
+ratings_hash_32
+reputation_root_32
+reputation_list
+```
+
+Unsigned integers are big-endian. Lengths and counts are `u64`; optional
+values and exclusion flags use one-byte `0`/`1` discriminants. Encoding
+validates the block before producing bytes. Decoding is bounded to 64 MiB, one
+million reputation entries, 4 KiB per node identifier, and a 256-byte shard
+identifier. It rejects bad magic, unsupported wire versions, inconsistent
+lengths, truncation, trailing bytes, checksum corruption, invalid
+discriminants, non-canonical entry ordering, and reputation-root mismatches.
+
+The checksum protects framing integrity; it does not replace full transition
+audit or peer authentication. `verify_reputation_transition` remains the
+acceptance boundary for a received proposal. The durable state snapshot embeds
+this exact canonical block payload without its outer wire envelope, preserving
+one block encoding across persistence and publication. `tests/block.rs` locks
+the v1 envelope with a golden hash, while `tests/snapshot.rs` confirms that
+sharing the payload leaves the existing state-snapshot golden format unchanged.
+
+## Signed Reputation Block Publication Envelope
+
+The f1r3node adapter wraps the canonical block envelope in a second, signed
+envelope. Keeping this layer outside `cordial-por` preserves the core crate's
+network-free boundary while letting any concrete transport carry one
+authenticated representation.
+
+The v1 publication is:
+
+```text
+"cordial-por:reputation-block-publication"  40 bytes
+publication_version                         u16 big-endian (= 1)
+publisher_key_length                        u16 big-endian
+publisher_key                               compressed or uncompressed secp256k1 key
+block_envelope_length                       u64 big-endian
+canonical_block_envelope                    block_envelope_length bytes
+signature_length                            u16 big-endian
+signature                                   DER-encoded secp256k1 signature
+```
+
+The signature is over this Blake2b-256 digest:
+
+```text
+H(
+    "cordial-por:reputation-block-publication"
+    || publication_version_u16
+    || publisher_key_length_u16 || publisher_key
+    || block_envelope_length_u64 || canonical_block_envelope
+)
+```
+
+Thus the signature binds the domain, format version, publisher identity, and
+every byte of the checksummed canonical block envelope. Decoding bounds the
+complete message and inner block, accepts only 33-byte compressed or 65-byte
+uncompressed publisher keys, validates the canonical block, rejects empty or
+oversized signatures, and verifies the signature before returning a
+`ReputationBlockPublicationV1`.
+
+The adapter exposes a synchronous broadcaster trait plus a bounded Tokio
+channel implementation. Sending is non-blocking: saturation and closure are
+explicit failures. An already signed publication can be retried without
+reconstructing or re-signing it.
+
+This envelope proves only that the key identified as `publisher_key` signed
+the exact block bytes. It does not establish Cordial validator authority or
+finality, validate the expected shard or round, prove the previous-block link,
+or replay the deterministic transition. Inbound code treats a verified
+publication as an optional checkpoint attestation and repeats local audit before
+persistence or state mutation. Adapter integration tests lock the framing,
+signature, tamper detection, and bounded-channel behavior.
+
+## Optional Reputation Checkpoint Attestation
+
+The adapter's `PorCheckpointCollector` accepts attester identities supplied by
+Cordial's existing authorized validator set. It snapshots their preceding
+reputation weights, rejects unknown or excluded attesters, deduplicates repeated
+identities, and rejects an empty or zero-total set. It does not select a
+committee and its threshold is not Cordial finality.
+
+The default attestation threshold is strictly greater than two thirds:
+
+```text
+required_weight = floor(total_attester_weight * numerator / denominator) + 1
+```
+
+A publication contributes only after `verify_reputation_transition` accepts its
+canonical block against the receiver's current state, completed rating batch,
+configuration, shard, finalized source wave, and previous block. Duplicate
+attestations are idempotent; unauthorized or invalid publications do not mutate
+progress; conflicting blocks from one attester return both authenticated
+publications as evidence.
+
+`into_attested` cannot succeed below the configured threshold. On success it
+returns a private-invariant `AttestedPorCheckpoint` containing the replayed
+block, commitment hash, ordered signed publications, and weighted progress.
+`DurablePorState::apply_attested_checkpoint` repeats the replay audit before
+storage, closing the time-of-check/time-of-use gap. The signatures cannot
+override a local audit failure and never activate Cordial weights by themselves.
+
+## Cordial Weight Activation
+
+`authorized_validator_weights` projects `ReputationState` values onto exactly
+the validator identities supplied by Cordial. Extra PoR entries are ignored, a
+missing Cordial validator fails closed, and an ejected validator remains in the
+map with zero weight so PoR never mutates membership. A zero-total projection is
+rejected.
+
+`LiveIngress::apply_por_weights` performs the runtime handoff atomically. It
+rejects non-genesis state without an audited checkpoint, requires the
+checkpoint's source wave to be covered by the published finalized output,
+prospectively verifies that the new values preserve the exported finalized prefix, replaces only the values, and clears the weighted ordering
+cache. Ratings from wave `k` therefore influence only subsequent Cordial
+decisions.
+
+### Durable Activation Record
+
+The adapter stores the last accepted projection at
+`<data_dir>/por/weight-activation.bin`. The bounded v2 envelope contains:
+
+```text
+"cordial-por-weight-activation"
+version                          u16 big-endian (= 2)
+payload_length                   u64 big-endian
+reputation_round                 u64 big-endian
+checkpoint_presence              u8
+[checkpoint_hash || source_wave] 32 bytes || u64
+weights_commitment               Blake2b-256
+validator_count                  u64 big-endian
+repeated validator ID length,
+validator ID, and weight         u64 || bytes || u64
+checksum                         Blake2b-256
+```
+
+The record retains the canonical validator-weight entries needed to restore
+the actual prior consensus view. The weight commitment independently covers
+`"cordial-por:authorized-weight-map:v1"`, the entry count, and each
+length-prefixed validator ID plus weight in canonical validator-ID order. It
+therefore binds the exact Cordial-supplied membership projection without making
+membership a PoR decision. The outer checksum is domain-separated with
+`"cordial-por:weight-activation-record:v2"`; malformed, non-canonical,
+oversized, unsupported, and corrupt records fail startup.
+
+`DurablePorState::activate_weights` enforces this ordering:
+
+```text
+commit and publish audited ReputationState
+  -> project onto Cordial's current validator identities
+  -> verify source finality and finalized-prefix safety
+  -> replace live Cordial weights
+  -> atomically persist and sync activation record
+```
+
+Activation rejection leaves the committed state pending and retryable. Failure
+while writing the marker fail-closes the durable owner, because live weights may
+already have changed and the rename outcome may be ambiguous. Startup validates
+that the marker is not ahead of the state and that an equal-round marker names
+the same checkpoint and exact state projection. It restores the recorded map
+before computing finality. A newer committed state is then evaluated against
+that correctly restored view. Missing active weights for non-genesis state, or
+a configured membership different from the recorded membership, fails closed.
+PoR still changes only values.
+
+### Production Runtime Owner
+
+`por::runtime::PorRuntime<A>` owns `LiveIngress<A>`, `DurablePorState`,
+the immutable `PorConfig`, shard identifier, and Cordial wavelength together.
+This removes the unsafe host-level gap where ingress could begin processing
+traffic before restored reputation weights were installed, or where a completed
+round could be committed without an activation attempt.
+
+Construction first installs the exact durable active projection, then computes
+the current ordered output under those weights. If committed state is newer
+than the activation record, its candidate projection is evaluated against that
+output before activation. Empty validator membership, missing reputation
+entries, unavailable source finality, an incompatible finalized prefix, or an
+active-record membership mismatch fail construction. A wavelength that does
+not match Cordial's fixed runtime wavelength, and invalid shard settings, are
+rejected before a fresh state directory is initialized.
+
+`commit_completed_round` and `commit_attested_checkpoint` return
+`CommittedPorRound`. Its outer success means the reputation transition
+committed before activation was attempted; its nested result states whether
+that round reached Cordial immediately. `activation_pending()` and
+`retry_weight_activation()` make recovery explicit without replaying or
+recommitting the rating transition.
+
+## Durable Reputation State Snapshot
+
+`src/snapshot.rs` encodes the complete finalized state required to resume after
+a restart: the current round and reputation list, the permanent ejection
+registry, and the latest audited reputation block. Pending ratings are not
+finalized state; encoding rejects a state containing them instead of silently
+dropping them.
+
+The outer v1 envelope is:
+
+```text
+"cordial-por-state"             17 bytes
+version                          u16 big-endian (= 1)
+payload_length                   u64 big-endian
+payload                          payload_length bytes
+checksum                         Blake2b-256
+```
+
+The checksum preimage is:
+
+```text
+"cordial-por:state-snapshot:v1"
+|| "cordial-por-state"
+|| version_u16
+|| payload_length_u64
+|| payload
+```
+
+The payload uses the same unsigned big-endian integers, `u64` lengths/counts,
+and one-byte `0`/`1` discriminants as the commitment formats:
+
+```text
+current_round
+reputation_list
+excluded_key_count || each(node_id_length || node_id)
+latest_block_presence || [latest_reputation_block]
+```
+
+A reputation list contains its round, entry count, and each node identifier,
+reputation value, and exclusion flag. A stored block contains the complete v1
+header and its reputation list, not merely its hash.
+
+Decode is bounded to 64 MiB, one million entries, 4 KiB per node identifier,
+and the existing 256-byte shard identifier limit. Restore checks the checksum,
+rejects trailing or truncated data, validates canonical ordering and the latest
+block, requires state/list/latest-block rounds to agree, and verifies that every
+exclusion flag exactly matches a zero-weight key in the permanent registry.
+`tests/snapshot.rs` locks the v1 format with a golden hash.
+
+The adapter writes these bytes to
+`<data_dir>/por/reputation-state.bin`. `PorStateStore` syncs a temporary
+file, atomically renames it, and syncs the directory. `DurablePorState::open`
+restores this file when present; on a fresh data directory it validates and
+persists the caller-supplied initial state before returning.
+
+Completed rounds use a persist-before-publish sequence. The next reputation
+block, state, and weights are staged and audited against a clone; the complete
+staged state is persisted before it replaces the in-memory state. Transition
+failure leaves memory and disk unchanged and remains retryable. Persistence
+failure leaves the previous in-memory state unpublished and fail-closes the
+owner until startup recovery, because an error after atomic rename can make
+the durable commit outcome ambiguous. Runtime callers cannot read or advance
+the owner while recovery is required.
+
+## Durable Reputation Block History
+
+The adapter stores canonical block envelopes under:
+
+```text
+<data_dir>/por/reputation-blocks/
+  reputation-block-00000000000000000001.bin
+  reputation-block-00000000000000000002.bin
+  ...
+```
+
+File names use the round as exactly 20 decimal digits, preserving numeric order
+under lexical sorting. `PorReputationBlockHistory::append` validates and
+encodes the block before taking its writer lock. It creates and syncs a
+round-scoped temporary file with no-truncate semantics, creates the final round
+path with a hard link, removes the temporary name, and syncs the directory.
+The hard-link step cannot replace an existing round. An identical append is
+idempotent; a different block at an already committed round is rejected.
+
+Startup scans every controlled history file with the 64 MiB wire bound, decodes
+the canonical envelope, and checks that the filename round equals the embedded
+round. In ascending order it requires consecutive rounds, one shard, and the
+exact `previous_reputation_hash` derived from the preceding retained block.
+Corruption, gaps, malformed controlled names, shard changes, and broken links
+are startup errors. Startup unlinks recognized stale temporary names before
+opening any append path; unrelated files are ignored. For upgrades from
+snapshot-only storage, an empty history may begin at
+the snapshot's latest audited block as an explicit local checkpoint; every
+subsequent block must continue that checkpoint.
+
+`DurablePorState` uses this commit sequence:
+
+```text
+stage and audit next state
+  -> persist and sync complete state snapshot
+  -> append and sync immutable reputation block
+  -> publish the staged state in memory
+```
+
+Snapshot-first ordering makes the only supported cross-file crash window
+recoverable. On startup, history may equal the snapshot tip, be exactly one
+valid block behind it, or be empty during migration. The latter two cases are
+completed from the snapshot's embedded latest block. Any other divergence is a
+hard startup error. A storage error before in-memory publication fail-closes
+the runtime until this startup reconciliation runs.
 
 The `src/audit.rs` module replays the whole pipeline so that any member can
 audit a proposed reputation block:
@@ -272,24 +674,18 @@ ratings + previous reputation + config -> expected ReputationList
 `replay_reputation_transition` runs batching, matrix construction,
 normalization, Liquid Rank, alpha blending, and `clamp_reputation_transition`
 for one round, so a shuffled rating set yields the same list.
-`verify_reputation_transition` applies `validate_reputation_block` to the
-proposed block first, so an audited block is held to the same structural rules
-as a constructed one, then compares the replayed list against
-`ReputationBlock.reputation_list`. Node-set and value
-differences are reported separately as `MissingReputationBlockEntry`,
-`UnexpectedReputationBlockEntry`, and `ReputationValueMismatch`. Replay is
-read-only: it does not mutate `ReputationState`, publish blocks, or perform
-networking.
+`verify_reputation_transition` applies `validate_reputation_block` first, then
+checks the expected shard, source finalized wave, previous-block hash,
+configuration commitment, and signed-rating commitment before comparing the
+replayed list against `ReputationBlock.reputation_list`. Node-set, value, and
+exclusion differences are reported separately. Replay is read-only: it does
+not mutate `ReputationState`, publish blocks, or perform networking.
 
-Future work remains:
-
-- `src/committee.rs`: consensus group selection
-- `src/leader.rs`: leader selection from the consensus group
-
-`EquivocationPenalty` and `InactivityPenalty` remain intentionally as Cordial
-integration extensions and are not part of the first reputation calculation
-step. Reputation block publication and later consensus-selection logic remain
-future work.
+`EquivocationPenalty` and `InactivityPenalty` remain deterministic penalty
+extension points around the weight engine. Signed publication, optional
+checkpoint attestation, and Cordial-owned validator projection are implemented.
+Concrete peer-network binding and durable attestation retention remain future
+work; committee and leader selection stay exclusively in Cordial Miners.
 
 ## Paper-Aligned Structures
 
@@ -449,8 +845,12 @@ Planned shape:
 
 ```text
 ReputationBlockHeader {
+    version,
+    shard_id,
+    source_finalized_wave,
     round,
     previous_reputation_hash,
+    config_hash,
     ratings_hash,
     reputation_root,
 }
@@ -461,52 +861,24 @@ ReputationBlock {
 }
 ```
 
-### Consensus Group
+### Paper Consensus Stages Outside Scope
 
-Paper concept:
-
-```text
-G_k is selected from highest-reputation nodes whose collective reputation
-exceeds 50 percent of total network reputation.
-```
-
-Implementation target:
-
-```text
-src/types.rs
-src/committee.rs
-```
-
-`src/types.rs` should define the data shape. `src/committee.rs` should later
-implement selection.
-
-### Leader Selection
-
-Paper concept:
-
-```text
-Leader L_k is randomly selected from G_k.
-```
-
-Implementation target:
-
-```text
-src/types.rs
-src/leader.rs
-```
-
-`src/types.rs` should define the selected leader record. `src/leader.rs`
-should later implement deterministic leader selection policy.
+The paper also defines a highest-reputation consensus group and selects a leader
+from it. Those concepts are intentionally not represented by `cordial-por`
+types or planned `committee.rs` / `leader.rs` modules in this repository.
+Cordial Miners already owns validator membership and leader selection. The only
+integration output from PoR is a numeric weight for each Cordial-authorized
+validator.
 
 ## Explicit Non-Goals
 
-Do not include these in the current normalization stage:
+Do not add these responsibilities to `cordial-por`:
 
-- Liquid-rank calculation implementation
-- Committee selection implementation
-- Leader selection implementation
+- validator membership or committee selection
+- leader selection
 - Cordial Miners approval, ratification, finality, or tau ordering
-- Cordial-specific penalty or slashing behavior implementation
+- peer-network ownership
+- subjective penalty or slashing decisions
 
 Cordial-specific penalty behavior should come after the paper-guided reputation
 calculation path is implemented.
