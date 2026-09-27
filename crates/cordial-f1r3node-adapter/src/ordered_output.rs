@@ -76,8 +76,8 @@ pub struct OrderedFinalizedOutput {
     /// Consensus wavelength (wave size in rounds) used when computing
     /// this output.
     ///
-    /// Currently hard-coded to `3` (matching the `ES_WAVELENGTH` in
-    /// [`super::snapshot`]). Exposed here so that if the parameter becomes
+    /// Currently fixed by [`super::snapshot::CORDIAL_WAVELENGTH`].
+    /// Exposed here so that if the parameter becomes
     /// dynamic in the future, consumers can determine which wavelength
     /// produced the ordering.
     pub wavelength: u64,

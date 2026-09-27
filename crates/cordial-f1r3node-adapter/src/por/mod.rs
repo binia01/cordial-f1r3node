@@ -13,6 +13,7 @@ pub mod interactions;
 pub mod lifecycle;
 pub mod persistence;
 pub mod ratings;
+pub mod runtime;
 pub mod transition;
 pub mod transport;
 
@@ -56,6 +57,7 @@ pub use ratings::{
     rating_signing_hash, sign_admitted_interaction, validate_signed_rating,
     verify_rating_signature,
 };
+pub use runtime::{CommittedPorRound, PorRuntime, PorRuntimeError};
 pub use transition::{AppliedPorReputationRound, apply_completed_reputation_round};
 pub use transport::channel::{
     ChannelRatingEnvelopeBroadcaster, ChannelRatingEnvelopeReceiver, PorRatingChannelError,

@@ -87,7 +87,12 @@ use cordial_miners_core::types::{BlockIdentity, NodeId};
 use crate::block_translation::{BlockMessage, Justification, TranslationError, block_to_message};
 use crate::ordered_output::OrderedFinalizedOutput;
 
-const ES_WAVELENGTH: u64 = 3;
+/// Wavelength used by the Cordial consensus adapter.
+///
+/// Finality and ordering helpers in this adapter are intentionally fixed to
+/// this value. Runtime owners must reject a different configured wavelength
+/// rather than label an ordering computed with different consensus semantics.
+pub const CORDIAL_WAVELENGTH: u64 = 3;
 
 /// Simplified mirror of f1r3node's `KeyValueDagRepresentation`.
 ///
@@ -409,7 +414,7 @@ pub(crate) fn latest_finalized_block_id(
         }
     }
 
-    latest_weighted_final_leader(blocklace, ES_WAVELENGTH, bonds, |wave| {
+    latest_weighted_final_leader(blocklace, CORDIAL_WAVELENGTH, bonds, |wave| {
         let idx = usize::try_from(wave).ok()? % leaders.len();
         Some(leaders[idx].clone())
     })
@@ -489,10 +494,17 @@ pub(crate) fn ordered_block_identities_with_cache(
         Some(leaders[idx].clone())
     };
 
-    let anchor = latest_weighted_final_leader(blocklace, ES_WAVELENGTH, bonds, leader_of_wave);
+    let anchor = latest_weighted_final_leader(blocklace, CORDIAL_WAVELENGTH, bonds, leader_of_wave);
 
-    let blocks = weighted_tau_with_cache(blocklace, ES_WAVELENGTH, bonds, 0, leader_of_wave, cache)
-        .unwrap_or_default();
+    let blocks = weighted_tau_with_cache(
+        blocklace,
+        CORDIAL_WAVELENGTH,
+        bonds,
+        0,
+        leader_of_wave,
+        cache,
+    )
+    .unwrap_or_default();
 
     (blocks, anchor)
 }
@@ -527,7 +539,7 @@ pub(crate) fn ordered_finalized_output(
     OrderedFinalizedOutput::new(
         blocks,
         anchor,
-        ES_WAVELENGTH,
+        CORDIAL_WAVELENGTH,
         bonds.len(),
         blocklace.dom().len(),
     )
@@ -569,8 +581,11 @@ fn single_validator_leader(blocklace: &Blocklace, validator: &NodeId) -> SingleV
         return SingleValidatorLeader::Fork;
     }
 
-    match latest_single_validator_finalized_block_id_from_depths(&depths, validator, ES_WAVELENGTH)
-    {
+    match latest_single_validator_finalized_block_id_from_depths(
+        &depths,
+        validator,
+        CORDIAL_WAVELENGTH,
+    ) {
         Some(leader) => SingleValidatorLeader::Found(leader),
         None => SingleValidatorLeader::Incomplete,
     }
