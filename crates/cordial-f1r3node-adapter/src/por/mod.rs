@@ -4,6 +4,7 @@
 //! attestation, persistence, and transport without moving those adapter-owned
 //! responsibilities into the protocol-math crate.
 
+pub mod activation;
 pub mod checkpoint;
 pub mod collector;
 pub mod finality;
@@ -15,6 +16,10 @@ pub mod ratings;
 pub mod transition;
 pub mod transport;
 
+pub use activation::{
+    POR_WEIGHT_ACTIVATION_FILE_NAME, PorWeightActivationOutcome, PorWeightActivationRecord,
+    PorWeightActivationStore, PorWeightActivationStoreError,
+};
 pub use checkpoint::{
     AttestedPorCheckpoint, DEFAULT_POR_CHECKPOINT_THRESHOLD_DENOMINATOR,
     DEFAULT_POR_CHECKPOINT_THRESHOLD_NUMERATOR, PorCheckpointCollector,

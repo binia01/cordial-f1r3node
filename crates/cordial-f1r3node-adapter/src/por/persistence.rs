@@ -2,11 +2,14 @@
 //!
 //! `cordial-por` owns the versioned snapshot bytes and their validation. This
 //! adapter owns the node data-directory layout, durable replacement, and
-//! append-only reputation-block history. A snapshot write is flushed to a
+//! append-only reputation-block history, and weight-activation lifecycle. A
+//! snapshot write is flushed to a
 //! temporary file, atomically renamed over the current snapshot, and followed
 //! by a directory sync. A history append creates a new immutable round file.
 //! Startup validates both stores and reconciles the one supported crash window
-//! in which the snapshot committed immediately before its history entry.
+//! in which the snapshot committed immediately before its history entry. The
+//! separately committed activation marker allows a newer state snapshot to be
+//! safely retried against a fresh Cordial ingress after failure or restart.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -17,11 +20,18 @@ use std::{
 
 use cordial_por::{
     MAX_REPUTATION_STATE_SNAPSHOT_LEN, PorConfig, PorError, ReputationState,
-    decode_reputation_state_snapshot, encode_reputation_state_snapshot,
+    authorized_validator_weights, decode_reputation_state_snapshot,
+    encode_reputation_state_snapshot,
 };
 use thiserror::Error;
 
+use crate::live_ingress::{LiveIngress, PorWeightActivationError};
+
 use super::{
+    activation::{
+        PorWeightActivationOutcome, PorWeightActivationRecord, PorWeightActivationStore,
+        PorWeightActivationStoreError,
+    },
     checkpoint::AttestedPorCheckpoint,
     history::{PorReputationBlockHistory, PorReputationBlockHistoryError},
     lifecycle::CompletedPorRatingRound,
@@ -62,6 +72,21 @@ pub enum DurablePorStateError {
 
     #[error("PoR reputation transition failed: {0}")]
     Transition(#[source] PorError),
+
+    #[error("PoR weight-activation persistence failed: {0}")]
+    ActivationPersistence(#[source] PorWeightActivationStoreError),
+
+    #[error("PoR weight activation failed: {0}")]
+    Activation(#[source] PorWeightActivationError),
+
+    #[error("activated PoR round {activated_round} is ahead of committed round {committed_round}")]
+    ActivationAheadOfState {
+        activated_round: u64,
+        committed_round: u64,
+    },
+
+    #[error("activated PoR round {0} does not match the committed reputation checkpoint")]
+    ActivationCheckpointMismatch(u64),
 
     #[error("durable PoR state requires startup recovery after a storage failure")]
     RecoveryRequired,
@@ -172,7 +197,10 @@ impl PorStateStore {
 pub struct DurablePorState {
     store: PorStateStore,
     history: PorReputationBlockHistory,
+    activation_store: PorWeightActivationStore,
     state: ReputationState,
+    activated_weights: Option<PorWeightActivationRecord>,
+    process_activation: Option<PorWeightActivationRecord>,
     recovery_required: bool,
 }
 
@@ -197,12 +225,21 @@ impl DurablePorState {
         history
             .reconcile_state_tip(state.latest_block())
             .map_err(DurablePorStateError::History)?;
+        let activation_store = PorWeightActivationStore::open(data_dir)
+            .map_err(DurablePorStateError::ActivationPersistence)?;
+        let activated_weights = activation_store
+            .restore()
+            .map_err(DurablePorStateError::ActivationPersistence)?;
+        validate_activation_record(activated_weights.as_ref(), &state)?;
 
         Ok(Self {
             store,
             history,
             state,
+            activation_store,
             recovery_required: false,
+            activated_weights,
+            process_activation: None,
         })
     }
 
@@ -225,6 +262,93 @@ impl DurablePorState {
     /// Return the validated append-only history owned by this runtime.
     pub fn history(&self) -> &PorReputationBlockHistory {
         &self.history
+    }
+
+    /// Return the activation-record path for diagnostics and backup tooling.
+    pub fn weight_activation_record_path(&self) -> &Path {
+        self.activation_store.record_path()
+    }
+
+    /// Return the last durable PoR projection accepted by Cordial.
+    pub fn activated_weight_record(
+        &self,
+    ) -> Result<Option<&PorWeightActivationRecord>, DurablePorStateError> {
+        self.ensure_healthy()?;
+        Ok(self.activated_weights.as_ref())
+    }
+
+    /// Whether the committed reputation round is newer than the activation marker.
+    ///
+    /// Startup must still call [`Self::activate_weights`] when this returns
+    /// `false`, because Cordial's in-memory bonds need restoration in every
+    /// process. This query identifies the state-commit/activation crash window.
+    pub fn has_unactivated_committed_round(&self) -> Result<bool, DurablePorStateError> {
+        self.ensure_healthy()?;
+        match &self.activated_weights {
+            Some(record) if record.reputation_round() == self.state.round() => record
+                .matches_state_checkpoint(&self.state)
+                .map(|matches| !matches)
+                .map_err(|error| {
+                    DurablePorStateError::Activation(PorWeightActivationError::from(error))
+                }),
+            _ => Ok(true),
+        }
+    }
+
+    /// Project and activate the latest committed PoR state in Cordial.
+    ///
+    /// The state snapshot always commits before this method is called. Live
+    /// weights are replaced only after all Cordial safety checks pass. The
+    /// activation record is then atomically persisted. An ordinary activation
+    /// rejection is retryable. A marker-write failure fail-closes this owner,
+    /// because the durable result may be ambiguous; restart safely reapplies
+    /// the latest committed state before recording it again.
+    pub fn activate_weights<A>(
+        &mut self,
+        ingress: &mut LiveIngress<A>,
+    ) -> Result<PorWeightActivationOutcome, DurablePorStateError> {
+        self.ensure_healthy()?;
+
+        let mut authorized_validators: Vec<_> = ingress.bonds().keys().cloned().collect();
+        authorized_validators.sort();
+        let projected = authorized_validator_weights(&self.state, &authorized_validators)
+            .map_err(PorWeightActivationError::from)
+            .map_err(DurablePorStateError::Activation)?;
+        if self.state.round() != 0 && self.state.latest_block().is_none() {
+            return Err(DurablePorStateError::Activation(
+                PorWeightActivationError::MissingReputationCheckpoint {
+                    round: self.state.round(),
+                },
+            ));
+        }
+        let desired = PorWeightActivationRecord::from_state_and_weights(&self.state, &projected)
+            .map_err(PorWeightActivationError::from)
+            .map_err(DurablePorStateError::Activation)?;
+
+        validate_activation_record(self.activated_weights.as_ref(), &self.state)?;
+        if self.process_activation.as_ref() == Some(&desired) && ingress.bonds() == &projected {
+            return Ok(PorWeightActivationOutcome::AlreadyActive);
+        }
+
+        let already_durable = self.activated_weights.as_ref() == Some(&desired);
+        ingress
+            .apply_por_weights(&self.state)
+            .map_err(DurablePorStateError::Activation)?;
+
+        if !already_durable {
+            if let Err(error) = self.activation_store.persist(&desired) {
+                self.recovery_required = true;
+                return Err(DurablePorStateError::ActivationPersistence(error));
+            }
+            self.activated_weights = Some(desired.clone());
+        }
+        self.process_activation = Some(desired);
+
+        Ok(if already_durable {
+            PorWeightActivationOutcome::Restored
+        } else {
+            PorWeightActivationOutcome::Activated
+        })
     }
 
     /// Stage, durably commit, and publish one completed reputation round.
@@ -294,4 +418,30 @@ impl DurablePorState {
             Ok(())
         }
     }
+}
+
+fn validate_activation_record(
+    activated: Option<&PorWeightActivationRecord>,
+    state: &ReputationState,
+) -> Result<(), DurablePorStateError> {
+    let Some(activated) = activated else {
+        return Ok(());
+    };
+    if activated.reputation_round() > state.round() {
+        return Err(DurablePorStateError::ActivationAheadOfState {
+            activated_round: activated.reputation_round(),
+            committed_round: state.round(),
+        });
+    }
+    if activated.reputation_round() == state.round()
+        && !activated
+            .matches_state_checkpoint(state)
+            .map_err(PorWeightActivationError::from)
+            .map_err(DurablePorStateError::Activation)?
+    {
+        return Err(DurablePorStateError::ActivationCheckpointMismatch(
+            state.round(),
+        ));
+    }
+    Ok(())
 }
