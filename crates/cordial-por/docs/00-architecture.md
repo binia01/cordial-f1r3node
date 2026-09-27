@@ -243,11 +243,14 @@ The transition is atomic with respect to `ReputationState`: all work is staged o
 `PorStateStore::persist` validates and encodes before changing the filesystem, writes and syncs a temporary file, atomically renames it over the committed snapshot, and syncs the directory. An interrupted write therefore leaves the previous committed file available. `restore` returns `None` only when the committed file is absent; corruption, truncation, unsupported versions, and oversized files are startup errors rather than silent first boots.
 
 `por::history::PorReputationBlockHistory` stores the canonical publication
-envelope for every retained round. It syncs a temporary file, creates the final
-path without replacement, removes the temporary name, and syncs the directory.
-Recovery decodes every retained file and validates its filename round,
-consecutive order, shard, and previous-block hash. Corruption, gaps, conflicting
-rounds, and broken links fail closed.
+envelope for every retained round. It creates and syncs a round-scoped
+temporary file without truncation, creates the final path without replacement,
+removes the temporary name, and syncs the directory. Startup first unlinks
+recognized stale temporary names, including the legacy shared name, so a
+post-link crash cannot leave an alias that later truncates committed data.
+Recovery then validates filename round, consecutive order, shard, and
+previous-block hash. Corruption, gaps, conflicting rounds, and broken links fail
+closed.
 
 The snapshot contains finalized state only. A state with pending ratings is rejected instead of silently discarding in-flight work. `DurablePorState` connects the store to startup, local completed-round application, and admitted peer-block application:
 
@@ -359,26 +362,28 @@ derives the desired record from the latest committed state and the identities
 currently supplied by Cordial, calls `LiveIngress::apply_por_weights`, and
 atomically writes `<data_dir>/por/weight-activation.bin` only after live
 activation succeeds. The marker binds the reputation round, audited checkpoint,
-source finalized wave, and a canonical commitment to the projected validator
-map.
+source finalized wave, the canonical projected validator map, and its
+independent commitment.
 
 A normal activation rejection does not change the marker and can be retried
 when Cordial finality catches up. A marker-write error fail-closes the durable
-owner because the filesystem result may be ambiguous. On restart, a committed
-state newer than the marker is pending and is retried. Even when the marker is
-current, startup reapplies it to fresh ingress memory; only a second identical
-call in the same process returns `AlreadyActive`. This makes the
-state-commit/weight-activation crash window recoverable without treating PoR as
-consensus.
+owner because the filesystem result may be ambiguous. On restart, the exact
+recorded projection is installed before finality is recomputed. If committed
+state is newer than the marker, the pending projection is then checked against
+that restored consensus view and retried. Missing active weights for non-genesis
+state and membership drift fail closed. This makes the state-commit/activation
+crash window recoverable without treating PoR as consensus.
 
 ## Adapter Runtime Ownership
 
 `PorRuntime<A>` is the production ownership boundary for `LiveIngress<A>` and
 `DurablePorState`. `PorRuntime::open` validates immutable shard settings,
-restores the state snapshot and activation marker, recomputes the current
-Cordial finalized output, and reapplies the committed projection before it
-returns access to ingress. A non-genesis state whose source finality is not
-present fails startup instead of accepting traffic with bootstrap weights.
+restores the state snapshot and exact last activated weight map, recomputes the
+current Cordial finalized output under those weights, and only then evaluates
+any newer committed projection before returning access to ingress. A
+non-genesis state without recoverable active weights, or whose source finality
+is not present, fails startup instead of accepting traffic with bootstrap
+weights.
 
 The host finality loop passes each closed `CompletedPorRatingRound` to
 `commit_completed_round` (or an attested result to
@@ -394,8 +399,9 @@ The resulting runtime sequence is:
 ```text
 construct pre-hydrated LiveIngress
   -> PorRuntime::open
-  -> publish/verify current Cordial finality
-  -> restore committed PoR weights
+  -> restore the last durably activated PoR weights
+  -> publish/verify current Cordial finality under those weights
+  -> activate any newer committed projection
   -> expose ingress to live traffic
   -> observe and close a finalized rating round
   -> commit PoR state

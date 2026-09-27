@@ -485,26 +485,30 @@ decisions.
 ### Durable Activation Record
 
 The adapter stores the last accepted projection at
-`<data_dir>/por/weight-activation.bin`. The bounded v1 envelope contains:
+`<data_dir>/por/weight-activation.bin`. The bounded v2 envelope contains:
 
 ```text
 "cordial-por-weight-activation"
-version                          u16 big-endian (= 1)
+version                          u16 big-endian (= 2)
 payload_length                   u64 big-endian
 reputation_round                 u64 big-endian
 checkpoint_presence              u8
 [checkpoint_hash || source_wave] 32 bytes || u64
 weights_commitment               Blake2b-256
+validator_count                  u64 big-endian
+repeated validator ID length,
+validator ID, and weight         u64 || bytes || u64
 checksum                         Blake2b-256
 ```
 
-The weight commitment covers
+The record retains the canonical validator-weight entries needed to restore
+the actual prior consensus view. The weight commitment independently covers
 `"cordial-por:authorized-weight-map:v1"`, the entry count, and each
 length-prefixed validator ID plus weight in canonical validator-ID order. It
 therefore binds the exact Cordial-supplied membership projection without making
 membership a PoR decision. The outer checksum is domain-separated with
-`"cordial-por:weight-activation-record:v1"`; malformed, oversized,
-unsupported, and corrupt records fail startup.
+`"cordial-por:weight-activation-record:v2"`; malformed, non-canonical,
+oversized, unsupported, and corrupt records fail startup.
 
 `DurablePorState::activate_weights` enforces this ordering:
 
@@ -520,10 +524,11 @@ Activation rejection leaves the committed state pending and retryable. Failure
 while writing the marker fail-closes the durable owner, because live weights may
 already have changed and the rename outcome may be ambiguous. Startup validates
 that the marker is not ahead of the state and that an equal-round marker names
-the same checkpoint. It reapplies even a current marker to fresh ingress memory;
-a repeated identical call in that process is `AlreadyActive`. If Cordial
-changes membership, a new canonical projection and commitment can be recorded
-for the same PoR round. PoR still changes only values.
+the same checkpoint and exact state projection. It restores the recorded map
+before computing finality. A newer committed state is then evaluated against
+that correctly restored view. Missing active weights for non-genesis state, or
+a configured membership different from the recorded membership, fails closed.
+PoR still changes only values.
 
 ### Production Runtime Owner
 
@@ -533,10 +538,12 @@ This removes the unsafe host-level gap where ingress could begin processing
 traffic before restored reputation weights were installed, or where a completed
 round could be committed without an activation attempt.
 
-Construction publishes the current ordered output before activation so the
-existing source-wave and finalized-prefix checks remain authoritative. Empty
-validator membership, missing reputation entries, unavailable source finality,
-or an incompatible finalized prefix fail construction. A wavelength that does
+Construction first installs the exact durable active projection, then computes
+the current ordered output under those weights. If committed state is newer
+than the activation record, its candidate projection is evaluated against that
+output before activation. Empty validator membership, missing reputation
+entries, unavailable source finality, an incompatible finalized prefix, or an
+active-record membership mismatch fail construction. A wavelength that does
 not match Cordial's fixed runtime wavelength, and invalid shard settings, are
 rejected before a fresh state directory is initialized.
 
@@ -624,19 +631,20 @@ The adapter stores canonical block envelopes under:
 
 File names use the round as exactly 20 decimal digits, preserving numeric order
 under lexical sorting. `PorReputationBlockHistory::append` validates and
-encodes the block before taking its writer lock. It writes and syncs one
-temporary file, creates the final round path with a hard link, removes the
-temporary name, and syncs the directory. The hard-link step cannot replace an
-existing round. An identical append is idempotent; a different block at an
-already committed round is rejected.
+encodes the block before taking its writer lock. It creates and syncs a
+round-scoped temporary file with no-truncate semantics, creates the final round
+path with a hard link, removes the temporary name, and syncs the directory.
+The hard-link step cannot replace an existing round. An identical append is
+idempotent; a different block at an already committed round is rejected.
 
 Startup scans every controlled history file with the 64 MiB wire bound, decodes
 the canonical envelope, and checks that the filename round equals the embedded
 round. In ascending order it requires consecutive rounds, one shard, and the
 exact `previous_reputation_hash` derived from the preceding retained block.
 Corruption, gaps, malformed controlled names, shard changes, and broken links
-are startup errors. The single internal temporary name and unrelated files are
-ignored. For upgrades from snapshot-only storage, an empty history may begin at
+are startup errors. Startup unlinks recognized stale temporary names before
+opening any append path; unrelated files are ignored. For upgrades from
+snapshot-only storage, an empty history may begin at
 the snapshot's latest audited block as an explicit local checkpoint; every
 subsequent block must continue that checkpoint.
 
