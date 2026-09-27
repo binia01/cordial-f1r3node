@@ -482,6 +482,50 @@ prospectively verifies that the new values preserve the exported finalized prefi
 cache. Ratings from wave `k` therefore influence only subsequent Cordial
 decisions.
 
+### Durable Activation Record
+
+The adapter stores the last accepted projection at
+`<data_dir>/por/weight-activation.bin`. The bounded v1 envelope contains:
+
+```text
+"cordial-por-weight-activation"
+version                          u16 big-endian (= 1)
+payload_length                   u64 big-endian
+reputation_round                 u64 big-endian
+checkpoint_presence              u8
+[checkpoint_hash || source_wave] 32 bytes || u64
+weights_commitment               Blake2b-256
+checksum                         Blake2b-256
+```
+
+The weight commitment covers
+`"cordial-por:authorized-weight-map:v1"`, the entry count, and each
+length-prefixed validator ID plus weight in canonical validator-ID order. It
+therefore binds the exact Cordial-supplied membership projection without making
+membership a PoR decision. The outer checksum is domain-separated with
+`"cordial-por:weight-activation-record:v1"`; malformed, oversized,
+unsupported, and corrupt records fail startup.
+
+`DurablePorState::activate_weights` enforces this ordering:
+
+```text
+commit and publish audited ReputationState
+  -> project onto Cordial's current validator identities
+  -> verify source finality and finalized-prefix safety
+  -> replace live Cordial weights
+  -> atomically persist and sync activation record
+```
+
+Activation rejection leaves the committed state pending and retryable. Failure
+while writing the marker fail-closes the durable owner, because live weights may
+already have changed and the rename outcome may be ambiguous. Startup validates
+that the marker is not ahead of the state and that an equal-round marker names
+the same checkpoint. It reapplies even a current marker to fresh ingress memory;
+a repeated identical call in that process is `AlreadyActive`. If Cordial
+changes membership, a new canonical projection and commitment can be recorded
+for the same PoR round. PoR still changes only values.
+
+
 ## Durable Reputation State Snapshot
 
 `src/snapshot.rs` encodes the complete finalized state required to resume after

@@ -208,7 +208,8 @@ Future:
 15. Optional checkpoint publications are matched against Cordial-supplied authorized attesters, replay-audited against the local completed rating round, deduplicated, and summarized by a strict configurable attestation threshold. This threshold is not Cordial finality.
 16. `DurablePorState::apply_attested_checkpoint` re-audits the checkpoint against current state and context before using the snapshot-first, history-second commit sequence.
 17. `authorized_validator_weights` projects the committed PoR state onto Cordial's existing validator identities, and `LiveIngress::apply_por_weights` activates the values only after source-wave and finalized-prefix safety checks.
-18. Concrete peer-network binding and durable attestation retention remain future stages.
+18. `DurablePorState::activate_weights` persists the exact activated round and validator-weight projection after Cordial accepts it, making failed activation and restart recovery idempotently retryable.
+19. Concrete peer-network binding and durable attestation retention remain future stages.
 
 ## Adapter Finalization Boundary
 
@@ -351,6 +352,23 @@ zero-total result is rejected. PoR therefore changes values, never membership.
 
 This preserves the one-round delay: interactions finalized in wave `k` produce
 PoR round `k + 1`, whose weights can affect only subsequent Cordial decisions.
+
+`DurablePorState::activate_weights` owns the commit-to-activation handoff. It
+derives the desired record from the latest committed state and the identities
+currently supplied by Cordial, calls `LiveIngress::apply_por_weights`, and
+atomically writes `<data_dir>/por/weight-activation.bin` only after live
+activation succeeds. The marker binds the reputation round, audited checkpoint,
+source finalized wave, and a canonical commitment to the projected validator
+map.
+
+A normal activation rejection does not change the marker and can be retried
+when Cordial finality catches up. A marker-write error fail-closes the durable
+owner because the filesystem result may be ambiguous. On restart, a committed
+state newer than the marker is pending and is retried. Even when the marker is
+current, startup reapplies it to fresh ingress memory; only a second identical
+call in the same process returns `AlreadyActive`. This makes the
+state-commit/weight-activation crash window recoverable without treating PoR as
+consensus.
 
 ## Ownership Boundaries
 
