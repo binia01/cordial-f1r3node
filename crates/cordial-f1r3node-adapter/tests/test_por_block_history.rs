@@ -194,6 +194,26 @@ fn recovery_ignores_interrupted_temporary_and_unrelated_files() {
 }
 
 #[test]
+fn recovery_unlinks_hard_linked_temporary_before_the_next_append() {
+    let directory = tempdir().unwrap();
+    let history = PorReputationBlockHistory::open(directory.path()).unwrap();
+    let first = block(1, None, SHARD_ID);
+    let second = block(2, Some(&first), SHARD_ID);
+    history.append(&first).unwrap();
+
+    let temporary_path = history.directory_path().join(".reputation-block.bin.tmp");
+    std::fs::hard_link(history.block_path(1), &temporary_path).unwrap();
+    drop(history);
+
+    let reopened = PorReputationBlockHistory::open(directory.path()).unwrap();
+    assert!(!temporary_path.exists());
+    reopened.append(&second).unwrap();
+
+    assert_eq!(reopened.load(1).unwrap(), Some(first));
+    assert_eq!(reopened.load(2).unwrap(), Some(second));
+}
+
+#[test]
 fn recovery_rejects_malformed_controlled_file_names() {
     let directory = tempdir().unwrap();
     let history = PorReputationBlockHistory::open(directory.path()).unwrap();

@@ -13,6 +13,7 @@ use cordial_f1r3node_adapter::{
         PorWeightActivationOutcome, RatingEnvelopeBroadcaster,
     },
     shard_conf::CasperShardConf,
+    shared_ordered_output::ReadOrderedOutput,
     snapshot::CORDIAL_WAVELENGTH,
 };
 use cordial_miners_core::{
@@ -95,6 +96,56 @@ fn block(tag: u8, creator_seed: u8, predecessor: Option<&BlockIdentity>) -> Bloc
             predecessors: predecessor.into_iter().cloned().collect::<HashSet<_>>(),
         },
     }
+}
+
+fn raw_block(tag: u8, creator: &NodeId, predecessors: &[&Block]) -> Block {
+    let mut content_hash = [0; 32];
+    content_hash[0] = tag;
+
+    Block {
+        identity: BlockIdentity {
+            content_hash,
+            creator: creator.clone(),
+            signature: vec![tag],
+        },
+        content: BlockContent {
+            payload: vec![tag],
+            predecessors: predecessors
+                .iter()
+                .map(|block| block.identity.clone())
+                .collect(),
+        },
+    }
+}
+
+fn weighted_finality_wave() -> (Vec<Block>, Vec<NodeId>, BlockIdentity) {
+    let validators: Vec<_> = (1..=5).map(|id| NodeId(vec![id])).collect();
+    let leader = raw_block(11, &validators[0], &[]);
+    let round_one: Vec<_> = validators[1..4]
+        .iter()
+        .enumerate()
+        .map(|(index, validator)| {
+            raw_block(u8::try_from(12 + index).unwrap(), validator, &[&leader])
+        })
+        .collect();
+    let round_one_refs: Vec<_> = round_one.iter().collect();
+    let round_two: Vec<_> = validators[1..4]
+        .iter()
+        .enumerate()
+        .map(|(index, validator)| {
+            raw_block(
+                u8::try_from(15 + index).unwrap(),
+                validator,
+                &round_one_refs,
+            )
+        })
+        .collect();
+
+    let leader_identity = leader.identity.clone();
+    let mut blocks = vec![leader];
+    blocks.extend(round_one);
+    blocks.extend(round_two);
+    (blocks, validators, leader_identity)
 }
 
 fn round_fixture() -> RoundFixture {
@@ -221,7 +272,100 @@ fn startup_restores_weights_before_ingress_is_exposed() {
 }
 
 #[test]
-fn recovered_non_genesis_state_is_not_exposed_before_finality_restoration() {
+fn startup_computes_finality_after_restoring_durable_weights() {
+    let directory = tempdir().unwrap();
+    let (blocks, validators, leader) = weighted_finality_wave();
+    let bootstrap_weights: HashMap<_, _> = validators
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, validator)| (validator, if index == 4 { 100 } else { 1 }))
+        .collect();
+    let active_weights: HashMap<_, _> = validators
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, validator)| (validator, if index == 4 { 1 } else { 100 }))
+        .collect();
+    let mut state = ReputationState::new(0);
+    for (validator, weight) in &active_weights {
+        state.set_reputation(validator.clone(), *weight);
+    }
+
+    let ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        bootstrap_weights.clone(),
+        CasperShardConf::default(),
+        "root",
+    );
+    let initial = PorRuntime::open(
+        directory.path(),
+        state,
+        ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+    assert_eq!(
+        initial.startup_activation(),
+        PorWeightActivationOutcome::Activated
+    );
+    drop(initial);
+
+    let mut bootstrap_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        bootstrap_weights.clone(),
+        CasperShardConf::default(),
+        "root",
+    );
+    for block in blocks.iter().cloned() {
+        bootstrap_ingress.ingest_trusted_block(block).unwrap();
+    }
+    assert!(
+        bootstrap_ingress
+            .latest_finalized_ordered_output(WAVELENGTH)
+            .unwrap()
+            .anchor
+            .is_none()
+    );
+
+    let mut restarted_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        bootstrap_weights,
+        CasperShardConf::default(),
+        "root",
+    );
+    for block in blocks {
+        restarted_ingress.ingest_trusted_block(block).unwrap();
+    }
+    let restarted = PorRuntime::open(
+        directory.path(),
+        ReputationState::new(99),
+        restarted_ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+
+    assert_eq!(
+        restarted.startup_activation(),
+        PorWeightActivationOutcome::Restored
+    );
+    assert_eq!(restarted.ingress().bonds(), &active_weights);
+    assert_eq!(
+        restarted
+            .ingress()
+            .ordered_output_reader()
+            .latest()
+            .and_then(|output| output.anchor.clone()),
+        Some(leader)
+    );
+}
+
+#[test]
+fn recovered_non_genesis_state_requires_a_durable_active_projection() {
     let directory = tempdir().unwrap();
     let fixture = round_fixture();
     let completed = completed_round(&fixture);
@@ -248,10 +392,74 @@ fn recovered_non_genesis_state_is_not_exposed_before_finality_restoration() {
             SHARD_ID,
             WAVELENGTH,
         ),
-        Err(PorRuntimeError::Durable(DurablePorStateError::Activation(
-            PorWeightActivationError::MissingFinalizedOutput { source_wave: 0 }
-        )))
+        Err(PorRuntimeError::Durable(
+            DurablePorStateError::MissingActivatedWeights { committed_round: 1 }
+        ))
     ));
+}
+
+#[test]
+fn startup_finishes_a_committed_but_unactivated_round() {
+    let directory = tempdir().unwrap();
+    let fixture = round_fixture();
+    let completed = completed_round(&fixture);
+    let validator = node(1);
+    let mut durable =
+        cordial_f1r3node_adapter::por::DurablePorState::open(directory.path(), fixture.state)
+            .unwrap();
+    let mut live_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator.clone(), 100)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    durable.activate_weights(&mut live_ingress).unwrap();
+    durable
+        .apply_completed_round(&completed, &fixture.config, SHARD_ID)
+        .unwrap();
+    assert_eq!(
+        durable
+            .activated_weight_record()
+            .unwrap()
+            .unwrap()
+            .reputation_round(),
+        0
+    );
+    drop(durable);
+
+    let mut restarted_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator, 7)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    for block in fixture.blocks {
+        restarted_ingress.ingest_trusted_block(block).unwrap();
+    }
+    let restarted = PorRuntime::open(
+        directory.path(),
+        ReputationState::new(99),
+        restarted_ingress,
+        fixture.config,
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+
+    assert_eq!(
+        restarted.startup_activation(),
+        PorWeightActivationOutcome::Activated
+    );
+    assert_eq!(restarted.state().state().unwrap().round(), 1);
+    assert_eq!(
+        restarted
+            .state()
+            .activated_weight_record()
+            .unwrap()
+            .unwrap()
+            .reputation_round(),
+        1
+    );
 }
 
 #[test]

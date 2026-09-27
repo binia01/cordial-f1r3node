@@ -263,7 +263,7 @@ fn startup_completes_history_when_snapshot_commit_won_the_crash_window() {
     let mut runtime = DurablePorState::open(directory.path(), fixture.state).unwrap();
     let temporary_path = runtime
         .history_directory_path()
-        .join(".reputation-block.bin.tmp");
+        .join(format!(".reputation-block-{expected_round:020}.bin.tmp"));
     std::fs::create_dir(&temporary_path).unwrap();
 
     assert!(matches!(

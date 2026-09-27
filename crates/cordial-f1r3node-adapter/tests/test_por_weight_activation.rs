@@ -193,6 +193,10 @@ fn activation_records_exact_projection_without_changing_membership() {
     assert_eq!(activated.reputation_round(), 0);
     assert_eq!(activated.checkpoint_hash(), None);
     assert_eq!(activated.source_finalized_wave(), None);
+    assert_eq!(
+        activated.weights(),
+        &HashMap::from([(validator_a.clone(), 20), (validator_b.clone(), 80),])
+    );
     assert!(runtime.weight_activation_record_path().is_file());
     assert!(!runtime.has_unactivated_committed_round().unwrap());
     assert_eq!(ingress.bonds().len(), 2);
@@ -227,11 +231,46 @@ fn restart_reapplies_a_durable_activation_to_fresh_ingress_memory() {
 
     assert!(!reopened.has_unactivated_committed_round().unwrap());
     assert_eq!(
-        reopened.activate_weights(&mut fresh_ingress).unwrap(),
-        PorWeightActivationOutcome::Restored
+        reopened
+            .restore_activated_weights(&mut fresh_ingress)
+            .unwrap(),
+        Some(PorWeightActivationOutcome::Restored)
     );
     assert_eq!(fresh_ingress.bonds().get(&validator_a), Some(&20));
     assert_eq!(fresh_ingress.bonds().get(&validator_b), Some(&80));
+}
+
+#[test]
+fn restart_rejects_membership_drift_before_restoring_weights() {
+    let directory = tempdir().unwrap();
+    let (validator_a, validator_b, _, state) = genesis_state();
+    let mut runtime = DurablePorState::open(directory.path(), state).unwrap();
+    let mut ingress = LiveIngress::with_consensus_view(
+        (),
+        HashMap::from([(validator_a.clone(), 50), (validator_b, 50)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    runtime.activate_weights(&mut ingress).unwrap();
+    drop(runtime);
+
+    let mut reopened = DurablePorState::open(directory.path(), ReputationState::new(99)).unwrap();
+    let mut changed_membership = LiveIngress::with_consensus_view(
+        (),
+        HashMap::from([(validator_a, 100)]),
+        CasperShardConf::default(),
+        "root",
+    );
+
+    assert!(matches!(
+        reopened.restore_activated_weights(&mut changed_membership),
+        Err(DurablePorStateError::Activation(
+            PorWeightActivationError::ActivatedValidatorSetMismatch {
+                configured: 1,
+                recorded: 2,
+            }
+        ))
+    ));
 }
 
 #[test]
