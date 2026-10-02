@@ -109,6 +109,8 @@ fn fixture_with_producers(weights: &[(u8, u64)], producers: [u8; 3]) -> Fixture 
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&blocklace, &output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut state = ReputationState::new(0);
     for &(seed, weight) in weights {
