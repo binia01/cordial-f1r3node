@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashSet};
 use cordial_f1r3node_adapter::{
     ordered_output::OrderedFinalizedOutput,
     por_finality::{FinalizedRatingRound, PorFinalityTracker},
-    por_interactions::PorInteractionError,
     por_ratings::{
         PorRatingError, build_finalized_block_production_rating_batch, build_verified_rating_batch,
         sign_admitted_interaction, validate_signed_rating, verify_rating_signature,
@@ -121,6 +120,8 @@ fn finalized_wave_zero_fixture() -> (
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&blocklace, &output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut state = ReputationState::new(0);
     state.set_reputation(node(1), 100);
@@ -327,7 +328,18 @@ fn finalized_rating_batch_is_deterministic() {
 }
 
 #[test]
-fn finalized_rating_batch_propagates_admission_failure_atomically() {
+fn unknown_recipients_are_silently_skipped_in_rating_batch() {
+    // Before Bug 3 was fixed, a single unknown recipient caused
+    // build_finalized_block_production_rating_batch to return
+    // Err(Interaction(Admission(UnknownInteractionRecipient))), aborting the
+    // whole batch for all remaining valid recipients atomically.
+    //
+    // After the fix, unknown (and ejected) recipients are filtered before
+    // admission; the function returns Ok with only the known members rated.
+    //
+    // Setup: rater = node(9); fixture wave has producers node(1), node(2), node(3).
+    // State contains node(1) and node(9) only — node(2) and node(3) are absent.
+    // Expected: Ok(batch) with exactly one rating for node(1).
     let (blocklace, output, opened, _, _) = finalized_wave_zero_fixture();
     let state = {
         let mut missing_recipient = ReputationState::new(0);
@@ -336,20 +348,21 @@ fn finalized_rating_batch_propagates_admission_failure_atomically() {
         missing_recipient
     };
 
-    assert_eq!(
-        build_finalized_block_production_rating_batch(
-            &blocklace,
-            &output,
-            opened,
-            &node(9),
-            &state,
-            &PorConfig::default(),
-            &private_key(9),
-        ),
-        Err(PorRatingError::Interaction(PorInteractionError::Admission(
-            PorError::UnknownInteractionRecipient
-        )))
-    );
+    let batch = build_finalized_block_production_rating_batch(
+        &blocklace,
+        &output,
+        opened,
+        &node(9),
+        &state,
+        &PorConfig::default(),
+        &private_key(9),
+    )
+    .expect("unknown recipients must be silently skipped, not cause an error");
+
+    // Only node(1) is a known, non-ejected member; node(2) and node(3) are
+    // absent from the state and must be excluded from the batch.
+    assert_eq!(batch.ratings.len(), 1, "only node(1) should be rated");
+    assert_eq!(batch.ratings[0].recipient, node(1));
 }
 
 #[test]

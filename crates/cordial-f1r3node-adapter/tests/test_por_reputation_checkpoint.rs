@@ -125,6 +125,8 @@ fn completed_round(fixture: &Fixture) -> CompletedPorRatingRound {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&fixture.blocklace, &fixture.output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut coordinator = PorRatingRoundCoordinator::new(
         &fixture.blocklace,

@@ -100,6 +100,8 @@ fn fixture() -> Fixture {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&blocklace, &output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut state = ReputationState::new(0);
     for seed in [1, 2, 3, 8, 9] {
@@ -439,4 +441,59 @@ fn closes_an_empty_validated_round_without_inventing_ratings() {
 
     assert_eq!(batch.round, fixture.opened.rating_round);
     assert!(batch.ratings.is_empty());
+}
+
+#[test]
+fn ejected_producer_does_not_abort_honest_rating_batch() {
+    // Set up: nodes 1 (leader/anchor), 2 (second), 3 (third) all produce blocks
+    // in wave 1. Node 8 is the rater (no block). Node 3 is ejected.
+    // With the fix, rater-8's batch for node-3 is silently skipped; the ratings
+    // for nodes 1 and 2 still succeed.
+    let fixture = fixture();
+
+    // Eject node 3 (third block producer) from the reputation state.
+    let mut ejected_state = fixture.state.clone();
+    ejected_state.eject_validator(&node(3)).unwrap();
+
+    // Building the local batch with the ejected state must succeed — node 3 is
+    // filtered before admission so it does not abort the batch for nodes 1 & 2.
+    let batch = build_finalized_block_production_rating_batch(
+        &fixture.blocklace,
+        &fixture.output,
+        fixture.opened,
+        &node(8),
+        &ejected_state,
+        &fixture.config,
+        &private_key(8),
+    )
+    .expect("batch building must succeed even when one recipient is ejected");
+
+    // Only 2 ratings: for nodes 1 and 2.  Node 3 is silently skipped.
+    assert_eq!(
+        batch.ratings.len(),
+        2,
+        "expected ratings for nodes 1 and 2 only; node 3 should be silently skipped"
+    );
+    let recipients: Vec<NodeId> = batch.ratings.iter().map(|r| r.recipient.clone()).collect();
+    assert!(
+        !recipients.contains(&node(3)),
+        "ejected node 3 must not appear as a recipient"
+    );
+
+    // Insert the batch into a collector built with the ejected state.
+    let mut collector = BlockProductionRatingCollector::new(
+        &fixture.blocklace,
+        &fixture.output,
+        fixture.opened,
+        &ejected_state,
+        &fixture.config,
+    )
+    .unwrap();
+
+    // insert_batch must succeed — the ejected producer did not abort the batch.
+    collector
+        .insert_batch(batch)
+        .expect("insert_batch must not fail due to an ejected producer");
+
+    assert_eq!(collector.len(), 2);
 }
