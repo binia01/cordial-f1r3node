@@ -190,6 +190,8 @@ fn completed_round(fixture: &RoundFixture) -> CompletedPorRatingRound {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&fixture.blocklace, &fixture.output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut coordinator = PorRatingRoundCoordinator::new(
         &fixture.blocklace,
@@ -531,6 +533,7 @@ fn invalid_runtime_parameters_fail_before_state_initialization() {
     assert!(!directory.path().join("por").exists());
 }
 
+#[allow(deprecated)]
 #[test]
 fn completed_round_is_automatically_activated_after_commit() {
     let directory = tempdir().unwrap();
@@ -571,6 +574,7 @@ fn completed_round_is_automatically_activated_after_commit() {
     assert_eq!(runtime.ingress().bonds().len(), 1);
 }
 
+#[allow(deprecated)]
 #[test]
 fn committed_round_with_pending_activation_can_be_retried() {
     let directory = tempdir().unwrap();
