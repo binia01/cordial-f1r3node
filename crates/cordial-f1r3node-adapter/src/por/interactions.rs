@@ -158,6 +158,12 @@ pub fn validate_finalized_rating_round(
 /// Evidence extraction remains adapter-owned, while admission is delegated to
 /// `cordial_por` so validator membership, ejection, and round policy have one
 /// authoritative implementation. No score or signature is produced here.
+///
+/// Recipients who are ejected from, or entirely absent from, the reputation
+/// state are **silently skipped** before admission. This prevents an ejected
+/// producer's presence in a finalized wave from aborting an honest validator's
+/// entire rating batch (see: `BlockProductionRatingCollector::insert_batch`,
+/// which is atomic).
 pub fn admit_finalized_block_production_interactions(
     blocklace: &Blocklace,
     output: &OrderedFinalizedOutput,
@@ -167,6 +173,18 @@ pub fn admit_finalized_block_production_interactions(
 ) -> Result<Vec<AdmittedInteraction>, PorInteractionError> {
     extract_block_production_evidence(blocklace, output, opened, rater)?
         .into_iter()
+        .filter(|evidence| {
+            // Ejected or non-member recipients produce no admissible rating in
+            // this round. Filtering here rather than propagating the admission
+            // error keeps the honest rater's batch for all remaining valid
+            // recipients intact.
+            let is_member = state
+                .reputation_list()
+                .entries
+                .binary_search_by(|entry| entry.node_id.cmp(&evidence.recipient))
+                .is_ok();
+            is_member && !state.is_ejected(&evidence.recipient)
+        })
         .map(|evidence| {
             admit_interaction_evidence(evidence, state).map_err(PorInteractionError::Admission)
         })
