@@ -156,10 +156,25 @@ impl<A> PorRuntime<A> {
 
     /// Commit a completed local rating round and immediately activate its weights.
     ///
+    /// # Safety
+    ///
+    /// This method bypasses the checkpoint-attestation requirement and activates
+    /// weights based solely on the local validator's view of which rating batches
+    /// arrived. Two honest validators can produce different `ReputationBlock`
+    /// hashes and weights if they closed on different (but both quorum-satisfying)
+    /// subsets of complete batches.
+    ///
+    /// **Production code must use [`Self::commit_attested_checkpoint`] instead.**
+    /// This method is preserved for emergency single-validator scenarios and tests.
+    ///
     /// An outer error means the durable state transition did not publish in
     /// memory (and may require startup recovery after an ambiguous storage
     /// failure). A successful return always contains the activation attempt;
     /// an activation error leaves the committed round available for retry.
+    #[deprecated(
+        since = "0.0.0",
+        note = "bypasses checkpoint attestation — use commit_attested_checkpoint for production"
+    )]
     pub fn commit_completed_round(
         &mut self,
         completed: &CompletedPorRatingRound,
@@ -175,6 +190,8 @@ impl<A> PorRuntime<A> {
     }
 
     /// Commit an attested checkpoint and immediately activate its weights.
+    ///
+    /// Prefer [`Self::commit_with_attested_checkpoint`] for the semantically explicit production name.
     pub fn commit_attested_checkpoint(
         &mut self,
         attested: &AttestedPorCheckpoint,
@@ -191,6 +208,25 @@ impl<A> PorRuntime<A> {
             applied,
             activation,
         })
+    }
+
+    /// Commit a completed rating round after checkpoint attestation and immediately
+    /// activate its weights.
+    ///
+    /// This is the **canonical production commit path**. The `attested` checkpoint
+    /// guarantees that a 2/3 weighted supermajority of authorized validators signed
+    /// the same `ReputationBlock` hash, preventing divergent weight activation
+    /// across honest validators.
+    ///
+    /// An outer error means the durable state transition did not publish in
+    /// memory. An inner `activation` error leaves the committed round available
+    /// for retry via [`Self::retry_weight_activation`].
+    pub fn commit_with_attested_checkpoint(
+        &mut self,
+        attested: &AttestedPorCheckpoint,
+        completed: &CompletedPorRatingRound,
+    ) -> Result<CommittedPorRound, DurablePorStateError> {
+        self.commit_attested_checkpoint(attested, completed)
     }
 
     /// Retry the latest committed projection after a transient activation failure.
