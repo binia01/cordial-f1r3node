@@ -71,18 +71,26 @@ impl PorFinalityTracker {
         self.last_opened_wave
     }
 
-    /// Open the rating round following the output's finalized leader wave.
+    /// Open the rating round(s) following the output's finalized leader wave.
     ///
     /// Outputs without an anchor have no established finality and return
-    /// `Ok(None)`. Repeated and older finalized outputs are idempotent. A
-    /// different final leader for the most recently opened wave is rejected.
+    /// `Ok(vec![])`. Repeated and older finalized outputs are idempotent and
+    /// return `Ok(vec![])`. A different final leader for the most recently
+    /// opened wave is rejected with [`PorFinalityError::ConflictingFinalLeader`].
+    ///
+    /// When one or more waves have been skipped (i.e. `finalized_wave` is more
+    /// than one ahead of `last_opened_wave`), this method returns **all**
+    /// missing rounds as synthetic gap rounds followed by the real round.
+    /// Elements `[0..len-1]` are synthetic gap rounds (no actual finalized
+    /// output for those waves) and element `[len-1]` is the real round that
+    /// corresponds to this observed finalized output.
     pub fn observe_finalized_output(
         &mut self,
         blocklace: &Blocklace,
         output: &OrderedFinalizedOutput,
-    ) -> Result<Option<FinalizedRatingRound>, PorFinalityError> {
+    ) -> Result<Vec<FinalizedRatingRound>, PorFinalityError> {
         let Some(final_leader) = output.anchor.as_ref() else {
-            return Ok(None);
+            return Ok(vec![]);
         };
 
         if output.wavelength == 0 {
@@ -96,12 +104,12 @@ impl PorFinalityTracker {
 
         if let Some(last_opened_wave) = self.last_opened_wave {
             if finalized_wave < last_opened_wave {
-                return Ok(None);
+                return Ok(vec![]);
             }
 
             if finalized_wave == last_opened_wave {
                 if self.last_final_leader.as_ref() == Some(final_leader) {
-                    return Ok(None);
+                    return Ok(vec![]);
                 }
 
                 return Err(PorFinalityError::ConflictingFinalLeader {
@@ -110,15 +118,28 @@ impl PorFinalityTracker {
             }
         }
 
-        let rating_round = rating_round_from_finalized_wave(finalized_wave)
-            .map_err(PorFinalityError::RatingRound)?;
+        // Collect all waves from the first missing wave up to finalized_wave
+        // (inclusive). When waves are contiguous there is exactly one element.
+        // When waves are skipped, the leading elements are synthetic gap rounds
+        // with no associated finalized output.
+        let first_missing_wave = self
+            .last_opened_wave
+            .map(|w| w + 1)
+            .unwrap_or(finalized_wave);
+
+        let mut rounds = Vec::new();
+        for w in first_missing_wave..=finalized_wave {
+            let rating_round =
+                rating_round_from_finalized_wave(w).map_err(PorFinalityError::RatingRound)?;
+            rounds.push(FinalizedRatingRound {
+                finalized_wave: w,
+                rating_round,
+            });
+        }
 
         self.last_opened_wave = Some(finalized_wave);
         self.last_final_leader = Some(final_leader.clone());
 
-        Ok(Some(FinalizedRatingRound {
-            finalized_wave,
-            rating_round,
-        }))
+        Ok(rounds)
     }
 }
