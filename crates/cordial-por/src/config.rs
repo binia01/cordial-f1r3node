@@ -54,17 +54,30 @@ pub struct PorConfig {
     pub missing_entry_policy: MissingEntryPolicy,
 }
 
+/// Numerator of the default liquid-rank alpha ratio (3/5 = 60 %).
+pub const DEFAULT_LIQUID_RANK_ALPHA_NUMERATOR: ReputationWeight = 3;
+
+/// Denominator of the default liquid-rank alpha ratio (3/5 = 60 %).
+pub const DEFAULT_LIQUID_RANK_ALPHA_DENOMINATOR: ReputationWeight = 5;
+
 impl PorConfig {
     pub const DEFAULT_SCALE: ReputationWeight = 1_000_000_000;
 
     pub const DEFAULT_INITIAL_REPUTATION: ReputationWeight = 200_000_000;
 
     pub fn new(scale: ReputationWeight, initial_reputation: ReputationWeight) -> Self {
+        // Default alpha = 60 % of scale (3/5). This keeps liquid_rank_alpha <= scale
+        // for every valid scale value, avoiding InvalidLiquidRankAlpha on first use.
+        // When scale = DEFAULT_SCALE (1_000_000_000) the result is 600_000_000,
+        // preserving existing behaviour exactly.
+        let liquid_rank_alpha = scale.saturating_mul(DEFAULT_LIQUID_RANK_ALPHA_NUMERATOR)
+            / DEFAULT_LIQUID_RANK_ALPHA_DENOMINATOR;
+
         Self {
             scale,
             initial_reputation,
 
-            liquid_rank_alpha: 600_000_000,
+            liquid_rank_alpha,
 
             minimum_rating: 0,
 
