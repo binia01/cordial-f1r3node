@@ -18,10 +18,10 @@ use crate::{
     matrix::build_rating_matrix,
     normalization::normalize_rating_matrix,
     ratings::build_rating_batch,
-    transition::blend_reputation_transition,
+    transition::{apply_reputation_penalties, blend_reputation_transition},
     types::{
-        RatingBatch, RatingRecord, ReputationBlock, ReputationList, ReputationRound,
-        ReputationVector,
+        RatingBatch, RatingRecord, ReputationBlock, ReputationList, ReputationPenaltyEvents,
+        ReputationRound, ReputationVector,
     },
 };
 
@@ -38,6 +38,19 @@ pub fn replay_reputation_transition(
     ratings: &[RatingRecord],
     round: ReputationRound,
     config: &PorConfig,
+) -> Result<ReputationList, PorError> {
+    replay_reputation_transition_with_penalties(previous_reputation, ratings, round, config, None)
+}
+
+/// Replay with optional, externally authenticated penalty events for this round.
+/// Penalties are applied after clamp, using previous-round weights. Missing
+/// ratings alone do not trigger decay. `None` preserves the no-penalty path.
+pub fn replay_reputation_transition_with_penalties(
+    previous_reputation: &ReputationVector,
+    ratings: &[RatingRecord],
+    round: ReputationRound,
+    config: &PorConfig,
+    penalties: Option<&ReputationPenaltyEvents>,
 ) -> Result<ReputationList, PorError> {
     let batch = build_rating_batch(round, ratings.to_vec(), config)?;
     let matrix = build_rating_matrix(&batch)?;
@@ -59,10 +72,14 @@ pub fn replay_reputation_transition(
         }
     }
 
-    Ok(ReputationList {
+    let mut next = ReputationList {
         round: clamped.round,
         entries,
-    })
+    };
+    if let Some(events) = penalties {
+        apply_reputation_penalties(&mut next, previous_reputation, ratings, events, config)?;
+    }
+    Ok(next)
 }
 
 /// Verify that a proposed reputation block matches a deterministic replay.
@@ -79,6 +96,28 @@ pub fn verify_reputation_transition(
     proposed_block: &ReputationBlock,
     context: ReputationBlockContext<'_>,
     config: &PorConfig,
+) -> Result<(), PorError> {
+    verify_reputation_transition_with_penalties(
+        previous_reputation,
+        ratings,
+        proposed_block,
+        context,
+        config,
+        None,
+    )
+}
+
+/// Verify a penalty-inclusive block against the same finalized events used by
+/// its producer. Events must be authenticated out of band, just like ratings;
+/// their calculated result is bound by the block's reputation root. Omitting
+/// a penalty that changes reputation causes replay verification to fail.
+pub fn verify_reputation_transition_with_penalties(
+    previous_reputation: &ReputationVector,
+    ratings: &[RatingRecord],
+    proposed_block: &ReputationBlock,
+    context: ReputationBlockContext<'_>,
+    config: &PorConfig,
+    penalties: Option<&ReputationPenaltyEvents>,
 ) -> Result<(), PorError> {
     validate_reputation_block(proposed_block)?;
 
@@ -118,8 +157,13 @@ pub fn verify_reputation_transition(
     }
 
     let proposed = &proposed_block.reputation_list;
-    let expected =
-        replay_reputation_transition(previous_reputation, ratings, proposed.round, config)?;
+    let expected = replay_reputation_transition_with_penalties(
+        previous_reputation,
+        ratings,
+        proposed.round,
+        config,
+        penalties,
+    )?;
 
     compare_reputation_lists(&expected, proposed)
 }
