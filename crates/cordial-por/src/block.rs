@@ -52,7 +52,8 @@ pub struct ReputationBlockContext<'a> {
 ///
 /// The caller supplies protocol data, never precomputed commitment bytes. This
 /// function derives the previous-block hash, configuration commitment, rating
-/// batch commitment, and reputation-list root using the canonical v1 formats.
+/// batch commitment, and reputation-list root using the canonical formats
+/// (configuration v2, rating/list/block v1).
 pub fn build_reputation_block(
     context: ReputationBlockContext<'_>,
     ratings: &RatingBatch,
