@@ -276,20 +276,24 @@ publishes a block.
 
 ## Canonical Reputation Commitments
 
-All v1 commitments use Blake2b-256. Integers are unsigned big-endian, collection
+All commitments use Blake2b-256. The configuration commitment is v2; the other
+commitment formats remain v1. Integers are unsigned big-endian, collection
 counts and byte lengths are `u64`, optional values use a one-byte `0`/`1`
 discriminant, and Boolean values use `0`/`1`. Domain separators are included
 verbatim as the first bytes of their preimages.
 
 ```text
 config_commitment = H(
-    "cordial-por:config-commitment:v1"
+    "cordial-por:config-commitment:v2"
     || scale_u64
     || initial_reputation_u64
     || liquid_rank_alpha_u64
     || minimum_rating_u64
     || maximum_rating_u64
     || missing_entry_policy_u8
+    || correlation_threshold_u64
+    || base_slash_penalty_u64
+    || inactivity_decay_gamma_u64
 )
 
 rating_batch_commitment = H(

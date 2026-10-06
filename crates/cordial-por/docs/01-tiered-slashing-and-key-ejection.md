@@ -220,3 +220,41 @@ flowchart TD
 
 3. **Audit Replay Conformance Test**:
    - Verify `verify_reputation_transition()` passes for blocks incorporating tiered slashes and rejects blocks with incorrect penalty math.
+
+
+## 7. Penalty calculation API
+
+`transition::{compute_slash_penalty, apply_slash_to_reputation,
+compute_inactivity_decay}` exposes checked fixed-point arithmetic. Penalty
+fractions are scaled to `PorConfig::scale`; invalid fractions and zero total
+slash weight return the existing `PorError::InvalidConfiguration` variant.
+The correlation threshold uses exact cross multiplication before rounding.
+
+`ReputationPenaltyEvents` carries externally authenticated events for one
+reputation round. Use `replay_reputation_transition_with_penalties` and
+`verify_reputation_transition_with_penalties` with `Some(&events)` to construct
+and audit penalty-inclusive blocks. The existing entry points delegate with
+`None`. `ReputationState::apply_reputation_block_with_penalties` provides the
+same audit-before-mutation boundary for applying these blocks.
+
+The host must supply an agreed, finalized event set, not unverified peer
+claims. The pure library validates event shape, round, and offender membership;
+it does not authenticate equivocation proofs. Empty evidence references,
+duplicate/overlapping offenders, unknown or already-ejected keys are rejected.
+Inactivity is explicit and requires absence from both sides of the rating batch.
+Each consecutive transition accepts exactly one missed round per inactive key;
+cumulative counters must be converted to per-round events to avoid double decay.
+
+Penalties run after blend/clamp and before snapshot application. For a penalized
+node they replace rating-derived rewards with a deduction from its previous
+reputation. Correlation weights also come from the previous active set, before
+any deductions. Unpenalized nodes follow the existing calculation. Existing
+excluded keys remain excluded. These pure deductions do not initiate key
+ejection or implement the separate retained-capital/key-registration lifecycle.
+
+The configuration commitment uses the `config-commitment:v2` domain and binds
+all three penalty parameters. The block wire layout remains v1. Existing v1
+configuration hashes do not pass replay under the new configuration commitment;
+a deployment needs a coordinated transition/checkpoint rather than silently
+mixing old and new replay rules. Penalty evidence remains external replay input,
+while the calculated reputation list is bound by the block's reputation root.
