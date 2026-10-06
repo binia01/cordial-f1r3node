@@ -136,25 +136,36 @@ pub struct ReputationVector {
 }
 
 // ============================================================
-// Penalty placeholders
+// Finalized penalty inputs
 // ============================================================
 
-/// Placeholder for equivocation evidence.
-///
-/// No slashing logic exists.
+/// One externally authenticated equivocation event. The pure calculation
+/// layer requires a nonempty evidence reference but does not verify proofs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EquivocationPenalty {
     pub offender: NodeId,
     pub evidence: Vec<u8>,
 }
 
-/// Placeholder for inactivity penalties.
-///
-/// No punishment logic exists.
+/// One externally established missed participation round. Consecutive replay
+/// accepts `missed_rounds == 1`; cumulative counters must not be reapplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InactivityPenalty {
     pub offender: NodeId,
     pub missed_rounds: u64,
+}
+
+/// Finalized penalty events for exactly one reputation transition.
+///
+/// Callers must agree on and authenticate these inputs through the host's
+/// finalized evidence path; a peer's claim or an absent rating alone is not
+/// proof of misconduct/inactivity. Event order does not affect calculation.
+/// Duplicate offenders and overlapping slash/inactivity events are rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReputationPenaltyEvents {
+    pub round: ReputationRound,
+    pub equivocations: Vec<EquivocationPenalty>,
+    pub inactivity: Vec<InactivityPenalty>,
 }
 
 // ============================================================
