@@ -14,7 +14,9 @@ use crate::{
     types::{RatingBatch, ReputationBlock, ReputationCommitment, ReputationList, ReputationVector},
 };
 
-pub const POR_CONFIG_COMMITMENT_DOMAIN: &[u8] = b"cordial-por:config-commitment:v1";
+/// V2 includes all slash and inactivity parameters; legacy v1 hashes are not
+/// interchangeable with this replay policy.
+pub const POR_CONFIG_COMMITMENT_DOMAIN: &[u8] = b"cordial-por:config-commitment:v2";
 pub const POR_RATING_BATCH_COMMITMENT_DOMAIN: &[u8] = b"cordial-por:rating-batch-commitment:v1";
 pub const POR_REPUTATION_LIST_COMMITMENT_DOMAIN: &[u8] =
     b"cordial-por:reputation-list-commitment:v1";
@@ -23,7 +25,7 @@ pub const POR_REPUTATION_BLOCK_COMMITMENT_DOMAIN: &[u8] =
 
 /// Commit to every protocol parameter consumed by reputation replay.
 pub fn config_commitment(config: &PorConfig) -> ReputationCommitment {
-    let mut payload = Vec::with_capacity(POR_CONFIG_COMMITMENT_DOMAIN.len() + 8 * 5 + 1);
+    let mut payload = Vec::with_capacity(POR_CONFIG_COMMITMENT_DOMAIN.len() + 8 * 8 + 1);
     payload.extend_from_slice(POR_CONFIG_COMMITMENT_DOMAIN);
     payload.extend_from_slice(&config.scale.to_be_bytes());
     payload.extend_from_slice(&config.initial_reputation.to_be_bytes());
@@ -35,6 +37,9 @@ pub fn config_commitment(config: &PorConfig) -> ReputationCommitment {
         MissingEntryPolicy::CarryForward => 1,
         MissingEntryPolicy::Neutral => 2,
     });
+    payload.extend_from_slice(&config.correlation_threshold.to_be_bytes());
+    payload.extend_from_slice(&config.base_slash_penalty.to_be_bytes());
+    payload.extend_from_slice(&config.inactivity_decay_gamma.to_be_bytes());
     Blake2b256Hasher.hash(&payload)
 }
 
