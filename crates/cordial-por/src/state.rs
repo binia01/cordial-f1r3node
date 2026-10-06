@@ -3,14 +3,14 @@ use std::collections::BTreeSet;
 use cordial_miners_core::NodeId;
 
 use crate::{
-    audit::verify_reputation_transition,
+    audit::verify_reputation_transition_with_penalties,
     block::{ReputationBlockContext, validate_reputation_block},
     commitments::{validate_reputation_entries, validate_reputation_vector},
     config::PorConfig,
     error::PorError,
     types::{
-        RatingRecord, ReputationBlock, ReputationEntry, ReputationList, ReputationRound,
-        ReputationVector, ReputationWeight,
+        RatingRecord, ReputationBlock, ReputationEntry, ReputationList, ReputationPenaltyEvents,
+        ReputationRound, ReputationVector, ReputationWeight,
     },
 };
 
@@ -239,11 +239,33 @@ impl ReputationState {
         block: ReputationBlock,
         config: &PorConfig,
     ) -> Result<(), PorError> {
+        self.apply_reputation_block_with_penalties(
+            shard_id,
+            source_finalized_wave,
+            ratings,
+            block,
+            config,
+            None,
+        )
+    }
+
+    /// Audit a penalty-inclusive block before atomically replacing the snapshot.
+    /// The caller supplies finalized penalty events; this method does not
+    /// authenticate evidence or initiate key ejection/capital transfer.
+    pub fn apply_reputation_block_with_penalties(
+        &mut self,
+        shard_id: &[u8],
+        source_finalized_wave: u64,
+        ratings: &[RatingRecord],
+        block: ReputationBlock,
+        config: &PorConfig,
+        penalties: Option<&ReputationPenaltyEvents>,
+    ) -> Result<(), PorError> {
         let previous = ReputationVector {
             round: self.current_round,
             values: self.reputation_list.entries.clone(),
         };
-        verify_reputation_transition(
+        verify_reputation_transition_with_penalties(
             &previous,
             ratings,
             &block,
@@ -253,6 +275,7 @@ impl ReputationState {
                 previous_block: self.latest_block.as_ref(),
             },
             config,
+            penalties,
         )?;
 
         let vector = ReputationVector {
