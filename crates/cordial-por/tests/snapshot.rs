@@ -24,6 +24,7 @@ fn config() -> PorConfig {
         minimum_rating: 0,
         maximum_rating: 100,
         missing_entry_policy: MissingEntryPolicy::CarryForward,
+        ..PorConfig::new(100, 0)
     }
 }
 
@@ -81,17 +82,19 @@ fn v1_snapshot_round_trips_the_complete_finalized_state() {
 }
 
 #[test]
-fn v1_snapshot_encoding_is_deterministic() {
+fn v1_snapshot_with_config_v2_encoding_is_deterministic() {
     let state = audited_state();
     let first = encode_reputation_state_snapshot(&state).unwrap();
     let second = encode_reputation_state_snapshot(&state).unwrap();
 
     assert_eq!(first, second);
+    // Snapshot framing remains v1, but the embedded block now commits to the
+    // v2 configuration (including penalty parameters), changing this digest.
     assert_eq!(
         Blake2b256Hasher.hash(&first),
         [
-            68, 196, 208, 65, 40, 25, 73, 53, 178, 96, 174, 79, 73, 233, 160, 190, 99, 250, 31,
-            184, 60, 75, 141, 242, 120, 247, 252, 22, 17, 135, 8, 18,
+            71, 78, 159, 235, 182, 209, 143, 124, 81, 111, 144, 228, 156, 87, 120, 90, 22, 227,
+            133, 104, 83, 208, 127, 44, 129, 126, 203, 76, 237, 57, 156, 83,
         ]
     );
 }
