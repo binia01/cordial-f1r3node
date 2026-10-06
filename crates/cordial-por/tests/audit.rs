@@ -19,6 +19,9 @@ fn config() -> PorConfig {
         minimum_rating: 0,
         maximum_rating: 100,
         missing_entry_policy: MissingEntryPolicy::default(),
+        correlation_threshold: PorConfig::new(100, 0).correlation_threshold,
+        base_slash_penalty: PorConfig::new(100, 0).base_slash_penalty,
+        inactivity_decay_gamma: PorConfig::new(100, 0).inactivity_decay_gamma,
     }
 }
 
