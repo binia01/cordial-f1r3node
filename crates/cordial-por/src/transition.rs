@@ -10,6 +10,10 @@
 //! previous reputation so the sigmoid does not decay an already-finalized
 //! value.
 
+pub use crate::penalties::{
+    apply_slash_to_reputation, compute_inactivity_decay, compute_slash_penalty,
+};
+
 use crate::{
     config::{MissingEntryPolicy, PorConfig},
     error::PorError,
@@ -166,5 +170,105 @@ fn validate_reputation_order(vector: &ReputationVector) -> Result<(), PorError> 
         }
     }
 
+    Ok(())
+}
+
+/// Apply externally finalized penalties after blend/clamp, before publishing
+/// the snapshot. Offenders receive no rating reward in a fault/missed round:
+/// deductions use their previous-round reputation. This is penalty math only;
+/// permanent key ejection and capital transfer are separate host operations.
+pub(crate) fn apply_reputation_penalties(
+    next: &mut crate::types::ReputationList,
+    previous: &ReputationVector,
+    ratings: &[crate::types::RatingRecord],
+    events: &crate::types::ReputationPenaltyEvents,
+    config: &PorConfig,
+) -> Result<(), PorError> {
+    use crate::penalties::{compute_slash_penalty_wide, validate_penalty_config};
+    use std::collections::BTreeSet;
+
+    validate_penalty_config(config)?;
+    if events.round != next.round || previous.round.checked_add(1) != Some(events.round) {
+        return Err(PorError::InvalidPenaltyEvents(
+            "event round must match the next snapshot".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let prior_entry = |offender: &cordial_miners_core::NodeId| {
+        let index = previous
+            .values
+            .binary_search_by(|entry| entry.node_id.cmp(offender))
+            .map_err(|_| PorError::InvalidPenaltyEvents("unknown penalty offender".into()))?;
+        let entry = &previous.values[index];
+        if entry.is_excluded {
+            return Err(PorError::InvalidPenaltyEvents(
+                "cannot penalize an already ejected key".into(),
+            ));
+        }
+        Ok(entry)
+    };
+    let mut equivocating_weight = 0u128;
+    for event in &events.equivocations {
+        if !seen.insert(&event.offender) || event.evidence.is_empty() {
+            return Err(PorError::InvalidPenaltyEvents(
+                "duplicate offender or empty equivocation evidence".into(),
+            ));
+        }
+        equivocating_weight = equivocating_weight
+            .checked_add(u128::from(prior_entry(&event.offender)?.reputation))
+            .ok_or(PorError::SlashOverflow)?;
+    }
+    for event in &events.inactivity {
+        if !seen.insert(&event.offender) || event.missed_rounds != 1 {
+            return Err(PorError::InvalidPenaltyEvents(
+                "inactivity requires one missed round and a unique offender".into(),
+            ));
+        }
+        prior_entry(&event.offender)?;
+        if ratings
+            .iter()
+            .any(|rating| rating.rater == event.offender || rating.recipient == event.offender)
+        {
+            return Err(PorError::InvalidPenaltyEvents(
+                "inactive offender participates in the rating batch".into(),
+            ));
+        }
+    }
+    // Validate all inputs before touching the caller's output.
+    let mut staged = next.clone();
+    if !events.equivocations.is_empty() {
+        let total_weight = previous
+            .values
+            .iter()
+            .filter(|entry| !entry.is_excluded)
+            .try_fold(0u128, |sum, entry| {
+                sum.checked_add(u128::from(entry.reputation))
+                    .ok_or(PorError::SlashOverflow)
+            })?;
+        let penalty = compute_slash_penalty_wide(equivocating_weight, total_weight, config)?;
+        for event in &events.equivocations {
+            let index = staged
+                .entries
+                .binary_search_by(|entry| entry.node_id.cmp(&event.offender))
+                .map_err(|_| PorError::MissingReputationBlockEntry)?;
+            staged.entries[index].reputation = apply_slash_to_reputation(
+                prior_entry(&event.offender)?.reputation,
+                penalty,
+                config,
+            )?;
+        }
+    }
+    for event in &events.inactivity {
+        let index = staged
+            .entries
+            .binary_search_by(|entry| entry.node_id.cmp(&event.offender))
+            .map_err(|_| PorError::MissingReputationBlockEntry)?;
+        staged.entries[index].reputation = compute_inactivity_decay(
+            prior_entry(&event.offender)?.reputation,
+            config.inactivity_decay_gamma,
+            config,
+        )?;
+    }
+    *next = staged;
     Ok(())
 }
