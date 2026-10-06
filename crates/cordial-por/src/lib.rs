@@ -14,6 +14,7 @@ pub mod interactions;
 pub mod liquid_rank;
 pub mod matrix;
 pub mod normalization;
+pub mod penalties;
 pub mod ratings;
 pub mod snapshot;
 pub mod state;
@@ -21,7 +22,10 @@ pub mod transition;
 pub mod types;
 pub mod weights;
 
-pub use audit::{replay_reputation_transition, verify_reputation_transition};
+pub use audit::{
+    replay_reputation_transition, replay_reputation_transition_with_penalties,
+    verify_reputation_transition, verify_reputation_transition_with_penalties,
+};
 pub use commitments::{
     POR_CONFIG_COMMITMENT_DOMAIN, POR_RATING_BATCH_COMMITMENT_DOMAIN,
     POR_REPUTATION_BLOCK_COMMITMENT_DOMAIN, POR_REPUTATION_LIST_COMMITMENT_DOMAIN,
@@ -36,6 +40,10 @@ pub use interactions::{
 pub use liquid_rank::compute_liquid_rank_contribution;
 pub use matrix::build_rating_matrix;
 pub use normalization::normalize_rating_matrix;
+pub use penalties::{
+    apply_inactivity_decay, apply_slash_to_reputation, compute_inactivity_decay,
+    compute_slash_penalty,
+};
 pub use ratings::{
     RATING_SIGNING_DOMAIN, build_rating_batch, canonical_rating_payload,
     rating_round_from_finalized_wave, validate_rating,
@@ -57,8 +65,8 @@ pub use block::{
 pub use types::{
     EquivocationPenalty, InactivityPenalty, NormalizedRatingEntry, NormalizedRatingMatrix,
     RatingBatch, RatingMatrix, RatingRecord, RatingScore, ReputationBlock, ReputationBlockHeader,
-    ReputationCommitment, ReputationEntry, ReputationList, ReputationRound, ReputationVector,
-    ReputationWeight,
+    ReputationCommitment, ReputationEntry, ReputationList, ReputationPenaltyEvents,
+    ReputationRound, ReputationVector, ReputationWeight,
 };
 
 pub use clamp::{clamp_reputation_transition, clamp_reputation_value, clamp_reputation_vector};
