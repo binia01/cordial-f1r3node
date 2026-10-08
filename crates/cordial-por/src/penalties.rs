@@ -1,21 +1,8 @@
 //! Deterministic fixed-point penalty arithmetic. These helpers do not mutate
-//! state or authenticate evidence. Key ejection and retained-capital transfer
-//! remain separate from the reputation calculation.
+//! state or authenticate evidence. Audited transitions handle key ejection;
+//! retained-capital transfer remains a separate authenticated host operation.
 
 use crate::{config::PorConfig, error::PorError, types::ReputationWeight};
-
-pub(crate) fn validate_penalty_config(config: &PorConfig) -> Result<(), PorError> {
-    if config.scale == 0
-        || config.correlation_threshold > config.scale
-        || config.base_slash_penalty > config.scale
-        || config.inactivity_decay_gamma > config.scale
-    {
-        return Err(PorError::InvalidConfiguration(
-            "penalty scale must be positive and penalty fractions must not exceed scale".into(),
-        ));
-    }
-    Ok(())
-}
 
 /// Return the base penalty at or below the correlation threshold, otherwise
 /// a full slash. Zero total weight and invalid fractions return
@@ -37,7 +24,7 @@ pub(crate) fn compute_slash_penalty_wide(
     total_weight: u128,
     config: &PorConfig,
 ) -> Result<ReputationWeight, PorError> {
-    validate_penalty_config(config)?;
+    config.validate()?;
     if total_weight == 0 || equivocating_weight > total_weight {
         return Err(PorError::InvalidConfiguration(
             "slash weights must satisfy equivocating weight <= total weight and total weight > 0"
@@ -67,7 +54,7 @@ pub fn apply_slash_to_reputation(
     penalty_ratio: ReputationWeight,
     config: &PorConfig,
 ) -> Result<ReputationWeight, PorError> {
-    validate_penalty_config(config)?;
+    config.validate()?;
     let survival = config.scale.checked_sub(penalty_ratio).ok_or_else(|| {
         PorError::InvalidConfiguration("slash penalty must not exceed scale".into())
     })?;
@@ -85,7 +72,7 @@ pub fn compute_inactivity_decay(
     gamma: u64,
     config: &PorConfig,
 ) -> Result<ReputationWeight, PorError> {
-    validate_penalty_config(config)?;
+    config.validate()?;
     let survival = config.scale.checked_sub(gamma).ok_or_else(|| {
         PorError::InvalidConfiguration("inactivity gamma must not exceed scale".into())
     })?;

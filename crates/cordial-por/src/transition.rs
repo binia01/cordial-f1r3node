@@ -47,6 +47,8 @@ pub fn blend_reputation_transition(
         return Err(PorError::InvalidLiquidRankAlpha);
     }
 
+    config.validate()?;
+
     if previous_reputation.round.checked_add(1) != Some(contribution.round) {
         return Err(PorError::InvalidTransitionRound);
     }
@@ -175,8 +177,9 @@ fn validate_reputation_order(vector: &ReputationVector) -> Result<(), PorError> 
 
 /// Apply externally finalized penalties after blend/clamp, before publishing
 /// the snapshot. Offenders receive no rating reward in a fault/missed round:
-/// deductions use their previous-round reputation. This is penalty math only;
-/// permanent key ejection and capital transfer are separate host operations.
+/// deductions use their previous-round reputation. Equivocating keys are
+/// permanently excluded with zero active weight; the surviving balance is
+/// stored separately as retained reputation. Capital transfer is host-owned.
 pub(crate) fn apply_reputation_penalties(
     next: &mut crate::types::ReputationList,
     previous: &ReputationVector,
@@ -184,10 +187,10 @@ pub(crate) fn apply_reputation_penalties(
     events: &crate::types::ReputationPenaltyEvents,
     config: &PorConfig,
 ) -> Result<(), PorError> {
-    use crate::penalties::{compute_slash_penalty_wide, validate_penalty_config};
+    use crate::penalties::compute_slash_penalty_wide;
     use std::collections::BTreeSet;
 
-    validate_penalty_config(config)?;
+    config.validate()?;
     if events.round != next.round || previous.round.checked_add(1) != Some(events.round) {
         return Err(PorError::InvalidPenaltyEvents(
             "event round must match the next snapshot".into(),
@@ -251,11 +254,13 @@ pub(crate) fn apply_reputation_penalties(
                 .entries
                 .binary_search_by(|entry| entry.node_id.cmp(&event.offender))
                 .map_err(|_| PorError::MissingReputationBlockEntry)?;
-            staged.entries[index].reputation = apply_slash_to_reputation(
+            staged.entries[index].retained_reputation = apply_slash_to_reputation(
                 prior_entry(&event.offender)?.reputation,
                 penalty,
                 config,
             )?;
+            staged.entries[index].reputation = 0;
+            staged.entries[index].is_excluded = true;
         }
     }
     for event in &events.inactivity {

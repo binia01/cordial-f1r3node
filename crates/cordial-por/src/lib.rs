@@ -27,9 +27,10 @@ pub use audit::{
     verify_reputation_transition, verify_reputation_transition_with_penalties,
 };
 pub use commitments::{
-    POR_CONFIG_COMMITMENT_DOMAIN, POR_RATING_BATCH_COMMITMENT_DOMAIN,
-    POR_REPUTATION_BLOCK_COMMITMENT_DOMAIN, POR_REPUTATION_LIST_COMMITMENT_DOMAIN,
-    config_commitment, rating_batch_commitment, reputation_block_hash, reputation_list_commitment,
+    MAX_PENALTY_EVIDENCE_LEN, POR_CONFIG_COMMITMENT_DOMAIN, POR_PENALTY_EVENTS_COMMITMENT_DOMAIN,
+    POR_RATING_BATCH_COMMITMENT_DOMAIN, POR_REPUTATION_BLOCK_COMMITMENT_DOMAIN,
+    POR_REPUTATION_LIST_COMMITMENT_DOMAIN, config_commitment, penalty_events_commitment,
+    rating_batch_commitment, reputation_block_hash, reputation_list_commitment,
 };
 pub use config::{MissingEntryPolicy, PorConfig};
 pub use error::PorError;
@@ -59,8 +60,8 @@ pub use block::{
     MAX_REPUTATION_BLOCK_ENTRIES, MAX_REPUTATION_BLOCK_NODE_ID_LEN,
     MAX_REPUTATION_BLOCK_SHARD_ID_LEN, MAX_REPUTATION_BLOCK_WIRE_LEN, POR_REPUTATION_BLOCK_MAGIC,
     POR_REPUTATION_BLOCK_WIRE_VERSION, REPUTATION_BLOCK_VERSION, ReputationBlockContext,
-    build_reputation_block, decode_reputation_block, encode_reputation_block,
-    validate_reputation_block,
+    build_reputation_block, build_reputation_block_with_penalties, decode_reputation_block,
+    encode_reputation_block, validate_reputation_block,
 };
 pub use types::{
     EquivocationPenalty, InactivityPenalty, NormalizedRatingEntry, NormalizedRatingMatrix,

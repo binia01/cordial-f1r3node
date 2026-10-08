@@ -98,6 +98,34 @@ impl PorConfig {
     /// Default: 1% of `DEFAULT_SCALE` decay per missed round.
     pub const DEFAULT_INACTIVITY_DECAY_GAMMA: ReputationWeight = 10_000_000;
 
+    /// Validate every protocol parameter before calculating or committing a round.
+    pub fn validate(&self) -> Result<(), crate::PorError> {
+        if self.scale == 0 {
+            return Err(crate::PorError::InvalidConfiguration(
+                "scale must be positive".into(),
+            ));
+        }
+        if self.liquid_rank_alpha > self.scale || self.initial_reputation > self.scale {
+            return Err(crate::PorError::InvalidConfiguration(
+                "alpha and initial reputation must not exceed scale".into(),
+            ));
+        }
+        if self.minimum_rating > self.maximum_rating {
+            return Err(crate::PorError::InvalidConfiguration(
+                "minimum rating must not exceed maximum rating".into(),
+            ));
+        }
+        if self.correlation_threshold > self.scale
+            || self.base_slash_penalty > self.scale
+            || self.inactivity_decay_gamma > self.scale
+        {
+            return Err(crate::PorError::InvalidConfiguration(
+                "penalty fractions must not exceed scale".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(scale: ReputationWeight, initial_reputation: ReputationWeight) -> Self {
         // Default alpha = 60 % of scale (3/5). This keeps liquid_rank_alpha <= scale
         // for every valid scale value, avoiding InvalidLiquidRankAlpha on first use.

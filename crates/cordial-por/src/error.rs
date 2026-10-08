@@ -55,6 +55,7 @@ pub enum PorError {
     ReputationBlockPreviousHashMismatch,
     ReputationBlockConfigHashMismatch,
     ReputationBlockRatingsHashMismatch,
+    ReputationBlockPenaltiesHashMismatch,
     ReputationBlockRootMismatch,
     ReputationExclusionMismatch,
     CommitmentLengthOverflow,
@@ -249,6 +250,9 @@ impl fmt::Display for PorError {
                     f,
                     "reputation block configuration commitment does not match"
                 )
+            }
+            Self::ReputationBlockPenaltiesHashMismatch => {
+                write!(f, "reputation block penalty events commitment mismatch")
             }
             Self::ReputationBlockRatingsHashMismatch => {
                 write!(f, "reputation block rating-batch commitment does not match")

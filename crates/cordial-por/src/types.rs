@@ -87,6 +87,9 @@ pub struct RatingBatch {
 pub struct ReputationEntry {
     pub node_id: NodeId,
     pub reputation: ReputationWeight,
+    /// Surviving post-slash balance for an excluded key. Never consensus weight.
+    /// Fresh-key transfers require a separate authenticated host operation.
+    pub retained_reputation: ReputationWeight,
     /// Permanent key ejection flag.
     ///
     /// Once `true`, this can never be reset to `false` for the same key.
@@ -100,6 +103,7 @@ impl ReputationEntry {
         Self {
             node_id,
             reputation,
+            retained_reputation: 0,
             is_excluded: false,
         }
     }
@@ -109,6 +113,7 @@ impl ReputationEntry {
         Self {
             node_id,
             reputation: 0,
+            retained_reputation: 0,
             is_excluded: true,
         }
     }
@@ -195,7 +200,10 @@ pub struct ReputationBlockHeader {
     /// Commitment to the canonical signed rating batch.
     pub ratings_hash: ReputationCommitment,
 
-    /// Commitment to the canonical reputation list.
+    /// Commitment to canonical round-bound penalty events, including evidence.
+    pub penalties_hash: ReputationCommitment,
+
+    /// Commitment to the canonical reputation list (including retained capital).
     pub reputation_root: ReputationCommitment,
 }
 
