@@ -368,6 +368,7 @@ fn rejects_duplicate_reputation_entries() {
 fn rejects_a_self_consistent_but_incorrect_exclusion_flag() {
     let mut block = proposed_block();
     block.reputation_list.entries[0].is_excluded = true;
+    block.reputation_list.entries[0].reputation = 0;
     block.header.reputation_root = reputation_list_commitment(&block.reputation_list).unwrap();
 
     assert_eq!(verify(&block), Err(PorError::ReputationExclusionMismatch));

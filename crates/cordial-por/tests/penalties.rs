@@ -20,8 +20,8 @@ fn cfg_custom(
 ) -> PorConfig {
     PorConfig {
         scale,
-        initial_reputation: 200_000_000,
-        liquid_rank_alpha: 600_000_000,
+        initial_reputation: scale / 5,
+        liquid_rank_alpha: PorConfig::new(scale, 0).liquid_rank_alpha,
         minimum_rating: 0,
         maximum_rating: scale,
         missing_entry_policy: cordial_por::MissingEntryPolicy::CarryForward,

@@ -14,13 +14,13 @@ const RATING_BATCH_COMMITMENT_V1: [u8; 32] = [
     232, 164, 6, 130, 63, 164, 232, 78, 78, 171, 192, 221, 14, 49, 252, 205, 233, 0, 62, 152, 3,
     226, 213, 35, 88, 151, 210, 50, 138, 221, 88, 149,
 ];
-const REPUTATION_LIST_COMMITMENT_V1: [u8; 32] = [
-    64, 226, 122, 114, 81, 63, 78, 61, 60, 226, 229, 17, 115, 133, 207, 56, 78, 143, 227, 21, 185,
-    46, 90, 98, 102, 68, 116, 12, 182, 211, 28, 219,
+const REPUTATION_LIST_COMMITMENT_V2: [u8; 32] = [
+    122, 243, 61, 252, 112, 160, 205, 116, 184, 213, 90, 130, 129, 87, 185, 137, 77, 107, 130, 66,
+    170, 233, 162, 75, 171, 154, 124, 253, 227, 110, 28, 247,
 ];
 const REPUTATION_BLOCK_HASH_WITH_CONFIG_V2: [u8; 32] = [
-    102, 63, 3, 218, 109, 48, 100, 167, 99, 228, 130, 41, 225, 67, 71, 216, 67, 7, 9, 24, 228, 138,
-    59, 177, 250, 251, 67, 195, 220, 28, 206, 92,
+    233, 142, 240, 128, 29, 148, 240, 184, 226, 12, 23, 151, 43, 83, 19, 255, 180, 93, 139, 124,
+    244, 184, 56, 12, 1, 61, 124, 111, 154, 152, 107, 221,
 ];
 
 fn config() -> PorConfig {
@@ -89,7 +89,7 @@ fn commitments_with_config_v2_match_golden_vectors() {
     );
     assert_eq!(
         reputation_list_commitment(&list).unwrap(),
-        REPUTATION_LIST_COMMITMENT_V1
+        REPUTATION_LIST_COMMITMENT_V2
     );
     assert_eq!(
         reputation_block_hash(&block).unwrap(),
