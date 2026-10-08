@@ -210,7 +210,7 @@ flowchart TD
 1. **Isolated Fault Test**:
    - Inject equivocation evidence for 1 validator node ($<30\%$ weight).
    - Verify node reputation drops by 25%.
-   - Verify `reputation_weights()` exports weight `0` for the ejected node key.
+   - Verify `reputation_weights()` omits the ejected key and the authorized validator projection gives it weight `0`.
    - Verify remaining 75% capital can be attached to a newly registered validator key.
 
 2. **Coordinated Attack Test**:
@@ -231,30 +231,44 @@ slash weight return the existing `PorError::InvalidConfiguration` variant.
 The correlation threshold uses exact cross multiplication before rounding.
 
 `ReputationPenaltyEvents` carries externally authenticated events for one
-reputation round. Use `replay_reputation_transition_with_penalties` and
-`verify_reputation_transition_with_penalties` with `Some(&events)` to construct
-and audit penalty-inclusive blocks. The existing entry points delegate with
-`None`. `ReputationState::apply_reputation_block_with_penalties` provides the
-same audit-before-mutation boundary for applying these blocks.
+reputation round. Pass the same event set to
+`replay_reputation_transition_with_penalties`,
+`build_reputation_block_with_penalties`, and
+`verify_reputation_transition_with_penalties`. Existing entry points delegate
+with `None`, which commits to the canonical empty event set for that round.
+`ReputationState::apply_reputation_block_with_penalties` audits before mutation.
 
-The host must supply an agreed, finalized event set, not unverified peer
-claims. The pure library validates event shape, round, and offender membership;
-it does not authenticate equivocation proofs. Empty evidence references,
-duplicate/overlapping offenders, unknown or already-ejected keys are rejected.
-Inactivity is explicit and requires absence from both sides of the rating batch.
-Each consecutive transition accepts exactly one missed round per inactive key;
-cumulative counters must be converted to per-round events to avoid double decay.
+The host must supply an agreed, finalized event set and authenticate equivocation
+proofs. The library validates the round, offender membership and event shape.
+It rejects empty or oversized evidence, duplicate/overlapping offenders, and
+unknown or already-ejected keys. Inactivity requires absence from both sides of
+the rating batch and exactly one missed round per consecutive transition.
 
-Penalties run after blend/clamp and before snapshot application. For a penalized
-node they replace rating-derived rewards with a deduction from its previous
-reputation. Correlation weights also come from the previous active set, before
-any deductions. Unpenalized nodes follow the existing calculation. Existing
-excluded keys remain excluded. These pure deductions do not initiate key
-ejection or implement the separate retained-capital/key-registration lifecycle.
+Penalties run after blend/clamp and use previous active weights for both the
+correlation ratio and deductions. An equivocator receives zero active reputation
+and a permanent exclusion; its post-slash capital is stored separately in
+`ReputationEntry::retained_reputation`. Audited state application commits the
+list, exclusion registry and latest block atomically. Retained balances survive
+later rounds and snapshots, cannot be overwritten by reputation assignment, and
+never enter consensus-weight exports. Transfer to a fresh key still requires a
+separate authenticated host lifecycle; this implementation does not authorize
+or perform transfers. Explicit inactivity decays active reputation without ejecting.
 
-The configuration commitment uses the `config-commitment:v2` domain and binds
-all three penalty parameters. The block wire layout remains v1. Existing v1
-configuration hashes do not pass replay under the new configuration commitment;
-a deployment needs a coordinated transition/checkpoint rather than silently
-mixing old and new replay rules. Penalty evidence remains external replay input,
-while the calculated reputation list is bound by the block's reputation root.
+`PorConfig::validate()` rejects invalid scale, alpha, initial reputation, rating
+bounds and penalty fractions on every replay, blend, block construction and
+verification, including rounds without penalty events. Runtime startup validates
+the configuration before opening durable state.
+
+The v2 block header includes `penalties_hash`, a canonical commitment to the
+round, event categories, offender IDs, exact evidence bytes and missed-round
+counts. Substituting or omitting events fails verification even if the arithmetic
+result is identical. Event order within each category does not affect the hash.
+The host must retain the evidence for replay; the block stores its commitment.
+
+Configuration, reputation-list and block commitments use v2 domains. Block
+headers, block wire envelopes and state snapshots are version 2. Retained balances
+are covered by the reputation root and persisted in both block and state encodings.
+Legacy v1 blocks and snapshots are rejected. Deployment requires a coordinated
+upgrade and an explicitly prepared v2 checkpoint; no automatic v1 migration is
+provided. Rating signatures and the adapter's outer signed publication format
+remain v1.
