@@ -171,16 +171,19 @@ fn bounds_persisted_node_identifiers() {
 #[test]
 fn rejects_an_exclusion_flag_missing_from_the_permanent_registry() {
     let mut state = ReputationState::new(0);
-    state
-        .apply_reputation_vector(ReputationVector {
+    let original = state.clone();
+    assert_eq!(
+        state.apply_reputation_vector(ReputationVector {
             round: 1,
             values: vec![ReputationEntry::ejected(node(1))],
-        })
-        .unwrap();
-
+        }),
+        Err(PorError::ReputationExclusionMismatch)
+    );
+    assert_eq!(state, original);
+    let encoded = encode_reputation_state_snapshot(&state).unwrap();
     assert_eq!(
-        encode_reputation_state_snapshot(&state),
-        Err(PorError::ReputationStateSnapshotExclusionMismatch)
+        decode_reputation_state_snapshot(&encoded).unwrap(),
+        original
     );
 }
 

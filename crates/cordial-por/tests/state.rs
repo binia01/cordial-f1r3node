@@ -289,3 +289,34 @@ fn is_ejected_consults_permanent_registry_not_list_flag() {
     // Node 2 must remain unaffected.
     assert!(!state.is_ejected(&NodeId(vec![2])));
 }
+
+#[test]
+fn direct_vector_cannot_manufacture_exclusions_or_retained_capital() {
+    for known in [false, true] {
+        for retained in [0, 500, u64::MAX] {
+            let mut state = ReputationState::new(0);
+            state.set_reputation(NodeId(vec![1]), 10);
+            if known {
+                state.set_reputation(NodeId(vec![2]), 20);
+            }
+            let original = state.clone();
+            let mut forged = ReputationEntry::ejected(NodeId(vec![2]));
+            forged.retained_reputation = retained;
+            assert_eq!(
+                state.apply_reputation_vector(vector(1, vec![entry(1, 99), forged])),
+                Err(PorError::ReputationExclusionMismatch)
+            );
+            assert_eq!(state, original);
+            if known {
+                state.eject_validator(&NodeId(vec![2])).unwrap();
+                assert_eq!(state.reputation_list().entries[1].retained_reputation, 0);
+            } else {
+                assert_eq!(
+                    state.eject_validator(&NodeId(vec![2])),
+                    Err(PorError::UnknownNode)
+                );
+                assert_eq!(state, original);
+            }
+        }
+    }
+}

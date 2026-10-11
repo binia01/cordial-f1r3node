@@ -519,6 +519,17 @@ fn slash_atomically_ejects_key_and_retains_capital_across_rounds_and_restart() {
         0
     );
 
+    // An incoming vector cannot inflate an already audited retained balance.
+    let mut forged = state.reputation_list().entries.clone();
+    forged[0].retained_reputation = u64::MAX;
+    state
+        .apply_reputation_vector(ReputationVector {
+            round: 2,
+            values: forged,
+        })
+        .unwrap();
+    assert_eq!(state, restored);
+
     // Even a direct vector replacement cannot erase the retained tombstone.
     state
         .apply_reputation_vector(ReputationVector {
