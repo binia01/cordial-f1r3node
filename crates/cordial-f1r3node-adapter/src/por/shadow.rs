@@ -260,6 +260,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                     break;
                 }
             };
+            let block_count = blocks.len();
             for info in blocks {
                 let block = trusted_block_from_light_block_info_with_options(&info, true)
                     .with_context(|| format!("invalid live block {}", info.block_hash))?;
@@ -269,6 +270,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                     .with_context(|| format!("cannot mirror block {}", info.block_hash))?;
             }
             scanned_height = Some(end);
+            tracing::info!(start, end, block_count, "PoR shadow replayed height batch");
             if end == head {
                 break;
             }
