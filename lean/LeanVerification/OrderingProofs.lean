@@ -173,27 +173,313 @@ theorem tauRef_predecessor_ordered
 
 /-! ## Prefix preservation under a valid append -/
 
-/-- Earlier finality decisions are unchanged through the old replay horizon. -/
+/-- Earlier finality decisions are unchanged.  This is deliberately a
+semantic statement about the executable final-leader test, not about the
+resulting τ plan. -/
 def StableEarlierFinality
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (wavelength : ℕ) (sel : ℕ → Option NodeId)
-    (domain domain' : List BlockId) (throughWave : ℕ) : Prop :=
-  ∀ wave, wave ≤ throughWave →
+    (domain domain' : List BlockId) : Prop :=
+  ∀ wave,
     finalLeaderAt? bonds validators B hV wavelength sel domain wave =
       finalLeaderAt? bonds validators B' hV' wavelength sel domain' wave
 
-/-- The exact conditions under which a blocklace extension is safe for an
-already emitted τ prefix.
+/-- Ratification decisions used while following the previous-final-leader
+chain are unchanged for earlier leaders. -/
+def StableEarlierRatification
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B') : Prop :=
+  ∀ leader previous,
+    checkRatifies bonds validators B hV leader previous =
+      checkRatifies bonds validators B' hV' leader previous
 
-The same `bonds`, validator universe, wavelength, leader selector, and key are
-indices of this proposition, so they cannot change between the two runs.
-Besides append-only DAG growth, the old finality decisions must be stable and
-the new epoch plan must extend the old one. An epoch contains both its final
-leader and its freshly approved, topologically sorted fragment, so
-`epochsPrefix` explicitly rules out retroactive leader/fragment changes; it
-does not merely assume the flattened output conclusion. -/
-structure ValidAppendEvidence
+/-- The approved set and its deterministic topological ordering are unchanged
+for an earlier leader and an already-emitted prefix.  This is the exact local
+condition consumed by one recursive τ step; unlike an epoch-prefix premise it
+does not mention either complete plan. -/
+def StableEarlierFragments
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (domain domain' : List BlockId) (key : BlockId → String) : Prop :=
+  ∀ (leader : BlockId) (emitted : List BlockId),
+    xsortRef (blockParents B) key
+        (domain.filter fun block =>
+          checkApproves B hV leader block && !emitted.contains block) =
+      xsortRef (blockParents B') key
+        (domain'.filter fun block =>
+          checkApproves B' hV' leader block && !emitted.contains block)
+
+/-- Stable finality and ratification imply stability of the executable
+`previousFinalLeader?` search. -/
+theorem previousFinalLeader_stable
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain domain' : List BlockId)
+    (hFinal : StableEarlierFinality bonds validators B B' hV hV'
+      wavelength sel domain domain')
+    (hRatifies : StableEarlierRatification bonds validators B B' hV hV')
+    (wave : ℕ) (leader : BlockId) :
+    previousFinalLeader? bonds validators B hV wavelength sel domain wave leader =
+      previousFinalLeader? bonds validators B' hV' wavelength sel domain' wave leader := by
+  unfold previousFinalLeader?
+  congr 1
+  funext priorWave
+  rw [hFinal priorWave]
+  cases finalLeaderAt? bonds validators B' hV' wavelength sel domain' priorWave with
+  | none => rfl
+  | some previous =>
+      change (if checkRatifies bonds validators B hV leader previous = true then
+          some (priorWave, previous) else none) =
+        (if checkRatifies bonds validators B' hV' leader previous = true then
+          some (priorWave, previous) else none)
+      rw [hRatifies leader previous]
+
+/-- A semantic chain of `previousFinalLeader?` results in the extended
+blocklace.  It says that a new latest leader recursively reconnects to the old
+latest leader; it contains no τ epochs or output lists. -/
+inductive PreviousFinalLeaderChain
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (oldWave : ℕ) (oldLeader : BlockId) :
+    ℕ → ℕ → BlockId → Prop where
+  | refl : PreviousFinalLeaderChain bonds validators B hV wavelength sel domain
+      oldWave oldLeader 0 oldWave oldLeader
+  | step {steps wave leader priorWave priorLeader} :
+      previousFinalLeader? bonds validators B hV wavelength sel domain wave leader =
+        some (priorWave, priorLeader) →
+      PreviousFinalLeaderChain bonds validators B hV wavelength sel domain
+        oldWave oldLeader steps priorWave priorLeader →
+      PreviousFinalLeaderChain bonds validators B hV wavelength sel domain
+        oldWave oldLeader (steps + 1) wave leader
+
+/-- Every recursive τ plan rooted at an earlier leader is unchanged by the
+growth conditions. -/
+theorem tauPlanFromLeader_stable
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain domain' : List BlockId) (key : BlockId → String)
+    (hFinal : StableEarlierFinality bonds validators B B' hV hV'
+      wavelength sel domain domain')
+    (hRatifies : StableEarlierRatification bonds validators B B' hV hV')
+    (hFragments : StableEarlierFragments B B' hV hV' domain domain' key) :
+    ∀ fuel wave leader,
+      tauPlanFromLeader bonds validators B hV wavelength sel domain key
+          fuel wave leader =
+        tauPlanFromLeader bonds validators B' hV' wavelength sel domain' key
+          fuel wave leader := by
+  intro fuel
+  induction fuel with
+  | zero => intro wave leader; rfl
+  | succ fuel ih =>
+      intro wave leader
+      simp only [tauPlanFromLeader]
+      rw [previousFinalLeader_stable bonds validators B B' hV hV' wavelength sel
+        domain domain' hFinal hRatifies wave leader]
+      cases hPrevious : previousFinalLeader? bonds validators B' hV' wavelength sel
+          domain' wave leader with
+      | none =>
+          simpa [flattenEpochs] using hFragments leader []
+      | some previous =>
+          rcases previous with ⟨priorWave, priorLeader⟩
+          simp only
+          rw [ih priorWave priorLeader]
+          apply bind_congr
+          intro priorEpochs
+          exact congrArg
+            (Except.map fun suffix =>
+              priorEpochs ++ [{ leader := leader, blocks := suffix }])
+            (hFragments leader (flattenEpochs priorEpochs))
+
+/-- Giving a successful recursive τ computation more fuel does not change
+its result. -/
+theorem tauPlanFromLeader_fuel_mono
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (key : BlockId → String) :
+    ∀ {small large wave leader epochs}, small ≤ large →
+      tauPlanFromLeader bonds validators B hV wavelength sel domain key
+        small wave leader = .ok epochs →
+      tauPlanFromLeader bonds validators B hV wavelength sel domain key
+        large wave leader = .ok epochs := by
+  intro small
+  induction small with
+  | zero =>
+      intro large wave leader epochs _ hRun
+      simp [tauPlanFromLeader] at hRun
+  | succ small ih =>
+      intro large wave leader epochs hFuel hRun
+      cases large with
+      | zero => omega
+      | succ large =>
+          simp only [tauPlanFromLeader] at hRun ⊢
+          cases hPrevious : previousFinalLeader? bonds validators B hV wavelength sel
+              domain wave leader with
+          | none => simpa [hPrevious] using hRun
+          | some previous =>
+              rcases previous with ⟨priorWave, priorLeader⟩
+              simp only [hPrevious] at hRun ⊢
+              cases hSmall : tauPlanFromLeader bonds validators B hV wavelength sel
+                  domain key small priorWave priorLeader with
+              | error message =>
+                  rw [hSmall] at hRun
+                  contradiction
+              | ok priorEpochs =>
+                  have hLarge := ih (large := large) (wave := priorWave)
+                    (leader := priorLeader) (epochs := priorEpochs) (by omega) hSmall
+                  rw [hSmall] at hRun
+                  rw [hLarge]
+                  exact hRun
+
+/-- Following a semantic previous-final-leader chain extends the earlier
+recursive epoch plan. -/
+theorem tauPlanFromLeader_prefix_of_chain
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (key : BlockId → String)
+    (oldWave : ℕ) (oldLeader : BlockId)
+    {steps newWave : ℕ} {newLeader : BlockId}
+    (hChain : PreviousFinalLeaderChain bonds validators B hV wavelength sel domain
+      oldWave oldLeader steps newWave newLeader) :
+    ∀ {oldFuel newFuel oldEpochs newEpochs},
+      oldFuel + steps ≤ newFuel →
+      tauPlanFromLeader bonds validators B hV wavelength sel domain key
+        oldFuel oldWave oldLeader = .ok oldEpochs →
+      tauPlanFromLeader bonds validators B hV wavelength sel domain key
+        newFuel newWave newLeader = .ok newEpochs →
+      List.IsPrefix oldEpochs newEpochs := by
+  induction hChain with
+  | refl =>
+      intro oldFuel newFuel oldEpochs newEpochs hFuel hOld hNew
+      have hSame := tauPlanFromLeader_fuel_mono bonds validators B hV wavelength
+        sel domain key hFuel hOld
+      rw [hSame] at hNew
+      have hEq := Except.ok.inj hNew
+      subst newEpochs
+      exact List.prefix_refl _
+  | @step steps wave leader priorWave priorLeader hPrevious _ ih =>
+      intro oldFuel newFuel oldEpochs newEpochs hFuel hOld hNew
+      cases newFuel with
+      | zero => simp [tauPlanFromLeader] at hNew
+      | succ remaining =>
+          cases hPrior : tauPlanFromLeader bonds validators B hV wavelength sel
+              domain key remaining priorWave priorLeader with
+          | error message =>
+              have hComputed : tauPlanFromLeader bonds validators B hV wavelength
+                  sel domain key (remaining + 1) wave leader = .error message := by
+                unfold tauPlanFromLeader
+                simp only [hPrevious]
+                rw [hPrior]
+                change Except.bind (Except.error message) _ = _
+                rfl
+              rw [hComputed] at hNew
+              contradiction
+          | ok priorEpochs =>
+              let approved := domain.filter fun block =>
+                checkApproves B hV leader block &&
+                  !(flattenEpochs priorEpochs).contains block
+              cases hSuffix : xsortRef (blockParents B) key approved with
+              | error message =>
+                  have hComputed : tauPlanFromLeader bonds validators B hV wavelength
+                      sel domain key (remaining + 1) wave leader = .error message := by
+                    unfold tauPlanFromLeader
+                    simp only [hPrevious]
+                    rw [hPrior]
+                    change Except.map _ (xsortRef (blockParents B) key approved) = _
+                    rw [hSuffix]
+                    rfl
+                  rw [hComputed] at hNew
+                  contradiction
+              | ok suffix =>
+                  have hComputed : tauPlanFromLeader bonds validators B hV wavelength
+                      sel domain key (remaining + 1) wave leader =
+                        .ok (priorEpochs ++ [{ leader := leader, blocks := suffix }]) := by
+                    unfold tauPlanFromLeader
+                    simp only [hPrevious]
+                    rw [hPrior]
+                    change Except.map _ (xsortRef (blockParents B) key approved) = _
+                    rw [hSuffix]
+                    rfl
+                  have hNewShape :
+                      newEpochs = priorEpochs ++ [{ leader := leader, blocks := suffix }] := by
+                    rw [hComputed] at hNew
+                    exact (Except.ok.inj hNew).symm
+                  subst newEpochs
+                  have hPrefix := ih (oldFuel := oldFuel) (newFuel := remaining)
+                    (oldEpochs := oldEpochs) (newEpochs := priorEpochs) (by omega)
+                    hOld hPrior
+                  exact hPrefix.trans
+                    ⟨[{ leader := leader, blocks := suffix }], rfl⟩
+
+/-- A successful plan with no latest final leader has no epochs. -/
+theorem computeTauPlan_none_epochs
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (key : BlockId → String) (throughWave : ℕ)
+    (epochs : List TauEpoch)
+    (hPlan : computeTauPlan bonds validators B hV wavelength sel domain key
+      throughWave = .ok (none, epochs)) : epochs = [] := by
+  unfold computeTauPlan at hPlan
+  cases hLatest : (List.range (throughWave + 1)).reverse.findSome?
+      (finalLeaderAt? bonds validators B hV wavelength sel domain) with
+  | none =>
+      simp only [hLatest] at hPlan
+      have hPair := Except.ok.inj hPlan
+      exact (Prod.mk.inj hPair).2.symm
+  | some leader =>
+      simp only [hLatest] at hPlan
+      cases hRun : tauPlanFromLeader bonds validators B hV wavelength sel domain key
+          (throughWave + 2) (waveOfRound (blockDepth B hV leader) wavelength)
+          leader <;> simp [hRun] at hPlan
+
+/-- `computeTauPlan` exposes the recursive run rooted at its latest leader. -/
+theorem computeTauPlan_some_run
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (key : BlockId → String) (throughWave : ℕ)
+    (leader : BlockId) (epochs : List TauEpoch)
+    (hPlan : computeTauPlan bonds validators B hV wavelength sel domain key
+      throughWave = .ok (some leader, epochs)) :
+    tauPlanFromLeader bonds validators B hV wavelength sel domain key
+      (throughWave + 2) (waveOfRound (blockDepth B hV leader) wavelength) leader =
+        .ok epochs := by
+  unfold computeTauPlan at hPlan
+  cases hLatest : (List.range (throughWave + 1)).reverse.findSome?
+      (finalLeaderAt? bonds validators B hV wavelength sel domain) with
+  | none =>
+      simp only [hLatest] at hPlan
+      have hPair := Except.ok.inj hPlan
+      simp at hPair
+  | some latest =>
+      simp only [hLatest] at hPlan
+      cases hRun : tauPlanFromLeader bonds validators B hV wavelength sel domain key
+          (throughWave + 2) (waveOfRound (blockDepth B hV latest) wavelength)
+          latest with
+      | error message => simp [hRun] at hPlan
+      | ok result =>
+          simp only [hRun] at hPlan
+          have hPair := Except.ok.inj hPlan
+          have hLeader : latest = leader := Option.some.inj (Prod.mk.inj hPair).1
+          have hEpochs : result = epochs := (Prod.mk.inj hPair).2
+          subst latest
+          simpa [hEpochs] using hRun
+
+/-- Semantic conditions under which append-only blocklace growth preserves a
+previously emitted τ prefix.
+
+The shared indices make bonds, validators, wavelength, leader selection, and
+the canonical sort key immutable.  The remaining fields concern protocol
+observations: append-only growth, monotone replay inputs, stable earlier
+finality/ratification, stable approved fragments, and a previous-final-leader
+chain from the new latest leader back to the old one.  No field assumes an
+epoch or output prefix. -/
+structure ValidBlocklaceGrowthEvidence
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (wavelength : ℕ) (sel : ℕ → Option NodeId)
@@ -203,7 +489,9 @@ structure ValidAppendEvidence
   domainExtension : ∀ block, block ∈ domain → block ∈ domain'
   horizonExtension : throughWave ≤ throughWave'
   stableFinality : StableEarlierFinality bonds validators B B' hV hV'
-    wavelength sel domain domain' throughWave
+    wavelength sel domain domain'
+  stableRatification : StableEarlierRatification bonds validators B B' hV hV'
+  stableFragments : StableEarlierFragments B B' hV hV' domain domain' key
   oldLatest : Option BlockId
   newLatest : Option BlockId
   oldEpochs : List TauEpoch
@@ -212,20 +500,39 @@ structure ValidAppendEvidence
     throughWave = .ok (oldLatest, oldEpochs)
   newPlan : computeTauPlan bonds validators B' hV' wavelength sel domain' key
     throughWave' = .ok (newLatest, newEpochs)
-  epochsPrefix : List.IsPrefix oldEpochs newEpochs
+  latestExtension : oldLatest = none ∨
+    ∃ oldLeader newLeader steps,
+      oldLatest = some oldLeader ∧ newLatest = some newLeader ∧
+      steps + throughWave ≤ throughWave' ∧
+      PreviousFinalLeaderChain bonds validators B' hV' wavelength sel domain'
+        (waveOfRound (blockDepth B hV oldLeader) wavelength) oldLeader steps
+        (waveOfRound (blockDepth B' hV' newLeader) wavelength) newLeader
   newOutputChecked : checkTopological (blockParents B')
     (flattenEpochs newEpochs) (flattenEpochs newEpochs) = true
 
-/-- Proposition-level valid-append predicate. The witness is hidden so callers
+/-- Backward-compatible name for the strengthened growth evidence. -/
+abbrev ValidAppendEvidence := ValidBlocklaceGrowthEvidence
+
+/-- Proposition-level valid-growth predicate. The witness is hidden so callers
 state a protocol condition, not a particular internal plan representation. -/
+def ValidBlocklaceGrowth
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain domain' : List BlockId) (key : BlockId → String)
+    (throughWave throughWave' : ℕ) : Prop :=
+  Nonempty (ValidBlocklaceGrowthEvidence bonds validators B B' hV hV' wavelength sel
+    domain domain' key throughWave throughWave')
+
+/-- Compatibility alias used by the original Issue #244 theorem. -/
 def ValidAppend
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (wavelength : ℕ) (sel : ℕ → Option NodeId)
     (domain domain' : List BlockId) (key : BlockId → String)
     (throughWave throughWave' : ℕ) : Prop :=
-  Nonempty (ValidAppendEvidence bonds validators B B' hV hV' wavelength sel
-    domain domain' key throughWave throughWave')
+  ValidBlocklaceGrowth bonds validators B B' hV hV' wavelength sel
+    domain domain' key throughWave throughWave'
 
 theorem flattenEpochs_append (left right : List TauEpoch) :
     flattenEpochs (left ++ right) = flattenEpochs left ++ flattenEpochs right := by
@@ -290,7 +597,35 @@ theorem tauRef_prefix_of_validAppend
     split at hOld
     · exact (Except.ok.inj hOld).symm
     · simp at hOld
-  rcases append.epochsPrefix with ⟨laterEpochs, hEpochs⟩
+  have hEpochs : List.IsPrefix append.oldEpochs append.newEpochs := by
+    rcases append.latestExtension with hNoLeader | hLeaders
+    · have hEmpty := computeTauPlan_none_epochs bonds validators B hV wavelength
+        sel domain key throughWave append.oldEpochs (hNoLeader ▸ append.oldPlan)
+      rw [hEmpty]
+      exact List.nil_prefix
+    · rcases hLeaders with
+        ⟨oldLeader, newLeader, steps, hOldLatest, hNewLatest, hFits, hChain⟩
+      have hOldRun := computeTauPlan_some_run bonds validators B hV wavelength sel
+        domain key throughWave oldLeader append.oldEpochs (hOldLatest ▸ append.oldPlan)
+      have hStable := tauPlanFromLeader_stable bonds validators B B' hV hV'
+        wavelength sel domain domain' key append.stableFinality
+        append.stableRatification append.stableFragments
+        (throughWave + 2)
+        (waveOfRound (blockDepth B hV oldLeader) wavelength) oldLeader
+      have hOldRun' :
+          tauPlanFromLeader bonds validators B' hV' wavelength sel domain' key
+              (throughWave + 2)
+              (waveOfRound (blockDepth B hV oldLeader) wavelength) oldLeader =
+            .ok append.oldEpochs := by
+        rw [← hStable]
+        exact hOldRun
+      have hNewRun := computeTauPlan_some_run bonds validators B' hV' wavelength sel
+        domain' key throughWave' newLeader append.newEpochs
+        (hNewLatest ▸ append.newPlan)
+      exact tauPlanFromLeader_prefix_of_chain bonds validators B' hV' wavelength
+        sel domain' key (waveOfRound (blockDepth B hV oldLeader) wavelength)
+        oldLeader hChain (by omega) hOldRun' hNewRun
+  rcases hEpochs with ⟨laterEpochs, hEpochs⟩
   subst oldOutput
   refine ⟨flattenEpochs laterEpochs, ?_⟩
   have hNew := tauRef_eq_of_plan bonds validators B' hV' wavelength sel domain'
@@ -298,6 +633,24 @@ theorem tauRef_prefix_of_validAppend
     append.newOutputChecked
   rw [← hEpochs, flattenEpochs_append] at hNew
   exact hNew
+
+/-- Preferred spelling of the prefix theorem for semantic blocklace growth. -/
+theorem tauRef_prefix_of_validBlocklaceGrowth
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain domain' : List BlockId) (key : BlockId → String)
+    (throughWave throughWave' : ℕ)
+    (hGrowth : ValidBlocklaceGrowth bonds validators B B' hV hV' wavelength sel
+      domain domain' key throughWave throughWave')
+    (oldOutput : List BlockId)
+    (hOld : tauRef bonds validators B hV wavelength sel domain key throughWave =
+      .ok oldOutput) :
+    ∃ suffix,
+      tauRef bonds validators B' hV' wavelength sel domain' key throughWave' =
+        .ok (oldOutput ++ suffix) :=
+  tauRef_prefix_of_validAppend bonds validators B B' hV hV' wavelength sel
+    domain domain' key throughWave throughWave' hGrowth oldOutput hOld
 
 /-! ## Small executable regression examples -/
 
