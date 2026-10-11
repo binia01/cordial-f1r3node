@@ -173,6 +173,9 @@ impl ReputationState {
     /// list; it does not recompute ratings, Liquid Rank, transition, or
     /// clamping.
     ///
+    /// Newly excluded entries are rejected before mutation. Only audited block
+    /// application may introduce slashing exclusions and retained balances.
+    ///
     /// ## Ejection preservation
     ///
     /// The `excluded_keys` registry is **never modified** by this method.
@@ -183,6 +186,13 @@ impl ReputationState {
     /// `is_excluded` view remains consistent with the registry.
     pub fn apply_reputation_vector(&mut self, vector: ReputationVector) -> Result<(), PorError> {
         validate_reputation_vector(&vector)?;
+        if vector
+            .values
+            .iter()
+            .any(|entry| entry.is_excluded && !self.excluded_keys.contains(&entry.node_id))
+        {
+            return Err(PorError::ReputationExclusionMismatch);
+        }
 
         // Snapshot the excluded registry before we touch anything.
         let excluded = &self.excluded_keys;
@@ -298,12 +308,12 @@ impl ReputationState {
             penalties,
         )?;
 
-        let vector = ReputationVector {
-            round: block.reputation_list.round,
-            values: block.reputation_list.entries.clone(),
-        };
+        // Replay above validates the complete successor, including preservation
+        // of existing exclusions and retained balances. Install that audited list
+        // directly; the public vector API must not introduce new exclusions.
         let mut staged = self.clone();
-        staged.apply_reputation_vector(vector)?;
+        staged.current_round = block.reputation_list.round;
+        staged.reputation_list = block.reputation_list.clone();
         // Only an audited block can introduce new permanent exclusions. Commit
         // the registry, zero active weights, retained balances and block together.
         for entry in &staged.reputation_list.entries {
