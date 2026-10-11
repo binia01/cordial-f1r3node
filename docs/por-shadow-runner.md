@@ -58,15 +58,16 @@ map. Keep the data directory and its activation record across restarts.
 
 ## Four-node recovery smoke
 
-Start and verify the connected cluster, then build the runner once and run the
-four-observer harness from the repository root:
+Start and verify a recently started connected cluster, then build the runner
+once and run the four-observer harness from the repository root:
 
 ```sh
 just demo-cordial-four-node-cluster-up
 just demo-cordial-four-node-cluster-verify
-cargo build -j 1 -p cordial-f1r3node-adapter --bin live_por_shadow
+cargo build --release -j 1 -p cordial-f1r3node-adapter --bin live_por_shadow
 python3 docker/scripts/verify-four-node-por-shadow.py \
-  --data-root "$HOME/cordial-por-four-node"
+  --data-root "$HOME/cordial-por-four-node" \
+  --binary target/release/live_por_shadow
 ```
 
 The harness starts one observer for each validator gRPC port (51401, 52401,
@@ -85,6 +86,56 @@ runs. Logs are written to `<data-root>/<node>/runner.log`; each status is at
 observer restart check. `--timeout-seconds` and `--min-finalized-blocks` adjust
 the convergence gate. The cluster must be running before this command; the
 harness does not start or reset it.
+
+### Isolated fresh-cluster reproduction
+
+The Compose file fixes container names and host ports, so only one copy can
+run at a time. To test a fresh chain while preserving an existing cluster,
+stop the existing containers without removing their named volumes. Use a new
+Compose project name and a new PoR data root for the smoke, then restore the
+original project. Run these commands from the repository root in one shell:
+
+```sh
+./docker/scripts/generate-four-node-cluster-certs.sh
+cargo build --release -j 1 -p cordial-f1r3node-adapter --bin live_por_shadow
+just demo-cordial-four-node-cluster-down
+
+smoke_project="por-smoke-$(date +%s)"
+smoke_root="$(mktemp -d /tmp/por-shadow-four-node.XXXXXX)"
+COMPOSE_PROJECT_NAME="$smoke_project" docker compose --env-file docker/.env \
+  -f docker/four-node-cluster.yml up -d
+COMPOSE_PROJECT_NAME="$smoke_project" python3 \
+  docker/scripts/verify-four-node-por-shadow.py \
+  --data-root "$smoke_root" \
+  --binary target/release/live_por_shadow \
+  --timeout-seconds 300
+
+COMPOSE_PROJECT_NAME="$smoke_project" docker compose --env-file docker/.env \
+  -f docker/four-node-cluster.yml down
+just demo-cordial-four-node-cluster-up
+```
+
+Run the final two commands even if the harness fails or is interrupted. Plain
+`down` preserves both projects' node volumes; the smoke's PoR status and logs
+remain under `$smoke_root`. The harness waits for post-genesis finality, checks
+all four observers' round, weight commitment, weights, and finalized prefix,
+then restarts one observer and its validator. Set `COMPOSE_PROJECT_NAME` on the
+harness command because its validator restart uses Docker Compose too.
+
+### Long-history resource limit
+
+The observer restores durable PoR weights immediately, but its Cordial
+blocklace is process-local. Each start replays blocks from height zero and
+computes finalized ordering over the complete mirrored history before its
+first status publication. The `--timeout-seconds` option only extends the
+wait; it does not reduce replay memory or work. A live test at roughly 3,200
+heights mirrored around 12,000 blocks per observer, then consumed about 19 GiB
+of resident memory per optimized observer during ordering without publishing
+a status. That run was stopped, so long-history recovery is not yet verified.
+Runner logs now report each completed height batch to distinguish replay from
+the subsequent ordering calculation. Use the isolated fresh-cluster procedure
+for the recovery smoke until the long-history path has bounded memory and a
+durable mirror checkpoint.
 
 All observers currently retain the genesis reputation round because the live
 shadow runner does not yet produce ratings or activate later rounds. Agreement
