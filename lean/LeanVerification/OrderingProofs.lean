@@ -28,6 +28,201 @@ theorem checkTopological_iff (parents : ParentMap) (subset order : List BlockId)
     decide_eq_true_eq]
   tauto
 
+/-- Kahn sorting only observes parent-map entries for selected blocks. -/
+theorem topoLoop_eq_of_parents_eq_on (parents parents' : ParentMap)
+    (key : BlockId → String) (subset : List BlockId)
+    (hParents : ∀ block, block ∈ subset → parents block = parents' block) :
+    ∀ fuel remaining ordered,
+      (∀ block, block ∈ remaining → block ∈ subset) →
+      topoLoop parents key subset remaining ordered fuel =
+        topoLoop parents' key subset remaining ordered fuel := by
+  intro fuel
+  induction fuel with
+  | zero => intro remaining ordered _; rfl
+  | succ fuel ih =>
+      intro remaining ordered hRemaining
+      simp only [topoLoop]
+      by_cases hEmpty : remaining.isEmpty
+      · simp [hEmpty]
+      · simp only [hEmpty]
+        simp only [Bool.false_eq_true, if_false]
+        have hReady : readyBlocks parents subset ordered remaining =
+            readyBlocks parents' subset ordered remaining := by
+          unfold readyBlocks
+          apply List.filter_congr
+          intro block hBlock
+          rw [hParents block (hRemaining block hBlock)]
+        rw [hReady]
+        cases (sortByKey key (readyBlocks parents' subset ordered remaining)).head? with
+        | none => rfl
+        | some next =>
+            apply ih
+            intro block hBlock
+            exact hRemaining block (List.mem_of_mem_erase hBlock)
+
+/-- Canonical key sorting preserves list membership. -/
+theorem mem_insertByKey_iff (key : BlockId → String) (value block : BlockId)
+    (values : List BlockId) :
+    block ∈ insertByKey key value values ↔ block = value ∨ block ∈ values := by
+  induction values with
+  | nil => simp [insertByKey]
+  | cons head tail ih =>
+      simp only [insertByKey]
+      split <;> simp [ih, or_left_comm]
+
+theorem mem_sortByKey_iff (key : BlockId → String) (block : BlockId)
+    (values : List BlockId) : block ∈ sortByKey key values ↔ block ∈ values := by
+  unfold sortByKey
+  have hFold : ∀ (rest acc : List BlockId),
+      block ∈ rest.foldl (fun sorted value => insertByKey key value sorted) acc ↔
+        block ∈ acc ∨ block ∈ rest := by
+    intro rest
+    induction rest with
+    | nil => intro acc; simp
+    | cons value tail ih =>
+        intro acc
+        simp only [List.foldl_cons, ih, mem_insertByKey_iff, List.mem_cons]
+        tauto
+  simpa using hFold values []
+
+/-- Every successful Kahn-loop output consists of selected blocks when both
+the remaining and already ordered lists do. -/
+theorem topoLoop_output_subset (parents : ParentMap) (key : BlockId → String)
+    (subset : List BlockId) :
+    ∀ fuel remaining ordered output,
+      (∀ block, block ∈ remaining → block ∈ subset) →
+      (∀ block, block ∈ ordered → block ∈ subset) →
+      topoLoop parents key subset remaining ordered fuel = .ok output →
+      ∀ block, block ∈ output → block ∈ subset := by
+  intro fuel
+  induction fuel with
+  | zero =>
+      intro remaining ordered output _ hOrdered hRun
+      simp only [topoLoop] at hRun
+      split at hRun
+      · simpa [Except.ok.inj hRun] using hOrdered
+      · simp at hRun
+  | succ fuel ih =>
+      intro remaining ordered output hRemaining hOrdered hRun
+      simp only [topoLoop] at hRun
+      split at hRun
+      · simpa [Except.ok.inj hRun] using hOrdered
+      · rename_i hNotEmpty
+        cases hHead : (sortByKey key
+            (readyBlocks parents subset ordered remaining)).head? with
+        | none => simp [hHead] at hRun
+        | some next =>
+          simp only [hHead] at hRun
+          apply ih (remaining := remaining.erase next) (ordered := ordered ++ [next])
+              (output := output)
+          · intro block hBlock
+            exact hRemaining block (List.mem_of_mem_erase hBlock)
+          · intro block hBlock
+            rcases List.mem_append.mp hBlock with hOld | hNext
+            · exact hOrdered block hOld
+            · simp only [List.mem_singleton] at hNext
+              subst block
+              have hReadyMem : next ∈ readyBlocks parents subset ordered remaining := by
+                have hSortedMem : next ∈ sortByKey key
+                    (readyBlocks parents subset ordered remaining) := by
+                  cases hSorted : sortByKey key
+                      (readyBlocks parents subset ordered remaining) with
+                  | nil => simp [hSorted] at hHead
+                  | cons first rest =>
+                      simp [hSorted] at hHead
+                      subst first
+                      simp
+                exact (mem_sortByKey_iff key next _).mp hSortedMem
+              unfold readyBlocks at hReadyMem
+              exact hRemaining next (List.mem_of_mem_filter hReadyMem)
+          · exact hRun
+
+/-- A successful candidate topological sort emits only selected blocks. -/
+theorem topoOrder_output_subset (parents : ParentMap) (key : BlockId → String)
+    (subset output : List BlockId) (hRun : topoOrder parents key subset = .ok output) :
+    ∀ block, block ∈ output → block ∈ subset := by
+  unfold topoOrder at hRun
+  intro block hBlock
+  have hSubset := topoLoop_output_subset parents key subset.eraseDups
+    (subset.eraseDups.length + 1) subset.eraseDups [] output
+    (fun _ h => h) (by simp) hRun block hBlock
+  simpa using hSubset
+
+/-- Deterministic Kahn sorting is unchanged when parent maps agree on every
+selected block. -/
+theorem topoOrder_eq_of_parents_eq_on (parents parents' : ParentMap)
+    (key : BlockId → String) (subset : List BlockId)
+    (hParents : ∀ block, block ∈ subset → parents block = parents' block) :
+    topoOrder parents key subset = topoOrder parents' key subset := by
+  unfold topoOrder
+  apply topoLoop_eq_of_parents_eq_on
+  · intro block hBlock
+    exact hParents block (by simpa using hBlock)
+  · intro block hBlock
+    exact hBlock
+
+/-- Topological validation is unchanged when parent maps agree on the emitted
+order. -/
+theorem checkTopological_eq_of_parents_eq_on (parents parents' : ParentMap)
+    (subset order : List BlockId)
+    (hParents : ∀ block, block ∈ order → parents block = parents' block) :
+    checkTopological parents subset order = checkTopological parents' subset order := by
+  have hBefore : predecessorsBefore parents subset order =
+      predecessorsBefore parents' subset order := by
+    unfold predecessorsBefore
+    let oldCheck := fun child =>
+      match parents child with
+      | none => false
+      | some predecessors => predecessors.all fun predecessor =>
+          if subset.contains predecessor then
+            decide (order.idxOf predecessor < order.idxOf child)
+          else true
+    let newCheck := fun child =>
+      match parents' child with
+      | none => false
+      | some predecessors => predecessors.all fun predecessor =>
+          if subset.contains predecessor then
+            decide (order.idxOf predecessor < order.idxOf child)
+          else true
+    have hAll : ∀ xs : List BlockId, (∀ block, block ∈ xs → block ∈ order) →
+        xs.all oldCheck = xs.all newCheck := by
+      intro xs hXs
+      induction xs with
+      | nil => rfl
+      | cons head tail ih =>
+          simp only [List.all_cons]
+          have hHead := hParents head (hXs head (by simp))
+          simp only [oldCheck, newCheck, hHead]
+          rw [ih]
+          intro block hBlock
+          exact hXs block (by simp [hBlock])
+    exact hAll order (fun _ h => h)
+  simp [checkTopological, hBefore]
+
+/-- The certified deterministic sort is stable under parent-map agreement on
+its selected domain. -/
+theorem xsortRef_eq_of_parents_eq_on (parents parents' : ParentMap)
+    (key : BlockId → String) (subset : List BlockId)
+    (hParents : ∀ block, block ∈ subset → parents block = parents' block) :
+    xsortRef parents key subset = xsortRef parents' key subset := by
+  unfold xsortRef
+  rw [topoOrder_eq_of_parents_eq_on parents parents' key subset hParents]
+  cases hSort : topoOrder parents' key subset with
+  | error message => rfl
+  | ok order =>
+      have hOrderParents : ∀ block, block ∈ order →
+          parents block = parents' block := by
+        intro block hBlock
+        exact hParents block
+          (topoOrder_output_subset parents' key subset order hSort block hBlock)
+      change (if checkTopological parents subset order = true then
+          Except.ok order else
+          Except.error "internal xsort result failed its topological contract") =
+        (if checkTopological parents' subset order = true then
+          Except.ok order else
+          Except.error "internal xsort result failed its topological contract")
+      rw [checkTopological_eq_of_parents_eq_on parents parents' subset order hOrderParents]
+
 /-- Every successful `xsortRef` result satisfies the topological contract. -/
 theorem xsortRef_correct (parents : ParentMap) (key : BlockId → String)
     (subset order : List BlockId)
@@ -173,15 +368,16 @@ theorem tauRef_predecessor_ordered
 
 /-! ## Prefix preservation under a valid append -/
 
-/-- Earlier finality decisions are unchanged.  This is deliberately a
+/-- Earlier finality decisions are unchanged through the old replay horizon.
+This is deliberately a
 semantic statement about the executable final-leader test, not about the
 resulting τ plan. -/
 def StableEarlierFinality
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (wavelength : ℕ) (sel : ℕ → Option NodeId)
-    (domain domain' : List BlockId) : Prop :=
-  ∀ wave,
+    (domain domain' : List BlockId) (throughWave : ℕ) : Prop :=
+  ∀ wave, wave ≤ throughWave →
     finalLeaderAt? bonds validators B hV wavelength sel domain wave =
       finalLeaderAt? bonds validators B' hV' wavelength sel domain' wave
 
@@ -189,25 +385,100 @@ def StableEarlierFinality
 chain are unchanged for earlier leaders. -/
 def StableEarlierRatification
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
-    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B') : Prop :=
-  ∀ leader previous,
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (domain : List BlockId) : Prop :=
+  ∀ leader, leader ∈ domain → ∀ previous,
     checkRatifies bonds validators B hV leader previous =
       checkRatifies bonds validators B' hV' leader previous
 
-/-- The approved set and its deterministic topological ordering are unchanged
-for an earlier leader and an already-emitted prefix.  This is the exact local
-condition consumed by one recursive τ step; unlike an epoch-prefix premise it
-does not mention either complete plan. -/
-def StableEarlierFragments
+/-- Replay-domain growth appends genuinely new, valid block identities to the
+complete old domain. -/
+structure AppendOnlyDomain (B B' : Blocklace)
+    (domain domain' : List BlockId) where
+  added : List BlockId
+  oldComplete : ∀ block, block ∈ domain ↔ block ∈ B.keys
+  extension : domain' = domain ++ added
+  addedFresh : ∀ block, block ∈ added → block ∈ B'.keys ∧ block ∉ B.keys
+
+/-- Parent lookup for an old block is unchanged by append-only growth. -/
+theorem blockParents_eq_of_subBlocklace {B B' : Blocklace}
+    (hsub : SubBlocklace B B') {block : BlockId} (hBlock : block ∈ B.keys) :
+    blockParents B block = blockParents B' block := by
+  cases hLookup : B.lookup block with
+  | none =>
+      exact absurd (Finmap.mem_iff.mp (Finmap.mem_keys.mp hBlock)) (by simp [hLookup])
+  | some value => simp [blockParents, hLookup, hsub block value hLookup]
+
+/-- Approval filtering for an old leader is derived from immutable old
+observations: old targets retain their decision and appended targets cannot be
+observed (hence cannot be approved) by that leader. -/
+theorem approvedBlocks_stable
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
-    (domain domain' : List BlockId) (key : BlockId → String) : Prop :=
-  ∀ (leader : BlockId) (emitted : List BlockId),
+    (domain domain' : List BlockId) (hsub : SubBlocklace B B')
+    (hDomain : AppendOnlyDomain B B' domain domain')
+    (leader : BlockId) (hLeader : leader ∈ domain) (emitted : List BlockId) :
+    domain.filter (fun block =>
+        checkApproves B hV leader block && !emitted.contains block) =
+      domain'.filter (fun block =>
+        checkApproves B' hV' leader block && !emitted.contains block) := by
+  have hLeaderKey : leader ∈ B.keys := (hDomain.oldComplete leader).mp hLeader
+  rw [hDomain.extension, List.filter_append]
+  have hOld : domain.filter (fun block =>
+        checkApproves B hV leader block && !emitted.contains block) =
+      domain.filter (fun block =>
+        checkApproves B' hV' leader block && !emitted.contains block) := by
+    apply List.filter_congr
+    intro block hBlock
+    rw [checkApproves_eq_of_subBlocklace hV hV' hsub hLeaderKey
+      ((hDomain.oldComplete block).mp hBlock)]
+  rw [hOld]
+  suffices hAdded : hDomain.added.filter (fun block =>
+      checkApproves B' hV' leader block && !emitted.contains block) = [] by
+    rw [hAdded, List.append_nil]
+  apply List.filter_eq_nil_iff.mpr
+  intro block hBlock
+  have hFresh := hDomain.addedFresh block hBlock
+  rw [checkApproves_new_eq_false hV hV' hsub hLeaderKey hFresh.1 hFresh.2]
+  simp
+
+/-- Deterministic topological ordering of every earlier approved fragment is
+therefore unchanged; no sorted-output equality is assumed. -/
+theorem earlierFragment_stable
+    (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (domain domain' : List BlockId) (key : BlockId → String)
+    (hsub : SubBlocklace B B') (hDomain : AppendOnlyDomain B B' domain domain')
+    (leader : BlockId) (hLeader : leader ∈ domain) (emitted : List BlockId) :
     xsortRef (blockParents B) key
         (domain.filter fun block =>
           checkApproves B hV leader block && !emitted.contains block) =
       xsortRef (blockParents B') key
         (domain'.filter fun block =>
-          checkApproves B' hV' leader block && !emitted.contains block)
+          checkApproves B' hV' leader block && !emitted.contains block) := by
+  let approved := domain.filter fun block =>
+    checkApproves B hV leader block && !emitted.contains block
+  have hApproved := approvedBlocks_stable B B' hV hV' domain domain' hsub
+    hDomain leader hLeader emitted
+  change xsortRef (blockParents B) key approved = _
+  rw [← hApproved]
+  apply xsortRef_eq_of_parents_eq_on
+  intro block hBlock
+  apply blockParents_eq_of_subBlocklace hsub
+  exact (hDomain.oldComplete block).mp (List.mem_of_mem_filter hBlock)
+
+private theorem findSome?_congr_on {X Y : Type} (items : List X)
+    (left right : X → Option Y)
+    (h : ∀ item, item ∈ items → left item = right item) :
+    items.findSome? left = items.findSome? right := by
+  induction items with
+  | nil => rfl
+  | cons head tail ih =>
+      simp only [List.findSome?_cons]
+      rw [h head (by simp)]
+      cases right head
+      · apply ih
+        intro item hItem
+        exact h item (by simp [hItem])
+      · rfl
 
 /-- Stable finality and ratification imply stability of the executable
 `previousFinalLeader?` search. -/
@@ -215,17 +486,21 @@ theorem previousFinalLeader_stable
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (wavelength : ℕ) (sel : ℕ → Option NodeId)
-    (domain domain' : List BlockId)
+    (domain domain' : List BlockId) (throughWave : ℕ)
     (hFinal : StableEarlierFinality bonds validators B B' hV hV'
-      wavelength sel domain domain')
-    (hRatifies : StableEarlierRatification bonds validators B B' hV hV')
-    (wave : ℕ) (leader : BlockId) :
+      wavelength sel domain domain' throughWave)
+    (hRatifies : StableEarlierRatification bonds validators B B' hV hV' domain)
+    (wave : ℕ) (hWave : wave ≤ throughWave + 1)
+    (leader : BlockId) (hLeader : leader ∈ domain) :
     previousFinalLeader? bonds validators B hV wavelength sel domain wave leader =
       previousFinalLeader? bonds validators B' hV' wavelength sel domain' wave leader := by
   unfold previousFinalLeader?
-  congr 1
-  funext priorWave
-  rw [hFinal priorWave]
+  apply findSome?_congr_on
+  intro priorWave hPriorWave
+  have hPriorLt : priorWave < wave := by
+    rw [List.mem_reverse, List.mem_range] at hPriorWave
+    exact hPriorWave
+  rw [hFinal priorWave (by omega)]
   cases finalLeaderAt? bonds validators B' hV' wavelength sel domain' priorWave with
   | none => rfl
   | some previous =>
@@ -233,7 +508,70 @@ theorem previousFinalLeader_stable
           some (priorWave, previous) else none) =
         (if checkRatifies bonds validators B' hV' leader previous = true then
           some (priorWave, previous) else none)
-      rw [hRatifies leader previous]
+      rw [hRatifies leader hLeader previous]
+
+/-- A leader returned by the executable finality scan came from its replay
+domain. -/
+theorem finalLeaderAt_mem_domain
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (wave : ℕ) (leader : BlockId)
+    (hFinal : finalLeaderAt? bonds validators B hV wavelength sel domain wave =
+      some leader) : leader ∈ domain := by
+  unfold finalLeaderAt? at hFinal
+  generalize hCandidates : domain.filter (fun block =>
+      decide (creatorOf B block = sel wave) &&
+      decide (blockDepth B hV block = leaderRoundOfWave wave wavelength)) = candidates
+    at hFinal
+  cases candidates with
+  | nil => simp at hFinal
+  | cons candidate rest =>
+      cases rest with
+      | nil =>
+          simp only at hFinal
+          by_cases hCheck : checkFinal bonds validators B hV wave wavelength sel
+              candidate = true
+          · simp [hCheck] at hFinal
+            have hLeader := hFinal
+            subst leader
+            apply List.mem_of_mem_filter
+            rw [hCandidates]
+            simp
+          · simp [hCheck] at hFinal
+      | cons next tail => simp at hFinal
+
+/-- A successful previous-final result names an earlier wave and a leader from
+the same replay domain. -/
+theorem previousFinalLeader_lt_and_mem
+    (bonds : NodeId → ℕ) (validators : Finset NodeId)
+    (B : Blocklace) (hV : ValidBlocklace B)
+    (wavelength : ℕ) (sel : ℕ → Option NodeId)
+    (domain : List BlockId) (wave : ℕ) (leader : BlockId)
+    (priorWave : ℕ) (priorLeader : BlockId)
+    (hPrevious : previousFinalLeader? bonds validators B hV wavelength sel
+      domain wave leader = some (priorWave, priorLeader)) :
+    priorWave < wave ∧ priorLeader ∈ domain := by
+  unfold previousFinalLeader? at hPrevious
+  rw [List.findSome?_eq_some_iff] at hPrevious
+  obtain ⟨before, foundWave, after, hList, hFound, _⟩ := hPrevious
+  have hFoundMem : foundWave ∈ (List.range wave).reverse := by
+    rw [hList]
+    simp
+  have hFoundLt : foundWave < wave := by
+    simpa using (List.mem_reverse.mp hFoundMem)
+  cases hFinal : finalLeaderAt? bonds validators B hV wavelength sel domain foundWave with
+  | none => simp [hFinal] at hFound
+  | some foundLeader =>
+      by_cases hRatifies : checkRatifies bonds validators B hV leader foundLeader = true
+      · simp [hFinal, hRatifies] at hFound
+        have hWave : foundWave = priorWave := hFound.1
+        have hLeader : foundLeader = priorLeader := hFound.2
+        subst foundWave
+        subst foundLeader
+        exact ⟨hFoundLt, finalLeaderAt_mem_domain bonds validators B hV wavelength
+          sel domain priorWave priorLeader hFinal⟩
+      · simp [hFinal, hRatifies] at hFound
 
 /-- A semantic chain of `previousFinalLeader?` results in the extended
 blocklace.  It says that a new latest leader recursively reconnects to the old
@@ -260,38 +598,49 @@ theorem tauPlanFromLeader_stable
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (wavelength : ℕ) (sel : ℕ → Option NodeId)
-    (domain domain' : List BlockId) (key : BlockId → String)
+    (domain domain' : List BlockId) (key : BlockId → String) (throughWave : ℕ)
+    (hsub : SubBlocklace B B') (hDomain : AppendOnlyDomain B B' domain domain')
     (hFinal : StableEarlierFinality bonds validators B B' hV hV'
-      wavelength sel domain domain')
-    (hRatifies : StableEarlierRatification bonds validators B B' hV hV')
-    (hFragments : StableEarlierFragments B B' hV hV' domain domain' key) :
+      wavelength sel domain domain' throughWave)
+    (hRatifies : StableEarlierRatification bonds validators B B' hV hV' domain) :
     ∀ fuel wave leader,
+      wave ≤ throughWave + 1 → leader ∈ domain →
       tauPlanFromLeader bonds validators B hV wavelength sel domain key
           fuel wave leader =
         tauPlanFromLeader bonds validators B' hV' wavelength sel domain' key
           fuel wave leader := by
   intro fuel
   induction fuel with
-  | zero => intro wave leader; rfl
+  | zero => intro wave leader _ _; rfl
   | succ fuel ih =>
-      intro wave leader
+      intro wave leader hWave hLeader
       simp only [tauPlanFromLeader]
-      rw [previousFinalLeader_stable bonds validators B B' hV hV' wavelength sel
-        domain domain' hFinal hRatifies wave leader]
+      have hPreviousStable := previousFinalLeader_stable bonds validators B B' hV hV'
+        wavelength sel domain domain' throughWave hFinal hRatifies wave hWave
+        leader hLeader
+      rw [hPreviousStable]
       cases hPrevious : previousFinalLeader? bonds validators B' hV' wavelength sel
           domain' wave leader with
       | none =>
-          simpa [flattenEpochs] using hFragments leader []
+          simpa [flattenEpochs] using earlierFragment_stable B B' hV hV' domain
+            domain' key hsub hDomain leader hLeader []
       | some previous =>
           rcases previous with ⟨priorWave, priorLeader⟩
+          have hPreviousOld : previousFinalLeader? bonds validators B hV wavelength sel
+              domain wave leader = some (priorWave, priorLeader) := by
+            rw [hPreviousStable]
+            exact hPrevious
+          have hPrior := previousFinalLeader_lt_and_mem bonds validators B hV
+            wavelength sel domain wave leader priorWave priorLeader hPreviousOld
           simp only
-          rw [ih priorWave priorLeader]
+          rw [ih priorWave priorLeader (by omega) hPrior.2]
           apply bind_congr
           intro priorEpochs
           exact congrArg
             (Except.map fun suffix =>
               priorEpochs ++ [{ leader := leader, blocks := suffix }])
-            (hFragments leader (flattenEpochs priorEpochs))
+            (earlierFragment_stable B B' hV hV' domain domain' key hsub hDomain
+              leader hLeader (flattenEpochs priorEpochs))
 
 /-- Giving a successful recursive τ computation more fuel does not change
 its result. -/
@@ -476,9 +825,9 @@ previously emitted τ prefix.
 The shared indices make bonds, validators, wavelength, leader selection, and
 the canonical sort key immutable.  The remaining fields concern protocol
 observations: append-only growth, monotone replay inputs, stable earlier
-finality/ratification, stable approved fragments, and a previous-final-leader
-chain from the new latest leader back to the old one.  No field assumes an
-epoch or output prefix. -/
+finality/ratification, and a previous-final-leader chain from the new latest
+leader back to the old one. Approved-fragment stability is derived from the
+blocklace and domain growth fields. No field assumes an epoch or output prefix. -/
 structure ValidBlocklaceGrowthEvidence
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
@@ -486,12 +835,12 @@ structure ValidBlocklaceGrowthEvidence
     (domain domain' : List BlockId) (key : BlockId → String)
     (throughWave throughWave' : ℕ) where
   subBlocklace : SubBlocklace B B'
-  domainExtension : ∀ block, block ∈ domain → block ∈ domain'
+  domainGrowth : AppendOnlyDomain B B' domain domain'
   horizonExtension : throughWave ≤ throughWave'
   stableFinality : StableEarlierFinality bonds validators B B' hV hV'
-    wavelength sel domain domain'
+    wavelength sel domain domain' throughWave
   stableRatification : StableEarlierRatification bonds validators B B' hV hV'
-  stableFragments : StableEarlierFragments B B' hV hV' domain domain' key
+    domain
   oldLatest : Option BlockId
   newLatest : Option BlockId
   oldEpochs : List TauEpoch
@@ -500,6 +849,9 @@ structure ValidBlocklaceGrowthEvidence
     throughWave = .ok (oldLatest, oldEpochs)
   newPlan : computeTauPlan bonds validators B' hV' wavelength sel domain' key
     throughWave' = .ok (newLatest, newEpochs)
+  oldLatestInDomain : ∀ leader, oldLatest = some leader → leader ∈ domain
+  oldLatestWaveBound : ∀ leader, oldLatest = some leader →
+    waveOfRound (blockDepth B hV leader) wavelength ≤ throughWave
   latestExtension : oldLatest = none ∨
     ∃ oldLeader newLeader steps,
       oldLatest = some oldLeader ∧ newLatest = some newLeader ∧
@@ -569,8 +921,8 @@ theorem tauRef_eq_of_plan
 
 /-- **τ prefix theorem.** A valid append preserves the old output and only
 adds a suffix. The hypotheses explicitly include append-only blocklace
-growth, unchanged earlier finality, unchanged ordering parameters, and a
-stable old leader/approved-fragment epoch plan. -/
+growth, bounded earlier finality, unchanged ordering parameters, and semantic
+continuation of the previous-final-leader chain. -/
 theorem tauRef_prefix_of_validAppend
     (bonds : NodeId → ℕ) (validators : Finset NodeId)
     (B B' : Blocklace) (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
@@ -608,10 +960,14 @@ theorem tauRef_prefix_of_validAppend
       have hOldRun := computeTauPlan_some_run bonds validators B hV wavelength sel
         domain key throughWave oldLeader append.oldEpochs (hOldLatest ▸ append.oldPlan)
       have hStable := tauPlanFromLeader_stable bonds validators B B' hV hV'
-        wavelength sel domain domain' key append.stableFinality
-        append.stableRatification append.stableFragments
+        wavelength sel domain domain' key throughWave append.subBlocklace
+        append.domainGrowth append.stableFinality append.stableRatification
         (throughWave + 2)
         (waveOfRound (blockDepth B hV oldLeader) wavelength) oldLeader
+        (by
+          have hBound := append.oldLatestWaveBound oldLeader hOldLatest
+          omega)
+        (append.oldLatestInDomain oldLeader hOldLatest)
       have hOldRun' :
           tauPlanFromLeader bonds validators B' hV' wavelength sel domain' key
               (throughWave + 2)
