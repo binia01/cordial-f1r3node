@@ -632,6 +632,30 @@ where
         return Ok(Vec::new());
     };
 
+    weighted_tau_at_leader(
+        blocklace,
+        &latest_leader,
+        wavelength,
+        bonds,
+        leader_selection,
+    )
+}
+
+/// Return the weighted ordered prefix anchored by a specified final leader.
+///
+/// The caller must establish that `leader` is a final leader under `bonds`.
+/// This uses the same recursion as [`weighted_tau`], allowing a consumer to
+/// replay an earlier finalized prefix after a newer leader has appeared.
+pub fn weighted_tau_at_leader<F>(
+    blocklace: &Blocklace,
+    leader: &BlockIdentity,
+    wavelength: u64,
+    bonds: &HashMap<NodeId, u64>,
+    leader_selection: F,
+) -> Result<Vec<BlockIdentity>, OrderingError>
+where
+    F: Fn(u64) -> Option<NodeId> + Copy,
+{
     let weights = WeightSnapshot::from_bonds(bonds);
     let config = WeightedTauConfig {
         wavelength,
@@ -644,11 +668,11 @@ where
         emitted: BTreeSet::new(),
         ordered: Vec::new(),
     };
-    weighted_tau_from_leader(blocklace, &latest_leader, &config, &mut state)?;
+    weighted_tau_from_leader(blocklace, leader, &config, &mut state)?;
 
     #[cfg(feature = "trace")]
     {
-        let wave = depth(blocklace, &latest_leader)
+        let wave = depth(blocklace, leader)
             .and_then(|round| wave_of_round(round, wavelength))
             .unwrap_or(0);
         let ordered_block_hashes: Vec<String> = state
@@ -657,10 +681,10 @@ where
             .map(|id| trace::hex(&id.content_hash))
             .collect();
         trace::emit(TraceEvent::RunTauOrder(TauOrderEvent {
-            node_id: trace::hex(&latest_leader.creator.0),
+            node_id: trace::hex(&leader.creator.0),
             wave,
             wavelength,
-            latest_leader_hash: trace::hex(&latest_leader.content_hash),
+            latest_leader_hash: trace::hex(&leader.content_hash),
             ordered_block_hashes: ordered_block_hashes.clone(),
             output_len: state.ordered.len(),
         }));
