@@ -299,26 +299,37 @@ def insertByKey (key : BlockId → String) (value : BlockId) :
 def sortByKey (key : BlockId → String) (values : List BlockId) : List BlockId :=
   values.foldl (fun sorted value => insertByKey key value sorted) []
 
+/-- Selected vertices whose selected predecessors have already been emitted. -/
+def readyBlocks (parents : ParentMap) (subset ordered remaining : List BlockId) :
+    List BlockId :=
+  remaining.filter fun block =>
+    match parents block with
+    | none => false
+    | some predecessors => predecessors.all fun predecessor =>
+        !subset.contains predecessor || ordered.contains predecessor
+
+/-- Fuelled Kahn loop, exposed so preservation proofs can show that changing
+the parent map outside `subset` is observationally irrelevant. -/
+def topoLoop (parents : ParentMap) (key : BlockId → String)
+    (subset : List BlockId) : List BlockId → List BlockId → Nat →
+    Except String (List BlockId)
+  | remaining, ordered, 0 =>
+      if remaining.isEmpty then pure ordered else throw "tau subset contains a cycle"
+  | remaining, ordered, fuel + 1 =>
+      if remaining.isEmpty then pure ordered
+      else
+        let ready := readyBlocks parents subset ordered remaining
+        match (sortByKey key ready).head? with
+        | none => throw "tau subset contains a cycle or unknown block"
+        | some next => topoLoop parents key subset
+            (remaining.erase next) (ordered ++ [next]) fuel
+
 /-- Candidate Kahn sort.  Only edges whose endpoints are both in `subset`
 contribute to readiness, exactly as in Rust `xsort`. -/
 def topoOrder (parents : ParentMap) (key : BlockId → String)
     (subset : List BlockId) : Except String (List BlockId) :=
   let subset := subset.eraseDups
-  let rec loop (remaining ordered : List BlockId) (fuel : Nat) : Except String (List BlockId) :=
-    match fuel with
-    | 0 => if remaining.isEmpty then pure ordered else throw "tau subset contains a cycle"
-    | fuel + 1 =>
-        if remaining.isEmpty then pure ordered
-        else
-          let ready := remaining.filter fun block =>
-            match parents block with
-            | none => false
-            | some predecessors => predecessors.all fun predecessor =>
-                !subset.contains predecessor || ordered.contains predecessor
-          match (sortByKey key ready).head? with
-          | none => throw "tau subset contains a cycle or unknown block"
-          | some next => loop (remaining.erase next) (ordered ++ [next]) fuel
-  loop subset [] (subset.length + 1)
+  topoLoop parents key subset subset [] (subset.length + 1)
 
 /-- Check that two lists denote the same finite set. -/
 def sameDomain (left right : List BlockId) : Bool :=

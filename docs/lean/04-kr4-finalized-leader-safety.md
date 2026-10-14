@@ -300,27 +300,80 @@ before children. It rejects cyclic input.
 
 Rust: `ordering.rs:tau`.
 
-### Prefix-safety
+### Prefix-safety under valid blocklace growth
 
 ```lean
-theorem tauRef_prefix_of_validAppend
-    (append : ValidAppend ...)
+theorem tauRef_prefix_of_validBlocklaceGrowth
+    (growth : ValidBlocklaceGrowth ...)
     (hOld : tauRef ... B ... = .ok oldOutput) :
     ∃ suffix, tauRef ... B' ... = .ok (oldOutput ++ suffix)
 ```
 
-This is proved with no axiom. `ValidAppend` makes the necessary protocol
-hypotheses explicit:
+This is proved with no axiom and, unlike the earlier Issue #244 version, does
+not accept `List.IsPrefix oldEpochs newEpochs` as evidence. `ValidAppend`
+remains as a compatibility alias for `ValidBlocklaceGrowth`.
+
+`ValidBlocklaceGrowthEvidence` records these conditions and
+`ValidBlocklaceGrowth` hides the witness behind `Nonempty`:
 
 - `B'` is a `SubBlocklace` extension of `B`;
-- the replay domain and horizon only extend;
-- earlier `finalLeaderAt?` decisions are unchanged;
-- the old leader/approved-fragment epoch plan is a prefix of the new plan;
-- bonds, validators, wavelength, leader selector, and canonical key are shared.
+- `AppendOnlyDomain` says the old replay domain is exactly `B.keys`, while the
+  extended domain is `domain ++ added` and every added identity is a valid,
+  genuinely new `B'` block;
+- `throughWave ≤ throughWave'`, while executable `finalLeaderAt?` decisions
+  are required to be stable only for `wave ≤ throughWave`;
+- the `checkRatifies` decisions consulted for leaders in the old domain are
+  stable;
+- the old latest leader belongs to the old domain and its computed wave is
+  bounded by the old horizon;
+- if the old run has a latest leader, repeatedly applying
+  `previousFinalLeader?` from the new latest leader reaches it, with enough
+  added replay horizon to fund those recursive steps; and
+- bonds, validators, wavelength, leader selector, and canonical key are shared
+  by construction.
+
+These are local protocol conditions rather than a reformulation of the desired
+plan prefix. In particular, finality stability says nothing about newly scanned
+waves above the old horizon. Thus ordinary growth such as `B1/[block0]` at
+wave 0 to `B2/[block0, block1]` at wave 1 is not excluded: the new wave may
+discover `block1`.
+
+Approved-fragment or sorted-output equality is not a field of the growth
+predicate. It is derived as follows. `observes_iff_subBlocklace` proves that
+observations between old blocks are unchanged, while `observes_stays_in_B`
+proves an old leader cannot observe a new block. Consequently
+`checkApproves_eq_of_subBlocklace` preserves approval of old targets and
+`checkApproves_new_eq_false` rejects appended targets. `approvedBlocks_stable`
+then proves equality of the filtered approved lists. Parent lookup is immutable
+for those old blocks, and `xsortRef_eq_of_parents_eq_on` proves the Kahn sorter
+and its validator are insensitive to parent-map changes outside that selected
+fragment. `earlierFragment_stable` combines those results.
+
+The leader-chain condition remains necessary when the larger horizon discovers
+newer final leaders: it connects their recursion to the old latest leader
+without mentioning epoch or output lists.
+
+The proof proceeds in four stages:
+
+1. `approvedBlocks_stable` and `earlierFragment_stable` derive unchanged old
+   approved/sorted fragments from append-only blocklace and domain growth.
+2. `previousFinalLeader_stable` derives equality of earlier previous-leader
+   searches from finality bounded by the old horizon and old-leader
+   ratification stability.
+3. `tauPlanFromLeader_stable` proves by fuel induction that an old recursive
+   leader computation is unchanged, including each approved/sorted fragment.
+4. `tauPlanFromLeader_prefix_of_chain` proves by induction over the semantic
+   previous-leader chain that the old epoch plan prefixes the new plan.
+   `tauPlanFromLeader_fuel_mono` handles the larger replay fuel.
+5. `flattenEpochs_prefix` converts the derived epoch prefix to an output prefix;
+   `tauRef_eq_of_plan` then yields the stated successful extended run.
 
 `SubBlocklace` alone is intentionally insufficient: newly learned blocks may
-change which earlier leader or approved fragment is visible. The former
-unconditional prefix axiom hid this requirement and has been removed.
+change which earlier leader or approved fragment is visible. Append-only DAG,
+domain, and horizon growth establish that this is a genuine extension; bounded
+finality and old-leader ratification stability rule out retroactive decisions.
+The former unconditional prefix premise hid this requirement and has been
+removed.
 
 `OrderingProofs.lean` also proves `tauRef_deterministic`, `tauRef_nodup`, and
 `tauRef_predecessor_ordered`, and contains executable examples for tie-breaking,
@@ -348,4 +401,10 @@ cycle rejection, a real two-wave formal blocklace, and prefix extension.
 | `CMRef.xsortRef` | `ordering.rs:xsort` |
 | `CMRef.previousFinalLeader?` | `ordering.rs:previous_final_leader` |
 | `CMRef.computeTauPlan`, `tauRef` | `ordering.rs:tau` |
-| `tauRef_prefix_of_validAppend` | Ledger append-only invariant under stable earlier finality/fragments |
+| `AppendOnlyDomain`, `approvedBlocks_stable` | Old-domain preservation and proof that appended blocks cannot enter an old approved fragment |
+| `xsortRef_eq_of_parents_eq_on`, `earlierFragment_stable` | Deterministic `xsort` stability derived for earlier fragments |
+| `StableEarlierFinality` | Stability of repeated `final_leader_for_wave` results only through the old replay horizon |
+| `StableEarlierRatification`, `previousFinalLeader_stable` | Stable `previous_final_leader` scan and `weighted_ratifies` decisions |
+| `tauPlanFromLeader_stable` | Recursive old-plan stability using the derived fragment theorem |
+| `PreviousFinalLeaderChain` | Recursive `previous_final_leader` path from a newer latest leader to the old latest leader |
+| `tauRef_prefix_of_validBlocklaceGrowth` | Derived ledger append-only invariant under valid growth |
