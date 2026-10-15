@@ -15,6 +15,7 @@
 //! 2. **Validator** (pure, deterministic, no side effects):
 //!    - Validates structural integrity (hashes, signatures)
 //!    - Uses `sig_algorithm` from protobuf message
+//!    - Resolves native parent hashes through accepted Cordial identities
 //!    - Rejects invalid blocks with specific error reasons
 //!
 //! 3. **Adapter** (stateful, handles side effects):
@@ -27,11 +28,14 @@
 //! - **Protobuf-first**: Accepts f1r3node wire format directly
 //! - **Algorithm-driven**: Signature verification dispatched from protobuf `sig_algorithm`
 //! - **Fail-fast**: Invalid blocks rejected immediately with clear errors
-//! - **Pure validation**: No database writes, no state mutations in mapper
+//! - **Pure validation**: No database writes or state mutations in mapper;
+//!   accepted identity mappings are maintained separately
 //! - **Type-generic**: `<V, P, Id>` parameters allow future extensibility
 //! - **Trust boundary**: Mapper validates structure; adapter handles semantics
 
-use anyhow::{Result, anyhow};
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{Result, anyhow, bail};
 use cordial_miners_core::Block;
 use cordial_miners_core::crypto::{self, Ed25519Scheme, Secp256k1Scheme, SignatureScheme};
 #[allow(unused)]
@@ -85,13 +89,71 @@ pub struct GrpcBlockMapper<V = (), P = (), Id = ()> {
 /// The wire signature is valid for [`Self::wire_hash`] (`Hf`), not for the
 /// translated block's Cordial content hash (`Hc`). Keeping the attestation
 /// separate prevents downstream Cordial verifiers from interpreting an `Hf`
-/// signature as an `Hc` signature.
+/// signature as an `Hc` signature. The translated identity has an empty
+/// signature and must be inserted only after this wire validation succeeds.
 #[derive(Debug, Clone)]
 pub struct ValidatedF1r3nodeBlock {
     pub block: Block,
     pub wire_hash: [u8; 32],
     pub wire_signature: Vec<u8>,
     pub signature_algorithm: String,
+}
+
+/// Native wire hashes for host blocks already accepted into the Cordial view.
+///
+/// Record a block only after its translated Cordial block has been accepted.
+/// The two hash domains must remain separate: native parent hashes are looked
+/// up here and replaced with complete Cordial identities before content hashing.
+/// This index is in memory; durable recovery is a separate integration step.
+#[derive(Debug, Clone, Default)]
+pub struct NativeBlockIdentityIndex {
+    by_wire_hash: HashMap<[u8; 32], BlockIdentity>,
+    by_cordial_identity: HashMap<BlockIdentity, [u8; 32]>,
+}
+
+impl NativeBlockIdentityIndex {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, wire_hash: &[u8; 32]) -> Option<&BlockIdentity> {
+        self.by_wire_hash.get(wire_hash)
+    }
+
+    /// Check a translated block before inserting it into the Cordial view.
+    /// Distinct wire blocks can collapse to one Cordial identity because the
+    /// host-to-Cordial translation omits some host fields.
+    pub fn check_candidate(&self, block: &ValidatedF1r3nodeBlock) -> Result<()> {
+        let identity = &block.block.identity;
+        if !identity.signature.is_empty()
+            || identity.content_hash != crypto::hash_content(&block.block.content)
+        {
+            bail!("native block has an invalid translated Cordial identity");
+        }
+        if let Some(existing) = self.by_wire_hash.get(&block.wire_hash) {
+            if existing != identity {
+                bail!("native wire hash already maps to another Cordial identity");
+            }
+        }
+        if let Some(existing) = self.by_cordial_identity.get(identity) {
+            if existing != &block.wire_hash {
+                bail!("distinct native wire blocks collapse to one Cordial identity");
+            }
+        }
+        Ok(())
+    }
+
+    /// Register a checked block after the caller has accepted it. Call
+    /// [`Self::check_candidate`] before insertion so collisions cannot alter
+    /// the blocklace before they are rejected.
+    pub fn record_accepted(&mut self, block: &ValidatedF1r3nodeBlock) -> Result<()> {
+        self.check_candidate(block)?;
+        let identity = &block.block.identity;
+        self.by_wire_hash.insert(block.wire_hash, identity.clone());
+        self.by_cordial_identity
+            .insert(identity.clone(), block.wire_hash);
+        Ok(())
+    }
 }
 
 impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
@@ -111,7 +173,8 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
     /// 2. **Signature validation**: Verifies the signature over that wire hash
     /// 3. **Translation**: Converts the validated message into Cordial's internal
     ///    [`Block`] and independently derives its content hash
-    /// 4. **Parent integrity**: Ensures all parent references are well-formed
+    /// 4. **Parent integrity**: Rejects unresolved native parents; use
+    ///    [`Self::from_protobuf_with_parents`] with accepted mappings for children
     ///
     /// Returns an error if any step fails. Errors are detailed and actionable
     /// for logging and debugging.
@@ -127,6 +190,17 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
     pub fn from_protobuf(
         &self,
         block_msg: &F1r3nodeBlockMessage,
+    ) -> Result<ValidatedF1r3nodeBlock> {
+        self.from_protobuf_with_parents(block_msg, &NativeBlockIdentityIndex::new())
+    }
+
+    /// Validate a native block and resolve every native predecessor hash to
+    /// an accepted Cordial identity. Missing parents are errors, not silently
+    /// treated as Cordial content hashes or removed from the blocklace.
+    pub fn from_protobuf_with_parents(
+        &self,
+        block_msg: &F1r3nodeBlockMessage,
+        accepted: &NativeBlockIdentityIndex,
     ) -> Result<ValidatedF1r3nodeBlock> {
         // Validate the original f1r3node model before the intentionally lossy
         // translation drops execution-event details.
@@ -153,6 +227,29 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
 
         self.validate_internal_content_hash(&block)?;
         self.validate_parents(&block)?;
+
+        let mut predecessors = HashSet::with_capacity(block.content.predecessors.len());
+        for parent in &block.content.predecessors {
+            let resolved = accepted.get(&parent.content_hash).ok_or_else(|| {
+                anyhow!(
+                    "native parent {} has no accepted Cordial identity",
+                    hex::encode(parent.content_hash)
+                )
+            })?;
+            for justification in &block_msg.justifications {
+                if justification.latest_block_hash.as_ref() == parent.content_hash.as_slice()
+                    && justification.validator.as_ref() != resolved.creator.0.as_slice()
+                {
+                    bail!(
+                        "native parent {} justification creator does not match accepted block",
+                        hex::encode(parent.content_hash)
+                    );
+                }
+            }
+            predecessors.insert(resolved.clone());
+        }
+        block.content.predecessors = predecessors;
+        block.identity.content_hash = crypto::hash_content(&block.content);
 
         let wire_hash: [u8; 32] = wire_hash
             .as_ref()
@@ -325,9 +422,9 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
 
     /// Verify that all parent references are structurally valid.
     ///
-    /// This is a **pure, stateless, byte-level** check only. Parent *existence* is not
-    /// verified here — that is a semantic concern belonging to the consensus layer which
-    /// has access to the full blocklace. No external lookups or state mutations occur.
+    /// This is a **pure, stateless, byte-level** check only. Native parent
+    /// existence is checked separately against the accepted identity index in
+    /// `from_protobuf_with_parents`. No state mutations occur here.
     ///
     /// Checks performed per predecessor [`BlockIdentity`]:
     /// - `content_hash`: statically `[u8; 32]` — no runtime check needed.
