@@ -1,5 +1,11 @@
 # Cordial Miners Slashing Integration
 
+> Migration status: The `f1r3node-rust` host requires a verified native block
+> hash and target activation epoch. Core Cordial evidence does not carry them.
+> The production formatter currently rejects nonempty evidence, so the flow
+> below describes the intended integration, not active slash execution. See
+> [Slash Formatting](07-slash-formatting.md) for the required host mapping.
+
 ## Purpose
 
 Cordial Miners treats equivocation as a consensus safety failure with an
@@ -7,8 +13,8 @@ economic consequence. Detecting the fault is not enough: the next proposer must
 make the cost of corruption executable by placing a slash system transaction in
 front of normal user work.
 
-This integration connects the pure evidence retained by the Cordial core to the
-host f1r3node execution batch:
+The intended integration connects the pure evidence retained by the Cordial
+core to the host f1r3node execution batch:
 
 1. the core `EvidencePool` retains raw conflicting Cordial blocks,
 2. the adapter `SlashDeployFormatter` converts that evidence into f1r3node
