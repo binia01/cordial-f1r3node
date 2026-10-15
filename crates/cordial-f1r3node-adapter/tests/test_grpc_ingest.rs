@@ -190,6 +190,8 @@ fn accepts_block_signed_by_f1r3node_validator_identity() {
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: vec![0xcc].into(),
+            applied_from_scope: vec![],
+            merge_base: vec![].into(),
         },
         justifications: vec![],
         sender: vec![].into(),
@@ -224,6 +226,29 @@ fn accepts_block_signed_by_f1r3node_validator_identity() {
     tampered_signature.sig = vec![0; signed.sig.len()].into();
     assert!(mapper.from_protobuf(&tampered_signature).is_err());
 
+    let mut tampered_scope = signed.clone();
+    tampered_scope
+        .body
+        .applied_from_scope
+        .push(vec![0x11; 32].into());
+    assert!(
+        mapper
+            .from_protobuf(&tampered_scope)
+            .unwrap_err()
+            .to_string()
+            .contains("Wire hash mismatch")
+    );
+
+    let mut tampered_merge_base = signed.clone();
+    tampered_merge_base.body.merge_base = vec![0x22; 32].into();
+    assert!(
+        mapper
+            .from_protobuf(&tampered_merge_base)
+            .unwrap_err()
+            .to_string()
+            .contains("Wire hash mismatch")
+    );
+
     assert_ne!(
         validated.block.identity.content_hash.as_slice(),
         signed.block_hash.as_ref(),
@@ -254,6 +279,8 @@ fn rejects_tampered_f1r3node_wire_hash() {
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: vec![].into(),
+            applied_from_scope: vec![],
+            merge_base: vec![].into(),
         },
         justifications: vec![],
         sender: vec![].into(),
