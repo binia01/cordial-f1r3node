@@ -480,6 +480,10 @@ where
                 records.len()
             )));
         }
+        // Preserve one request per proof, including multiple proofs for the same
+        // (validator, round). Before applying percentages, host integration must
+        // consolidate punishment by that pair or make it idempotent so repeated
+        // evidence or replay cannot cause repeated deductions.
         for (record, evidence) in records.iter().zip(formatted) {
             if evidence.penalty_ratio_bps != ratio {
                 return Err(ProposeError::SlashFormat(

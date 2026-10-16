@@ -244,6 +244,119 @@ fn proposer_retains_tiers_by_round_and_prepares_slashes_before_users() {
 }
 
 #[test]
+fn proposer_uses_each_evidence_rounds_own_weight_snapshot() {
+    let mut pool = CordialEvidencePool::new();
+    evidence(&mut pool, 1, 4, 1);
+    evidence(&mut pool, 1, 8, 3);
+    let policy = policy(4, &[(1, 20), (2, 80)])
+        .with_round_weights(8, weights(&[(1, 40), (2, 60)]))
+        .unwrap();
+    let capture = Capture::default();
+    propose(&pool, &[1], policy, &[], capture.clone()).unwrap();
+
+    let guard = capture.prepared.lock().unwrap();
+    let batch = guard.as_ref().unwrap().batch();
+    assert_eq!(batch.len(), 3);
+    for (item, expected_round, expected_ratio) in [(&batch[0], 4, 2500), (&batch[1], 8, 10000)] {
+        let ExecutionBatchItem::SlashSystemDeploy {
+            validator,
+            round,
+            evidence,
+        } = item
+        else {
+            panic!("expected a slash request for each evidence round");
+        };
+        assert_eq!(validator, &node(1));
+        assert_eq!(*round, expected_round);
+        assert_eq!(evidence.penalty_ratio_bps, expected_ratio);
+    }
+    assert!(matches!(&batch[2], ExecutionBatchItem::CloseBlock));
+}
+
+#[test]
+fn tiered_preparation_can_omit_close_block_and_preserve_selected_user_order() {
+    let mut pool = CordialEvidencePool::new();
+    evidence(&mut pool, 1, 4, 1);
+    let mut deploy_pool = DeployPool::new(DeployPoolConfig::default());
+    for user in [deploy(11), deploy(12)] {
+        deploy_pool.add(user).unwrap();
+    }
+    let selected_signatures = deploy_pool
+        .select_for_block(0, 100, &HashSet::new())
+        .deploys
+        .into_iter()
+        .map(|deploy| deploy.signature)
+        .collect::<Vec<_>>();
+    assert_eq!(selected_signatures.len(), 2);
+
+    let capture = Capture::default();
+    let mut proposer = CordialProposer::new(
+        DisseminationTipSelector,
+        capture.clone(),
+        Secp256k1BlockSigner::new(vec![1; 32]),
+        RecordingBroadcaster::new(),
+        node(9),
+        weights(&[(1, 90), (2, 10)]),
+        DeployPoolConfig::default(),
+    )
+    .with_close_block(false)
+    .with_slashing(
+        EvidencePoolSource::new(&pool, [node(1)]),
+        F1r3SlashDeployFormatter::new(vec![0xbb; 33]),
+    )
+    .with_slash_policy(policy(4, &[(1, 20), (2, 80)]));
+    proposer
+        .propose_at_time(&Blocklace::new(), &deploy_pool, 100)
+        .unwrap();
+
+    let guard = capture.prepared.lock().unwrap();
+    let prepared = guard.as_ref().unwrap();
+    let batch = prepared.batch();
+    assert_eq!(batch.len(), 3);
+    assert!(matches!(
+        &batch[0],
+        ExecutionBatchItem::SlashSystemDeploy { evidence, .. }
+            if evidence.penalty_ratio_bps == 2500
+    ));
+    assert!(
+        batch
+            .iter()
+            .all(|item| !matches!(item, ExecutionBatchItem::CloseBlock))
+    );
+    let prepared_signatures = batch[1..]
+        .iter()
+        .map(|item| match item {
+            ExecutionBatchItem::UserDeploy(deploy) => deploy.signature.clone(),
+            _ => panic!("expected only user deploys after the slash request"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(prepared_signatures, selected_signatures);
+
+    let legacy = capture.legacy.lock().unwrap();
+    for request in [prepared.legacy_request(), legacy.as_ref().unwrap()] {
+        assert_eq!(request.system_deploys.len(), 1);
+        assert!(matches!(
+            request.system_deploys[0],
+            SystemDeployRequest::Slash { .. }
+        ));
+        assert!(
+            request
+                .system_deploys
+                .iter()
+                .all(|item| !matches!(item, SystemDeployRequest::CloseBlock))
+        );
+        assert_eq!(
+            request
+                .deploys
+                .iter()
+                .map(|deploy| deploy.signature.clone())
+                .collect::<Vec<_>>(),
+            selected_signatures
+        );
+    }
+}
+
+#[test]
 fn correlation_includes_all_round_offenders_even_when_only_one_proof_is_selected() {
     let mut pool = CordialEvidencePool::new();
     evidence(&mut pool, 1, 4, 1);

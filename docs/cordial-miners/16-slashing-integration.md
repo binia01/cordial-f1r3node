@@ -93,6 +93,14 @@ With a tiered policy configured, the flow is:
    User deploy order is preserved after the system prefix. Each slash item
    retains its validator, evidence round, ratio, and formatted proof package.
 
+   The adapter preserves one slash request per evidence record. Multiple proofs
+   for the same `(validator, round)` therefore produce multiple requests, not
+   independent economic offenses. Before percentage enforcement is connected,
+   host integration must consolidate punishment by `(validator, round)` or make
+   it idempotent: repeated evidence, proposals, or replay must not cause repeated
+   deductions for the same offense. This adapter does not implement that host
+   punishment contract.
+
 7. `ExecutionEngine::execute_prepared`
    receives the prepared request and returns an `ExecutionResult`. Its default
    implementation calls `execute` with `into_legacy_request()`, which drops the
@@ -127,10 +135,11 @@ The focused tests inspect adapter requests, not real host punishment or replay:
 
 - `tests/test_slashing.rs`: unchanged host bytes, retained ratios, original
   signatures, deterministic proof order, and invalid ratios.
-- `tests/test_tiered_slashing.rs`: threshold boundaries, round snapshots,
+- `tests/test_tiered_slashing.rs`: threshold boundaries, distinct round snapshots,
   duplicate offenders, complete round correlation, prepared slash-before-user
-  order, input failures, formatter checks, legacy engine compatibility, and
-  signed broadcast/peer validation using the existing mock runtime.
+  order with and without close-block, input failures, formatter checks, legacy
+  engine compatibility, and signed broadcast/peer validation using the existing
+  mock runtime.
 - `tests/test_proposer.rs`: existing proposal and execution-request regressions,
   including a real core `CordialEvidencePool` feeding `EvidencePoolSource`.
 
