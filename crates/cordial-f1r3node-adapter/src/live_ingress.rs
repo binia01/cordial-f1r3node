@@ -4,8 +4,8 @@
 //! Native blocks enter through `ingest_native_block_message`, which verifies
 //! their wire signature and resolves native parent hashes against accepted
 //! Cordial identities. Adapter-owned blocks use `ingest_block_message`.
-//! The native identity index is in memory and no host transport calls this
-//! native entry point yet.
+//! Persistent ingress restores the native identity index at startup. No host
+//! transport calls this native entry point yet.
 //!
 use std::collections::HashMap;
 
@@ -421,6 +421,17 @@ impl<A> LiveIngress<A> {
     {
         let mut mirror = LiveBlocklaceMirror::default();
         let cursor = repo.recover_into_engine(&mut mirror.blocklace, verifier)?;
+        let mut native_index = NativeBlockIdentityIndex::new();
+        for (wire_hash, identity) in repo.native_block_mappings()? {
+            let block = mirror.blocklace.get(&identity).ok_or_else(|| {
+                RepoError::NativeMapping(format!(
+                    "native wire hash references an unrecovered Cordial block: {identity:?}"
+                ))
+            })?;
+            native_index
+                .record_recovered(wire_hash, &block)
+                .map_err(|error| RepoError::NativeMapping(error.to_string()))?;
+        }
 
         // A store that already held blocks means this process is resuming
         // live traffic, not starting fresh — reflect that in the phase.
@@ -434,7 +445,7 @@ impl<A> LiveIngress<A> {
             phase,
             adapter,
             mapper: GrpcBlockMapper::new(),
-            native_index: NativeBlockIdentityIndex::new(),
+            native_index,
             mirror,
             ordering_cache: OrderingCache::default(),
             shared_ordered_output: SharedOrderedOutput::new(),
@@ -799,11 +810,30 @@ where
     /// and complete native-to-Cordial predecessor mapping.
     ///
     /// The native index is updated only after both the adapter and mirror have
-    /// accepted the translated block. A recovered mirror without its matching
-    /// native index rejects duplicates until the index is durably restored.
+    /// accepted the translated block. This in-memory entry point does not
+    /// persist blocks; use `ingest_native_block_message_and_persist` when the
+    /// mapping must survive a restart.
     pub fn ingest_native_block_message(
         &mut self,
         block_msg: &NativeBlockMessage,
+    ) -> Result<MirrorUpdate, LiveIngressError> {
+        self.ingest_native_block_message_inner(block_msg, None)
+    }
+
+    /// Accept and durably store a verified native block and its wire-hash
+    /// mapping in one LMDB transaction before publishing it in the mirror.
+    pub fn ingest_native_block_message_and_persist(
+        &mut self,
+        block_msg: &NativeBlockMessage,
+        repo: &RSpaceBlocklaceRepository,
+    ) -> Result<MirrorUpdate, LiveIngressError> {
+        self.ingest_native_block_message_inner(block_msg, Some(repo))
+    }
+
+    fn ingest_native_block_message_inner(
+        &mut self,
+        block_msg: &NativeBlockMessage,
+        repo: Option<&RSpaceBlocklaceRepository>,
     ) -> Result<MirrorUpdate, LiveIngressError> {
         let validated = self
             .mapper
@@ -819,6 +849,10 @@ where
                 return Err(LiveIngressError::Mirror(
                     "indexed native block is absent from the Cordial mirror".to_string(),
                 ));
+            }
+            if let Some(repo) = repo {
+                repo.put_native_block(block, &validated.wire_hash)
+                    .map_err(LiveIngressError::Persistence)?;
             }
             return Ok(MirrorUpdate {
                 disposition: MirrorDisposition::Duplicate,
@@ -847,6 +881,10 @@ where
         self.adapter
             .on_block(block.clone())
             .map_err(LiveIngressError::Adapter)?;
+        if let Some(repo) = repo {
+            repo.put_native_block(block, &validated.wire_hash)
+                .map_err(LiveIngressError::Persistence)?;
+        }
         let update = self
             .mirror
             .ingest(block.clone())
