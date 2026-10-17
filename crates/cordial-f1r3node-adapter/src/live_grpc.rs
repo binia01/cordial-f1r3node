@@ -11,6 +11,7 @@ use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, FindDeployQuery, LastFinalizedBlockQuery,
     LightBlockInfo,
 };
+use models::rust::casper::protocol::casper_message::BlockMessage as NativeBlockMessage;
 use models::rust::string_ops::StringOps;
 use tonic::transport::{Channel, Endpoint};
 
@@ -19,6 +20,7 @@ use crate::block_translation::{
 };
 use crate::grpc_ingest::BlocklaceAdapter;
 use crate::live_ingress::{LiveIngress, LiveIngressError, MirrorDisposition};
+use crate::native_block_source::{LocalNativeBlockSource, NativeBlockSourceError};
 
 #[derive(Debug)]
 pub enum LiveGrpcError {
@@ -29,6 +31,7 @@ pub enum LiveGrpcError {
     InvalidHashLength { field: &'static str, got: usize },
     NumericOverflow(&'static str),
     Ingress(LiveIngressError),
+    NativeSource(NativeBlockSourceError),
 }
 
 impl std::fmt::Display for LiveGrpcError {
@@ -45,6 +48,7 @@ impl std::fmt::Display for LiveGrpcError {
             }
             Self::NumericOverflow(field) => write!(f, "numeric overflow while converting {field}"),
             Self::Ingress(err) => write!(f, "{err}"),
+            Self::NativeSource(err) => write!(f, "{err}"),
         }
     }
 }
@@ -134,6 +138,28 @@ impl LiveGrpcBlockClient {
                 .cmp(&b.block_number)
                 .then_with(|| a.block_hash.cmp(&b.block_hash))
         });
+        Ok(blocks)
+    }
+
+    pub async fn native_blocks_by_heights(
+        &mut self,
+        source: &LocalNativeBlockSource,
+        start_block_number: i64,
+        end_block_number: i64,
+    ) -> Result<Vec<NativeBlockMessage>, LiveGrpcError> {
+        let infos = self
+            .light_blocks_by_heights(start_block_number, end_block_number)
+            .await?;
+        let mut blocks = Vec::with_capacity(infos.len());
+        for info in infos {
+            let hash = decode_hex_32("block_hash", &info.block_hash)?;
+            blocks.push(
+                source
+                    .read(hash)
+                    .await
+                    .map_err(LiveGrpcError::NativeSource)?,
+            );
+        }
         Ok(blocks)
     }
 
