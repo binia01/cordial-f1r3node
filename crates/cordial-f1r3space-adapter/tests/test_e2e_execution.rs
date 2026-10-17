@@ -58,7 +58,7 @@ use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager as F1r3RuntimeManager;
 use cordial_f1r3space_adapter::F1r3RspaceRuntime;
 use cordial_miners_core::execution::{
-    Bond, Deploy, DeploySignatureAlgorithm, ExecutionRequest, ProcessedSystemDeploy,
+    Bond, Deploy, DeploySignatureAlgorithm, ExecutionRequest, ProcessedSystemDeploy, RuntimeError,
     RuntimeManager as CoreRuntimeManager, SignedDeploy, SystemDeployRequest,
 };
 use cordial_miners_core::types::NodeId;
@@ -75,6 +75,7 @@ struct Setup {
     rt: F1r3RuntimeManager,
     genesis_hash: Vec<u8>,
     _storage: TempDir,
+    genesis_bonds: Vec<Bond>,
 }
 
 /// Build a `RuntimeManager` connected to a bootstrapped genesis state.
@@ -159,10 +160,23 @@ async fn setup() -> Setup {
         ExternalServices::noop(),
     );
 
+    let mut genesis_bonds: Vec<Bond> = block
+        .body
+        .state
+        .bonds
+        .iter()
+        .map(|bond| Bond {
+            validator: NodeId(bond.validator.to_vec()),
+            stake: u64::try_from(bond.stake).expect("genesis stake must be non-negative"),
+        })
+        .collect();
+    genesis_bonds.sort_by(|left, right| left.validator.0.cmp(&right.validator.0));
+
     Setup {
         rt,
         genesis_hash: block.body.state.post_state_hash.to_vec(),
         _storage: storage,
+        genesis_bonds,
     }
 }
 
@@ -215,12 +229,11 @@ fn signed_deploy(term: &str) -> SignedDeploy {
     signed_deploy_at(term, 0)
 }
 
-/// A minimal bond set using the default test public key.
+/// A minimal bond set matching the test genesis validator.
 fn test_bonds() -> Vec<Bond> {
-    use casper::rust::util::construct_deploy::DEFAULT_PUB;
     vec![Bond {
-        validator: NodeId(DEFAULT_PUB.bytes.to_vec()),
-        stake: 100,
+        validator: NodeId(DEFAULT_PUB2.bytes.to_vec()),
+        stake: 1,
     }]
 }
 
@@ -267,6 +280,7 @@ async fn execute_block_changes_state_hash() {
         mut rt,
         genesis_hash,
         _storage,
+        ..
     } = setup().await;
     let mut adapter = F1r3RspaceRuntime::new(&mut rt);
 
@@ -292,6 +306,7 @@ async fn deploy_appears_in_processed_list() {
         mut rt,
         genesis_hash,
         _storage,
+        ..
     } = setup().await;
     let mut adapter = F1r3RspaceRuntime::new(&mut rt);
 
@@ -324,6 +339,7 @@ async fn failed_deploy_surfaces_as_is_failed() {
         mut rt,
         genesis_hash,
         _storage,
+        ..
     } = setup().await;
     let mut adapter = F1r3RspaceRuntime::new(&mut rt);
 
@@ -350,6 +366,7 @@ async fn close_block_system_deploy_executes() {
         mut rt,
         genesis_hash,
         _storage,
+        genesis_bonds,
     } = setup().await;
     let mut adapter = F1r3RspaceRuntime::new(&mut rt);
 
@@ -382,11 +399,12 @@ async fn close_block_system_deploy_executes() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "runs genesis bootstrapping (~10–30 s); run with: just e2e-rholang"]
-async fn slash_updates_post_state_bonds() {
+async fn slash_without_verified_epoch_is_rejected() {
     let Setup {
         mut rt,
         genesis_hash,
         genesis_bonds,
+        _storage,
     } = setup().await;
     let target = genesis_bonds
         .iter()
@@ -405,29 +423,13 @@ async fn slash_updates_post_state_bonds() {
         bonds: genesis_bonds,
         block_number: 1,
     };
-    let result = tokio::task::block_in_place(|| adapter.execute_block(req))
-        .expect("a valid slash must execute and return post-state bonds");
-
-    assert!(
-        result.system_deploys.iter().any(|deploy| matches!(
-            deploy,
-            ProcessedSystemDeploy::Slash {
-                validator,
-                succeeded: true
-            } if validator == &target.validator
-        )),
-        "expected a successful slash for the target validator: {:?}",
-        result.system_deploys
-    );
-    assert!(
-        result
-            .new_bonds
-            .iter()
-            .find(|bond| bond.validator == target.validator)
-            .is_none_or(|bond| bond.stake == 0),
-        "slashed validator must be absent or have zero effective stake: {:?}",
-        result.new_bonds
-    );
+    let error = tokio::task::block_in_place(|| adapter.execute_block(req))
+        .expect_err("slash without a verified host epoch must be rejected");
+    assert!(matches!(
+        error,
+        RuntimeError::InternalError(message)
+            if message.contains("verified target activation epoch")
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -437,6 +439,7 @@ async fn multiple_deploys_all_appear_in_result() {
         mut rt,
         genesis_hash,
         _storage,
+        ..
     } = setup().await;
     let mut adapter = F1r3RspaceRuntime::new(&mut rt);
 

@@ -36,6 +36,17 @@ pub(crate) const NATIVE_HEIGHT_CURSOR_KEY: &[u8] = b"native_height_cursor";
 pub(crate) const NATIVE_HASH_PREFIX: &[u8] = b"native_hash/";
 pub(crate) const CORDIAL_ID_PREFIX: &[u8] = b"cordial_id/";
 
+/// Format marker for hashes stored in `cordial-blocks`.
+///
+/// Version 1/unversioned data included predecessor signature bytes in a
+/// descendant's content hash. Version 2 uses signature-independent
+/// predecessor identities. The formats cannot be mixed because previously
+/// persisted signatures authenticate the version-1 hash.
+pub const BLOCK_HASH_FORMAT_VERSION: u32 = 2;
+
+/// Metadata key containing [`BLOCK_HASH_FORMAT_VERSION`] as big-endian bytes.
+pub const BLOCK_HASH_FORMAT_VERSION_KEY: &[u8] = b"block_hash_format_version";
+
 // ── Shared struct ─────────────────────────────────────────────────────────
 //
 // Defined here so all three submodules can use it via `super::`.

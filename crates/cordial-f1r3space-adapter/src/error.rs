@@ -21,6 +21,9 @@ pub enum RepoError {
 
     #[error("Invalid native height cursor: {0}")]
     NativeCursor(String),
+
+    #[error("Incompatible blocklace storage: {0}")]
+    IncompatibleStorage(String),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for RepoError {

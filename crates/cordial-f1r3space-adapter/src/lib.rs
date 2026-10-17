@@ -35,10 +35,10 @@
 //! - **pre/post state hashes** are `Vec<u8>` on our side, `prost::bytes::Bytes`
 //!   on f1r3node's side. Both are just byte sequences; conversion is free.
 //! - **Deploys**: our `SignedDeploy` carries a `Vec<u8>` term; f1r3node's
-//!   `DeployData` wants a `String`. We UTF-8-decode lossily with `from_utf8_lossy`.
-//! - **Signatures**: f1r3node's `Signed<DeployData>` is constructed via
-//!   `Signed::from_existing_signature` rather than re-signing, so our
-//!   deploy's existing signature is preserved verbatim.
+//!   `DeployData` wants a `String`. Non-UTF-8 terms are rejected before
+//!   signature verification.
+//! - **Signatures**: supported algorithms are translated explicitly and the
+//!   signature is verified with `Signed::from_signed_data` before execution.
 //! - **System deploys**: the new node requires a verified activation epoch
 //!   for `Slash`. Our request does not carry it, so slash translation fails
 //!   until that evidence is added to the execution boundary.
@@ -156,6 +156,7 @@ impl<'a> CoreRuntimeManager for F1r3RspaceRuntime<'a> {
                     system_deploys,
                     block_data,
                     invalid_blocks,
+                    None,
                 ))
                 .map_err(|e| {
                     RuntimeError::InternalError(format!("compute_state_with_bonds: {e:?}"))
@@ -231,8 +232,23 @@ pub fn signed_deploy_to_f1r3node(sd: &CmSignedDeploy) -> Result<Signed<DeployDat
         valid_after_block_number: i64::try_from(sd.deploy.valid_after_block_number)
             .map_err(|_| RuntimeError::InternalError("valid_after overflow".into()))?,
         shard_id: sd.deploy.shard_id.clone(),
-        expiration_timestamp: None,
+        expiration_timestamp: sd
+            .deploy
+            .expiration_timestamp
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| RuntimeError::InternalError("expiration_timestamp overflow".into()))?,
         parameters: Vec::new(),
+    };
+
+    let sig_algorithm: Box<dyn SignaturesAlg> = match &sd.signature_algorithm {
+        DeploySignatureAlgorithm::Secp256k1 => Box::new(Secp256k1),
+        DeploySignatureAlgorithm::Secp256k1Eth => Box::new(Secp256k1Eth),
+        unsupported => {
+            return Err(RuntimeError::UnsupportedDeploySignatureAlgorithm(
+                unsupported.as_name().to_owned(),
+            ));
+        }
     };
 
     Signed::from_signed_data(

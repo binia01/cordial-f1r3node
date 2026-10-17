@@ -9,8 +9,8 @@
 //! outside this crate (Phase 4 integration harness).
 
 use cordial_miners_core::execution::{
-    Bond, Deploy, ExecutionRequest, ProcessedDeploy, ProcessedSystemDeploy, RuntimeError,
-    SignedDeploy, SystemDeployRequest,
+    Bond, Deploy, DeploySignatureAlgorithm, ExecutionRequest, ProcessedDeploy,
+    ProcessedSystemDeploy, RuntimeError, SignedDeploy, SystemDeployRequest,
 };
 use cordial_miners_core::types::NodeId;
 
@@ -145,6 +145,7 @@ fn signed_deploy_with_expiration_timestamp_verifies_and_preserves_it() {
             valid_after_block_number: 0,
             shard_id: "root".to_owned(),
             expiration_timestamp: Some(expiration_timestamp),
+            parameters: Vec::new(),
         },
         Box::new(Secp256k1),
         casper::rust::util::construct_deploy::DEFAULT_SEC.clone(),
