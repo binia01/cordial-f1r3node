@@ -46,10 +46,18 @@ signed host block -> verify host hash and signature
                   -> record wire hash to Cordial identity
 ```
 
-The index is currently in memory. A restart loses it. Persisting the mapping
-and wiring this path into `LiveIngress` are later migration slices. If a block
-arrives before its parents, the caller must fetch or buffer those native
-parents; the mapper will not discard missing ancestry.
+`LiveIngress::ingest_native_block_message` now owns that sequence for real
+host messages. It verifies and resolves the block, checks mirror closure and
+identity collisions, calls the adapter, inserts into the mirror, then records
+the mapping. A known wire hash is idempotent and does not repeat the adapter
+callback. Unknown parents and an existing Cordial block without a matching
+wire-hash mapping are rejected before that callback.
+
+The index is currently in memory. A restart loses it even when the Cordial
+blocklace is recovered from storage. Native ingestion fails closed for such
+blocks until durable mapping recovery is implemented. No host transport calls
+this entry point yet. If a block arrives before its parents, the caller must
+fetch or buffer them; the mapper will not discard missing ancestry.
 
 ## Adapter-owned blocks
 
@@ -58,9 +66,8 @@ parents; the mapper will not discard missing ancestry.
 Their declared hash can be the adapter snapshot hash or that internal content
 hash. This path does not accept real host wire messages.
 
-`LiveIngress::ingest_block_message` currently uses this adapter-owned path.
-Real native blocks require the verified path and accepted parent mapping above
-before they can be connected to the live mirror.
+`LiveIngress::ingest_block_message` continues to use this adapter-owned path.
+Real native blocks use `ingest_native_block_message`.
 
 ## Verification
 
@@ -68,9 +75,13 @@ Run the focused tests with:
 
 ```bash
 cargo test -j 1 -p cordial-f1r3node-adapter --test test_grpc_ingest --offline
+cargo test -j 1 -p cordial-f1r3node-adapter --test test_live_native_ingress --offline
 ```
 
 The signed parent–child test checks native hash verification, parent lookup,
 Cordial predecessor closure, content rehashing, and justification creator
 matching. A separate test checks that distinct host blocks cannot share one
 translated Cordial identity.
+The live-ingress tests cover signed parent–child admission, duplicates,
+adapter rejection and retry, identity collisions, and recovered blocks whose
+native mapping is missing.
