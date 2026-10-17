@@ -18,6 +18,9 @@ pub enum RepoError {
 
     #[error("Invalid native block identity mapping: {0}")]
     NativeMapping(String),
+
+    #[error("Invalid native height cursor: {0}")]
+    NativeCursor(String),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for RepoError {
