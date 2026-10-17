@@ -104,7 +104,7 @@ pub struct ValidatedF1r3nodeBlock {
 /// Record a block only after its translated Cordial block has been accepted.
 /// The two hash domains must remain separate: native parent hashes are looked
 /// up here and replaced with complete Cordial identities before content hashing.
-/// This index is in memory; durable recovery is a separate integration step.
+/// Persistent ingress restores this index from the block repository at startup.
 #[derive(Debug, Clone, Default)]
 pub struct NativeBlockIdentityIndex {
     by_wire_hash: HashMap<[u8; 32], BlockIdentity>,
@@ -153,6 +153,17 @@ impl NativeBlockIdentityIndex {
         self.by_cordial_identity
             .insert(identity.clone(), block.wire_hash);
         Ok(())
+    }
+
+    /// Rebuild an accepted mapping from a block that survived verified recovery.
+    pub fn record_recovered(&mut self, wire_hash: [u8; 32], block: &Block) -> Result<()> {
+        let recovered = ValidatedF1r3nodeBlock {
+            block: block.clone(),
+            wire_hash,
+            wire_signature: Vec::new(),
+            signature_algorithm: String::new(),
+        };
+        self.record_accepted(&recovered)
     }
 }
 
