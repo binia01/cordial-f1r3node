@@ -291,8 +291,14 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
                 bail!("accepted native parent has invalid creator key length: {key_len}");
             }
             for justification in &block_msg.justifications {
-                if justification.latest_block_hash.as_ref() == parent.content_hash.as_slice()
-                    && justification.validator.as_ref() != resolved.creator.0.as_slice()
+                if justification.latest_block_hash.as_ref() != parent.content_hash.as_slice() {
+                    continue;
+                }
+                let validator_len = justification.validator.len();
+                if validator_len != 33 && validator_len != 65 {
+                    bail!("native justification has invalid validator key length: {validator_len}");
+                }
+                if key_len != 0 && justification.validator.as_ref() != resolved.creator.0.as_slice()
                 {
                     bail!(
                         "native parent {} justification creator does not match accepted block",
