@@ -124,6 +124,14 @@ funded standalone deploy sent through direct gRPC executed with cost 200 in
 block 127 and reached canonical `Finalized` status. The mirror persisted that
 block and its deploy signature, then recovered them after restart.
 
+The proxy path was checked on the same node on 2026-10-17. A funded deploy
+submitted to `127.0.0.1:40411` executed with cost 197 in block 161 and
+reached canonical `Finalized` status. The native mirror persisted the block's
+hash mapping and deploy signature and retained both after restart. The four
+`test_live_deploy_proxy` tests pass, including the observer and forwarding
+test. The live proxy currently has no endpoint to inspect its in-memory
+observed-deploy list.
+
 ## Why this matters
 
 This is the cleanest deploy-side interception shape for the current project:
