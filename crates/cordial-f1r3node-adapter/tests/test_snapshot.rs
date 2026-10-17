@@ -221,13 +221,17 @@ fn latest_messages_map_tracks_each_validator_tip() {
     // v1 extends
     let mut preds_a = HashSet::new();
     preds_a.insert(g.identity.clone());
-    let b1a = make_block(v1.clone(), simple_payload(1, vec![]), preds_a, 2);
+    let mut p_a = simple_payload(1, vec![]);
+    p_a.state.post_state_hash = vec![1; 32];
+    let b1a = make_block(v1.clone(), p_a, preds_a, 2);
     bl.insert(b1a.clone(), &MockVerifier).unwrap();
 
     // v2 builds on g
     let mut preds_b = HashSet::new();
     preds_b.insert(g.identity.clone());
-    let b2a = make_block(v2.clone(), simple_payload(1, vec![]), preds_b, 3);
+    let mut p_b = simple_payload(1, vec![]);
+    p_b.state.post_state_hash = vec![2; 32];
+    let b2a = make_block(v2.clone(), p_b, preds_b, 3);
     bl.insert(b2a.clone(), &MockVerifier).unwrap();
 
     let bonds_map = bonds(&[(1, 100), (2, 100)]);
@@ -283,9 +287,15 @@ fn last_finalized_block_matches_finality_detector() {
 
     let mut r1_preds = HashSet::new();
     r1_preds.insert(g.identity.clone());
-    let b2 = make_block(v2.clone(), simple_payload(1, vec![]), r1_preds.clone(), 2);
-    let b3 = make_block(v3.clone(), simple_payload(1, vec![]), r1_preds.clone(), 3);
-    let b4 = make_block(v4.clone(), simple_payload(1, vec![]), r1_preds, 4);
+    let mut p2 = simple_payload(1, vec![]);
+    p2.state.post_state_hash = vec![2; 32];
+    let mut p3 = simple_payload(1, vec![]);
+    p3.state.post_state_hash = vec![3; 32];
+    let mut p4 = simple_payload(1, vec![]);
+    p4.state.post_state_hash = vec![4; 32];
+    let b2 = make_block(v2.clone(), p2, r1_preds.clone(), 2);
+    let b3 = make_block(v3.clone(), p3, r1_preds.clone(), 3);
+    let b4 = make_block(v4.clone(), p4, r1_preds, 4);
     bl.insert(b2.clone(), &MockVerifier).unwrap();
     bl.insert(b3.clone(), &MockVerifier).unwrap();
     bl.insert(b4.clone(), &MockVerifier).unwrap();
@@ -294,9 +304,15 @@ fn last_finalized_block_matches_finality_detector() {
     r2_preds.insert(b2.identity.clone());
     r2_preds.insert(b3.identity.clone());
     r2_preds.insert(b4.identity.clone());
-    let c2 = make_block(v2.clone(), simple_payload(2, vec![]), r2_preds.clone(), 5);
-    let c3 = make_block(v3.clone(), simple_payload(2, vec![]), r2_preds.clone(), 6);
-    let c4 = make_block(v4.clone(), simple_payload(2, vec![]), r2_preds, 7);
+    let mut c2_p = simple_payload(2, vec![]);
+    c2_p.state.post_state_hash = vec![12; 32];
+    let mut c3_p = simple_payload(2, vec![]);
+    c3_p.state.post_state_hash = vec![13; 32];
+    let mut c4_p = simple_payload(2, vec![]);
+    c4_p.state.post_state_hash = vec![14; 32];
+    let c2 = make_block(v2.clone(), c2_p, r2_preds.clone(), 5);
+    let c3 = make_block(v3.clone(), c3_p, r2_preds.clone(), 6);
+    let c4 = make_block(v4.clone(), c4_p, r2_preds, 7);
     bl.insert(c2, &MockVerifier).unwrap();
     bl.insert(c3, &MockVerifier).unwrap();
     bl.insert(c4, &MockVerifier).unwrap();
@@ -337,9 +353,15 @@ fn no_finality_when_single_validator_has_no_supermajority() {
     // With 3 independent genesis blocks from 3 validators, none of them are
     // in the ancestry of > 2/3 of the validators' tips, so no LFB.
     let mut bl = Blocklace::new();
-    let g1 = make_block(node(1), simple_payload(0, vec![]), HashSet::new(), 1);
-    let g2 = make_block(node(2), simple_payload(0, vec![]), HashSet::new(), 2);
-    let g3 = make_block(node(3), simple_payload(0, vec![]), HashSet::new(), 3);
+    let mut p1 = simple_payload(0, vec![]);
+    p1.state.post_state_hash = vec![1; 32];
+    let mut p2 = simple_payload(0, vec![]);
+    p2.state.post_state_hash = vec![2; 32];
+    let mut p3 = simple_payload(0, vec![]);
+    p3.state.post_state_hash = vec![3; 32];
+    let g1 = make_block(node(1), p1, HashSet::new(), 1);
+    let g2 = make_block(node(2), p2, HashSet::new(), 2);
+    let g3 = make_block(node(3), p3, HashSet::new(), 3);
     bl.insert(g1, &MockVerifier).unwrap();
     bl.insert(g2, &MockVerifier).unwrap();
     bl.insert(g3, &MockVerifier).unwrap();
