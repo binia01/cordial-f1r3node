@@ -93,11 +93,13 @@ resumes after that cursor. It also replays the last 16 heights by default to
 pick up blocks that appeared late at an earlier height. A missing requested
 height or a host head behind the cursor stops the runner.
 
-Set `NODE_DATA_DIR` to the running node's `storage.data-dir`. Use a separate
-directory for the Cordial mirror:
+Set `NODE_DATA_DIR` to the running node's `storage.data-dir`. For this
+workspace's sibling `f1r3node-rust` checkout, `just run-standalone` uses
+`../f1r3node-rust/run-local/data/standalone`. Use a separate directory for
+the Cordial mirror:
 
 ```bash
-NODE_DATA_DIR=/path/to/f1r3node/data
+NODE_DATA_DIR=../f1r3node-rust/run-local/data/standalone
 cargo run -j 1 -p cordial-f1r3node-adapter --bin live_native_mirror -- \
   --grpc-url http://127.0.0.1:40401 \
   --node-data-dir "$NODE_DATA_DIR" \
@@ -108,6 +110,12 @@ Run the same command after a restart. Add `--once` for a single catch-up pass.
 For a Docker node, give the runner filesystem access to that node's data
 volume and use its published gRPC port. The runner observes native blocks; it
 does not activate PoR weights or alter host consensus.
+
+On 2026-10-17, a live check against sibling `f1r3node-rust` 0.4.46
+(`525f8e8`) mirrored native heights 0 through 17. Restarting with the same
+mirror directory replayed the recent window and advanced to height 18. A
+second restart at the same head admitted no duplicate blocks. This check used
+the standalone node's gRPC port `40401` and local data directory above.
 
 The default range is 32 heights. If the node's `api.max-blocks-limit` is
 smaller, set `--batch-heights` to that limit or lower. An incomplete range
