@@ -734,6 +734,7 @@ dependencies = [
  "axum",
  "bincode",
  "blake2",
+ "block-storage",
  "casper",
  "clap",
  "cordial-app-runtime",
