@@ -64,7 +64,7 @@ through the in-memory method have no durable native mapping and cannot be
 resumed as native blocks after restart. Unknown parents and an existing Cordial
 block without its matching wire-hash mapping are rejected before the adapter
 callback. If a block arrives before its parents, the caller must fetch or
-buffer them. No host transport calls this native entry point yet.
+buffer them. The local native mirror described below calls this entry point.
 
 ## Full native blocks from a local host node
 
@@ -80,9 +80,44 @@ whose declared hash differs from the requested key is an error. The native
 ingress mapper still verifies the full wire hash and signature before
 acceptance. The source requires access to the host node's data directory.
 
-The source is a transport building block. A subsequent slice must coordinate
-parent backfill, repeated polling, and durable ingestion before it is a
-long-running live mirror.
+`live_native_mirror` polls the public gRPC history by height and reads each
+full block from the local host store. It fetches missing parents and
+justifications by native hash before it persists a child. After it accepts
+all returned blocks at each height, it advances a durable height cursor.
+The host genesis has no signature. The runner admits it through a separate
+root-only path after checking its wire hash, empty sender and signature,
+height zero, and absence of parents. Later blocks still require valid
+signatures.
+On restart, it restores the Cordial blocklace and native identity index, then
+resumes after that cursor. It also replays the last 16 heights by default to
+pick up blocks that appeared late at an earlier height. A missing requested
+height or a host head behind the cursor stops the runner.
+
+Set `NODE_DATA_DIR` to the running node's `storage.data-dir`. Use a separate
+directory for the Cordial mirror:
+
+```bash
+NODE_DATA_DIR=/path/to/f1r3node/data
+cargo run -j 1 -p cordial-f1r3node-adapter --bin live_native_mirror -- \
+  --grpc-url http://127.0.0.1:40401 \
+  --node-data-dir "$NODE_DATA_DIR" \
+  --data-dir "$HOME/cordial-native-mirror"
+```
+
+Run the same command after a restart. Add `--once` for a single catch-up pass.
+For a Docker node, give the runner filesystem access to that node's data
+volume and use its published gRPC port. The runner observes native blocks; it
+does not activate PoR weights or alter host consensus.
+
+The default range is 32 heights. If the node's `api.max-blocks-limit` is
+smaller, set `--batch-heights` to that limit or lower. An incomplete range
+stops without advancing the cursor.
+
+The cursor records heights seen through the public history query. That API
+can omit old block bodies after host pruning. The bounded lookback catches
+recent late blocks, but a late block older than the lookback can be missed.
+The live validation slice must measure this behavior before treating the
+mirror as complete.
 
 ## Adapter-owned blocks
 
@@ -102,6 +137,7 @@ Run the focused tests with:
 cargo test -j 1 -p cordial-f1r3node-adapter --test test_grpc_ingest --offline
 cargo test -j 1 -p cordial-f1r3node-adapter --test test_live_native_ingress --offline
 cargo test -j 1 -p cordial-f1r3node-adapter --test test_native_block_source --offline
+cargo test -j 1 -p cordial-f1r3node-adapter --test test_native_live_runner --offline
 ```
 
 The signed parent–child test checks native hash verification, parent lookup,
