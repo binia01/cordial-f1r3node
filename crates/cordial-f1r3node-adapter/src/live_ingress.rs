@@ -479,6 +479,10 @@ impl<A> LiveIngress<A> {
         self.phase
     }
 
+    pub fn native_identity_for_wire_hash(&self, wire_hash: &[u8; 32]) -> Option<&BlockIdentity> {
+        self.native_index.get(wire_hash)
+    }
+
     /// Mark that the host ingress seam has been traced and identified.
     pub fn mark_traced(&mut self) {
         self.phase = LiveIngressPhase::Traced;
@@ -817,7 +821,7 @@ where
         &mut self,
         block_msg: &NativeBlockMessage,
     ) -> Result<MirrorUpdate, LiveIngressError> {
-        self.ingest_native_block_message_inner(block_msg, None)
+        self.ingest_native_block_message_inner(block_msg, None, false)
     }
 
     /// Accept and durably store a verified native block and its wire-hash
@@ -827,21 +831,44 @@ where
         block_msg: &NativeBlockMessage,
         repo: &RSpaceBlocklaceRepository,
     ) -> Result<MirrorUpdate, LiveIngressError> {
-        self.ingest_native_block_message_inner(block_msg, Some(repo))
+        self.ingest_native_block_message_inner(block_msg, Some(repo), false)
+    }
+
+    /// Admit the host's unsigned genesis from a trusted local block source.
+    /// This exception requires the exact unsigned root shape and wire hash.
+    pub fn ingest_trusted_unsigned_native_genesis_and_persist(
+        &mut self,
+        block_msg: &NativeBlockMessage,
+        repo: &RSpaceBlocklaceRepository,
+    ) -> Result<MirrorUpdate, LiveIngressError> {
+        self.ingest_native_block_message_inner(block_msg, Some(repo), true)
     }
 
     fn ingest_native_block_message_inner(
         &mut self,
         block_msg: &NativeBlockMessage,
         repo: Option<&RSpaceBlocklaceRepository>,
+        trusted_unsigned_genesis: bool,
     ) -> Result<MirrorUpdate, LiveIngressError> {
-        let validated = self
-            .mapper
-            .from_protobuf_with_parents(block_msg, &self.native_index)
-            .map_err(LiveIngressError::Mapping)?;
+        let validated = if trusted_unsigned_genesis {
+            self.mapper.from_trusted_unsigned_genesis(block_msg)
+        } else {
+            self.mapper
+                .from_protobuf_with_parents(block_msg, &self.native_index)
+        }
+        .map_err(LiveIngressError::Mapping)?;
         self.native_index
             .check_candidate(&validated)
             .map_err(LiveIngressError::Mapping)?;
+
+        if trusted_unsigned_genesis
+            && self.native_index.get(&validated.wire_hash).is_none()
+            && !self.mirror.blocklace().dom().is_empty()
+        {
+            return Err(LiveIngressError::Mirror(
+                "unsigned genesis cannot be added after other Cordial blocks".into(),
+            ));
+        }
 
         let block = &validated.block;
         if let Some(known_identity) = self.native_index.get(&validated.wire_hash) {
