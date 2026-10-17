@@ -1,21 +1,15 @@
-//! Formatting Cordial Miners equivocation evidence as f1r3node slash deploys.
+//! Boundary between Cordial equivocation evidence and f1r3node slash deploys.
 //!
 //! The core crate retains raw equivocation evidence without host-node types.
-//! This adapter crosses that boundary and emits the byte-identical protobuf
-//! payload f1r3node stores in block bodies for slash system deploys.
+//! The current host requires a verified native block hash and activation epoch
+//! to authorize a slash. Neither is present in the core evidence, so formatting
+//! fails until that host metadata is carried across the adapter boundary.
 
 use anyhow::{Result, bail};
-use prost::Message;
-use prost::bytes::Bytes;
 
 use cordial_miners_core::block::Block;
 use cordial_miners_core::consensus::EquivocationEvidence;
 use cordial_miners_core::types::{BlockIdentity, NodeId};
-
-use models::casper::{
-    ProcessedSystemDeployProto, SlashSystemDeployDataProto, SystemDeployDataProto,
-    system_deploy_data_proto::SystemDeploy,
-};
 
 /// Converts pure-core equivocation evidence into host-specific slash deploy bytes.
 pub trait SlashDeployFormatter<V, P, Id> {
@@ -38,9 +32,9 @@ pub struct FormattedSlashEvidence {
 
 /// f1r3node formatter for Cordial Miners slash evidence.
 ///
-/// `issuer_public_key` is the public key of the validator proposing the slash
-/// deploy, matching CBC Casper's `SlashDeploy(invalidBlockHash, issuerPublicKey, ...)`
-/// construction.
+/// The current evidence type cannot prove the host block hash or target epoch.
+/// Nonempty evidence therefore returns an error rather than an unauthorized
+/// slash deploy. `issuer_public_key` is retained for the future host-backed path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct F1r3SlashDeployFormatter {
     issuer_public_key: Vec<u8>,
@@ -59,10 +53,11 @@ impl F1r3SlashDeployFormatter {
         &self,
         evidence: &[EquivocationEvidence<NodeId, Block, BlockIdentity>],
     ) -> Result<Vec<FormattedSlashEvidence>> {
+        let deploys = self.to_slash_system_deploys(evidence)?;
         evidence
             .iter()
-            .map(|record| {
-                let slash_system_deploy = self.encode_record(record)?;
+            .zip(deploys)
+            .map(|(record, slash_system_deploy)| {
                 let conflicting_block_bytes = serialize_conflicting_blocks(record)?;
                 Ok(FormattedSlashEvidence {
                     slash_system_deploy,
@@ -76,11 +71,10 @@ impl F1r3SlashDeployFormatter {
         &self,
         record: &EquivocationEvidence<NodeId, Block, BlockIdentity>,
     ) -> Result<Vec<u8>> {
-        let invalid_block_hash = select_invalid_block_hash(record)?;
-        Ok(encode_slash_processed_system_deploy(
-            invalid_block_hash,
-            &self.issuer_public_key,
-        ))
+        validate_evidence(record)?;
+        bail!(
+            "slash evidence lacks a verified f1r3node native block hash and target activation epoch"
+        )
     }
 }
 
@@ -96,29 +90,7 @@ impl SlashDeployFormatter<NodeId, Block, BlockIdentity> for F1r3SlashDeployForma
     }
 }
 
-fn encode_slash_processed_system_deploy(
-    invalid_block_hash: [u8; 32],
-    issuer_public_key: &[u8],
-) -> Vec<u8> {
-    let proto = ProcessedSystemDeployProto {
-        system_deploy: Some(SystemDeployDataProto {
-            system_deploy: Some(SystemDeploy::SlashSystemDeploy(
-                SlashSystemDeployDataProto {
-                    invalid_block_hash: Bytes::copy_from_slice(&invalid_block_hash),
-                    issuer_public_key: Bytes::copy_from_slice(issuer_public_key),
-                },
-            )),
-        }),
-        deploy_log: vec![],
-        error_msg: String::new(),
-    };
-
-    proto.encode_to_vec()
-}
-
-fn select_invalid_block_hash(
-    record: &EquivocationEvidence<NodeId, Block, BlockIdentity>,
-) -> Result<[u8; 32]> {
+fn validate_evidence(record: &EquivocationEvidence<NodeId, Block, BlockIdentity>) -> Result<()> {
     if record.blocks.len() < 2 {
         bail!("slash evidence requires at least two conflicting blocks");
     }
@@ -131,17 +103,7 @@ fn select_invalid_block_hash(
         bail!("slash evidence contains a block from a different validator");
     }
 
-    // f1r3node's SlashDeploy names one invalid block hash. Cordial evidence
-    // retains the full conflicting set separately, so choose the lowest content
-    // hash as the deterministic representative independent of signature bytes.
-    let mut identities = record
-        .blocks
-        .iter()
-        .map(|block| &block.identity)
-        .collect::<Vec<_>>();
-    identities.sort_by_key(|identity| identity.content_hash);
-
-    Ok(identities[0].content_hash)
+    Ok(())
 }
 
 fn serialize_conflicting_blocks(

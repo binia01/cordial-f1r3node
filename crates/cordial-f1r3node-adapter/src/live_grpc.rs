@@ -11,6 +11,7 @@ use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, FindDeployQuery, LastFinalizedBlockQuery,
     LightBlockInfo,
 };
+use models::rust::casper::protocol::casper_message::BlockMessage as NativeBlockMessage;
 use models::rust::string_ops::StringOps;
 use tonic::transport::{Channel, Endpoint};
 
@@ -19,16 +20,29 @@ use crate::block_translation::{
 };
 use crate::grpc_ingest::BlocklaceAdapter;
 use crate::live_ingress::{LiveIngress, LiveIngressError, MirrorDisposition};
+use crate::native_block_source::{LocalNativeBlockSource, NativeBlockSourceError};
 
 #[derive(Debug)]
 pub enum LiveGrpcError {
     Transport(tonic::transport::Error),
     Status(tonic::Status),
     MissingPayload(&'static str),
-    DecodeHex { field: &'static str, value: String },
-    InvalidHashLength { field: &'static str, got: usize },
+    DecodeHex {
+        field: &'static str,
+        value: String,
+    },
+    InvalidHashLength {
+        field: &'static str,
+        got: usize,
+    },
     NumericOverflow(&'static str),
+    HeightMismatch {
+        hash: String,
+        summary: i64,
+        stored: i64,
+    },
     Ingress(LiveIngressError),
+    NativeSource(NativeBlockSourceError),
 }
 
 impl std::fmt::Display for LiveGrpcError {
@@ -44,7 +58,16 @@ impl std::fmt::Display for LiveGrpcError {
                 write!(f, "field {field} must decode to 32 bytes, got {got}")
             }
             Self::NumericOverflow(field) => write!(f, "numeric overflow while converting {field}"),
+            Self::HeightMismatch {
+                hash,
+                summary,
+                stored,
+            } => write!(
+                f,
+                "block {hash} has height {stored} in local storage but {summary} in gRPC"
+            ),
             Self::Ingress(err) => write!(f, "{err}"),
+            Self::NativeSource(err) => write!(f, "{err}"),
         }
     }
 }
@@ -134,6 +157,34 @@ impl LiveGrpcBlockClient {
                 .cmp(&b.block_number)
                 .then_with(|| a.block_hash.cmp(&b.block_hash))
         });
+        Ok(blocks)
+    }
+
+    pub async fn native_blocks_by_heights(
+        &mut self,
+        source: &LocalNativeBlockSource,
+        start_block_number: i64,
+        end_block_number: i64,
+    ) -> Result<Vec<NativeBlockMessage>, LiveGrpcError> {
+        let infos = self
+            .light_blocks_by_heights(start_block_number, end_block_number)
+            .await?;
+        let mut blocks = Vec::with_capacity(infos.len());
+        for info in infos {
+            let hash = decode_hex_32("block_hash", &info.block_hash)?;
+            let block = source
+                .read(hash)
+                .await
+                .map_err(LiveGrpcError::NativeSource)?;
+            if block.body.state.block_number != info.block_number {
+                return Err(LiveGrpcError::HeightMismatch {
+                    hash: info.block_hash,
+                    summary: info.block_number,
+                    stored: block.body.state.block_number,
+                });
+            }
+            blocks.push(block);
+        }
         Ok(blocks)
     }
 
