@@ -36,6 +36,7 @@ clap = { version = "4.6", features = ["derive"] }
 
 casper = { path = "../../../f1r3node-rust/casper" }
 models = { path = "../../../f1r3node-rust/models" }
+block-storage = { path = "../../../f1r3node-rust/block-storage" }
 
 # ── HTTP deploy ingress server ──────────────────────────────────────────────
 axum.workspace = true
