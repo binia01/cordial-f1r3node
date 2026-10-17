@@ -205,6 +205,46 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
         self.from_protobuf_with_parents(block_msg, &NativeBlockIdentityIndex::new())
     }
 
+    /// Translate the unsigned host genesis obtained from the trusted local
+    /// node store. No later block may use this exception to signature checks.
+    pub fn from_trusted_unsigned_genesis(
+        &self,
+        block_msg: &F1r3nodeBlockMessage,
+    ) -> Result<ValidatedF1r3nodeBlock> {
+        if block_msg.body.state.block_number != 0
+            || !block_msg.header.parents_hash_list.is_empty()
+            || !block_msg.justifications.is_empty()
+            || !block_msg.sender.is_empty()
+            || !block_msg.sig.is_empty()
+            || !block_msg.sig_algorithm.is_empty()
+            || block_msg.seq_num != 0
+        {
+            bail!("unsigned native block is not the host genesis shape");
+        }
+        let wire_hash = casper::rust::util::proto_util::hash_block(block_msg);
+        if block_msg.block_hash.as_ref() != wire_hash.as_ref() {
+            bail!("unsigned host genesis has an invalid wire hash");
+        }
+        let adapter_msg = message_from_f1r3node(block_msg)
+            .map_err(|error| anyhow!("Failed to convert host genesis: {error:?}"))?;
+        let block = message_to_block(&adapter_msg)
+            .map_err(|error| anyhow!("Failed to translate host genesis: {error:?}"))?;
+        self.validate_internal_content_hash(&block)?;
+        self.validate_parents(&block)?;
+        if !block.content.predecessors.is_empty() {
+            bail!("unsigned host genesis has predecessors");
+        }
+        Ok(ValidatedF1r3nodeBlock {
+            block,
+            wire_hash: wire_hash
+                .as_ref()
+                .try_into()
+                .map_err(|_| anyhow!("invalid genesis hash length"))?,
+            wire_signature: Vec::new(),
+            signature_algorithm: String::new(),
+        })
+    }
+
     /// Validate a native block and resolve every native predecessor hash to
     /// an accepted Cordial identity. Missing parents are errors, not silently
     /// treated as Cordial content hashes or removed from the blocklace.
@@ -237,7 +277,6 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
             .map_err(|e| anyhow!("Failed to translate BlockMessage to Block: {e:?}"))?;
 
         self.validate_internal_content_hash(&block)?;
-        self.validate_parents(&block)?;
 
         let mut predecessors = HashSet::with_capacity(block.content.predecessors.len());
         for parent in &block.content.predecessors {
@@ -247,6 +286,10 @@ impl<V, P, Id> GrpcBlockMapper<V, P, Id> {
                     hex::encode(parent.content_hash)
                 )
             })?;
+            let key_len = resolved.creator.0.len();
+            if key_len != 0 && key_len != 33 && key_len != 65 {
+                bail!("accepted native parent has invalid creator key length: {key_len}");
+            }
             for justification in &block_msg.justifications {
                 if justification.latest_block_hash.as_ref() == parent.content_hash.as_slice()
                     && justification.validator.as_ref() != resolved.creator.0.as_slice()
