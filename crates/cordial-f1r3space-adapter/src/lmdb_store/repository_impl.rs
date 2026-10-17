@@ -88,26 +88,26 @@ impl RSpaceBlocklaceRepository {
         let blocks = self.blocks_db.lock()?;
         let meta = self.meta_db.lock()?;
         let mut txn = self.env.write_txn()?;
-        if let Some(existing) = blocks.get(&txn, &block_key)? {
-            if existing != block_value {
-                return Err(RepoError::NativeMapping(
-                    "Cordial identity already has different block contents".into(),
-                ));
-            }
+        if let Some(existing) = blocks.get(&txn, &block_key)?
+            && existing != block_value
+        {
+            return Err(RepoError::NativeMapping(
+                "Cordial identity already has different block contents".into(),
+            ));
         }
-        if let Some(existing) = meta.get(&txn, &native_key)? {
-            if existing != block_key {
-                return Err(RepoError::NativeMapping(
-                    "native wire hash already maps to another Cordial identity".into(),
-                ));
-            }
+        if let Some(existing) = meta.get(&txn, &native_key)?
+            && existing != block_key
+        {
+            return Err(RepoError::NativeMapping(
+                "native wire hash already maps to another Cordial identity".into(),
+            ));
         }
-        if let Some(existing) = meta.get(&txn, &cordial_key)? {
-            if existing != wire_hash {
-                return Err(RepoError::NativeMapping(
-                    "distinct native wire hashes map to one Cordial identity".into(),
-                ));
-            }
+        if let Some(existing) = meta.get(&txn, &cordial_key)?
+            && existing != wire_hash
+        {
+            return Err(RepoError::NativeMapping(
+                "distinct native wire hashes map to one Cordial identity".into(),
+            ));
         }
         blocks.put(&mut txn, &block_key, &block_value)?;
         meta.put(&mut txn, &native_key, &block_key)?;
