@@ -35,7 +35,7 @@ fn signed_block(
     parent: Option<&BlockMessage>,
     height: i64,
 ) -> BlockMessage {
-    validator.sign_block(&BlockMessage {
+    let mut block = validator.sign_block(&BlockMessage {
         block_hash: Bytes::new(),
         header: Header {
             parents_hash_list: parent
@@ -73,7 +73,12 @@ fn signed_block(
         sig_algorithm: String::new(),
         shard_id: "root".into(),
         extra_bytes: Bytes::new(),
-    })
+    });
+    if parent.is_some_and(|parent| parent.sender.is_empty()) {
+        block.justifications[0].validator = block.sender.clone();
+        block = validator.sign_block(&block);
+    }
+    block
 }
 
 fn recover(repo: &RSpaceBlocklaceRepository) -> LiveIngress<PassthroughAdapter> {
