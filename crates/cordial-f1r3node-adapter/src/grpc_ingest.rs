@@ -130,15 +130,15 @@ impl NativeBlockIdentityIndex {
         {
             bail!("native block has an invalid translated Cordial identity");
         }
-        if let Some(existing) = self.by_wire_hash.get(&block.wire_hash) {
-            if existing != identity {
-                bail!("native wire hash already maps to another Cordial identity");
-            }
+        if let Some(existing) = self.by_wire_hash.get(&block.wire_hash)
+            && existing != identity
+        {
+            bail!("native wire hash already maps to another Cordial identity");
         }
-        if let Some(existing) = self.by_cordial_identity.get(identity) {
-            if existing != &block.wire_hash {
-                bail!("distinct native wire blocks collapse to one Cordial identity");
-            }
+        if let Some(existing) = self.by_cordial_identity.get(identity)
+            && existing != &block.wire_hash
+        {
+            bail!("distinct native wire blocks collapse to one Cordial identity");
         }
         Ok(())
     }
