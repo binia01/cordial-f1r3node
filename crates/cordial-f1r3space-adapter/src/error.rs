@@ -15,6 +15,9 @@ pub enum RepoError {
 
     #[error("Mutex poisoned: {0}")]
     Lock(String),
+
+    #[error("Invalid native block identity mapping: {0}")]
+    NativeMapping(String),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for RepoError {
