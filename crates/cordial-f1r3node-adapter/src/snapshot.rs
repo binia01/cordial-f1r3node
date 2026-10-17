@@ -42,20 +42,20 @@
 //! Construction returns [`SnapshotError`] if any block's payload fails to
 //! decode. Partial state is not returned — snapshots are all-or-nothing.
 //!
-//! ## Known limitation: content-hash collisions
+//! ## Content-hash indexing policy
 //!
-//! The snapshot's `dag_set`, `block_number_map`, `height_map`, and
-//! `child_map` are keyed by `content_hash: [u8; 32]`. In the blocklace,
-//! `BlockIdentity` uses `(content_hash, creator, signature)` so two blocks
-//! with identical content but different creators can coexist — but they
-//! will collapse to one entry in the snapshot indices. This matters only
-//! when two validators sign over byte-identical `BlockContent`, which is
-//! rare in practice (payloads usually differ per block) but possible.
+//! Host-facing snapshots key blocks by byte strings:
+//! - For blocks with unique content hashes across the blocklace, the key is the
+//!   raw 32-byte content hash (`content_hash.to_vec()`).
+//! - When two or more creators share a content hash, the key is derived as
+//!   `Blake2b-256(b"cordial-snapshot-key-v1" || content_hash || creator.0)`.
 //!
-//! The proper fix belongs to Phase 3.4 (crypto bridge): compute an
-//! f1r3node-style `block_hash` that mixes the creator into the hash, so
-//! distinct validators always produce distinct block hashes even over
-//! equal content.
+//! This preserves `content_hash` as the fast, natural key in the common case while
+//! guaranteeing no silent loss of blocks or child edges when two validators sign
+//! byte-identical blocks (e.g., during idle rounds on native proposer paths).
+//! All snapshot fields (`dag_set`, `block_number_map`, `height_map`, `child_map`,
+//! `latest_messages_map`, `finalized_blocks_set`, `tips`, `lca`, `justifications`,
+//! `parents`) use these keys uniformly.
 //!
 //! ## Single-validator fork awareness is shared across seams
 //!
