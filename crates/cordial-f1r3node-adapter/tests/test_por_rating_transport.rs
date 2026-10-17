@@ -127,6 +127,8 @@ fn fixture() -> Fixture {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&blocklace, &output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut state = ReputationState::new(0);
     for seed in [1, 2, 9] {

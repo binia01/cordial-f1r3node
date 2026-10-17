@@ -21,6 +21,9 @@ fn cfg_with(
         minimum_rating: 0,
         maximum_rating: scale,
         missing_entry_policy,
+        correlation_threshold: PorConfig::new(scale, 0).correlation_threshold,
+        base_slash_penalty: PorConfig::new(scale, 0).base_slash_penalty,
+        inactivity_decay_gamma: PorConfig::new(scale, 0).inactivity_decay_gamma,
     }
 }
 
@@ -282,4 +285,38 @@ fn reject_policy_still_refuses_a_new_node() {
         blend_reputation_transition(&contribution, &previous, &reject(100, 50)),
         Err(PorError::MissingPreviousReputation)
     );
+}
+
+#[test]
+fn new_with_small_scale_does_not_return_invalid_liquid_rank_alpha() {
+    // scale = 1_000  →  default alpha = 1_000 * 3 / 5 = 600, which is ≤ scale.
+    // Before the fix, PorConfig::new hard-coded 600_000_000, which exceeded
+    // scale and caused blend_reputation_transition to return
+    // Err(PorError::InvalidLiquidRankAlpha).
+    let config = PorConfig::new(1_000, 200);
+    let contribution = vector(1, vec![entry(1, 500)]);
+    let previous = vector(0, vec![entry(1, 200)]);
+    assert!(
+        blend_reputation_transition(&contribution, &previous, &config).is_ok(),
+        "PorConfig::new with scale < 600_000_000 must not produce InvalidLiquidRankAlpha"
+    );
+}
+
+#[test]
+fn tiered_penalty_and_decay_transition_api() {
+    use cordial_por::transition::{
+        apply_slash_to_reputation, compute_inactivity_decay, compute_slash_penalty,
+    };
+    let config = PorConfig::new(1000, 200);
+    for (equivocating, total, expected_penalty, remaining) in
+        [(1, 4, 250, 750), (3, 10, 250, 750), (4, 10, 1000, 0)]
+    {
+        let penalty = compute_slash_penalty(equivocating, total, &config).unwrap();
+        assert_eq!(penalty, expected_penalty);
+        assert_eq!(
+            apply_slash_to_reputation(1000, penalty, &config).unwrap(),
+            remaining
+        );
+    }
+    assert_eq!(compute_inactivity_decay(1000, 10, &config).unwrap(), 990);
 }

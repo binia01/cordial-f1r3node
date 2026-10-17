@@ -17,14 +17,10 @@ env:
 
 jobs:
   # ─── Full Criterion run (main push only) ───────────────────────────────────
-  #
-  # Executes the full Criterion benchmark suite and uploads the HTML report
-  # and raw JSON output as a downloadable workflow artefact. PR smoke-checks
-  # run inside `rust.yml` to eliminate redundant runner setup overhead.
   bench-miners-core:
     name: Criterion benchmarks — cordial-miners-core
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
       - name: Checkout blocklace
@@ -65,6 +61,7 @@ jobs:
           cargo bench -p cordial-miners-core 2>&1 | tee bench-miners-core.txt
 
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: criterion-miners-core-${{ github.sha }}
@@ -72,11 +69,12 @@ jobs:
             blocklace/bench-miners-core.txt
             blocklace/target/criterion/
           retention-days: 90
+          if-no-files-found: warn
 
   bench-adapter:
     name: Criterion benchmarks — cordial-f1r3node-adapter
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout blocklace

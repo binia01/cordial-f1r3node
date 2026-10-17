@@ -30,7 +30,7 @@ Cordial Miners integration.
 | `conf/f1r3node-kamon.conf` | Upstream metrics/runtime config expected by the Rust node binary |
 | `genesis/cordial-bonds.txt` | Bonds the four demo validator public keys |
 | `genesis/cordial-wallets.txt` | Empty wallet file for the no-deploy standalone demo |
-| `scripts/generate-four-node-cluster-certs.sh` | Generates local EC TLS certs for bootstrap + validators |
+| `scripts/generate-four-node-cluster-certs.sh` | Copies bootstrap TLS material and creates stable validator TLS keys |
 | `scripts/verify-four-node-order.sh` | Containerized four-node ordered-view verifier for the local-intercept demo |
 | `scripts/verify-four-node-cluster.sh` | Containerized verifier for the real connected four-node cluster |
 
@@ -75,6 +75,10 @@ production consensus networking layer.
 
 For the connected four-node cluster demo:
 
+The cluster publishes its node APIs on `127.0.0.1` only. Host-side checks and
+the PoR shadow runners use the localhost ports; the containers communicate
+with each other over their Compose network.
+
 ```bash
 ./docker/scripts/generate-four-node-cluster-certs.sh
 just demo-cordial-four-node-cluster-config
@@ -86,20 +90,69 @@ just demo-cordial-four-node-cluster-blocks
 just demo-cordial-four-node-cluster-down
 ```
 
-This path is heavier than the local-intercept demo. It launches:
+`demo-cordial-four-node-cluster-down` stops the cluster and keeps its five
+named node-data volumes for the next run. `demo-cordial-down` also keeps those
+cluster volumes. To discard the cluster's node data and start from genesis,
+run `just demo-cordial-four-node-cluster-reset` instead. The `-legacy` recipes
+provide the same choices with `docker-compose`.
+
+This path is heavier than the local-intercept demo. It launches upstream
+f1r3node nodes; host-side Cordial and PoR observers mirror their finalized
+blocks through gRPC. The cluster does not select Cordial consensus inside
+f1r3node or enforce PoR weights. It launches:
 
 - one bootstrap node
 - four bonded validators with distinct validator keys
 - a verifier that checks:
   - all validators joined the expected network
-  - validators are bonded
   - validators are not isolated (`peers` / `nodes` visibility)
-  - finalized ordered views converge
+  - each node reaches the same post-genesis finalized height
+  - each node reports the same finalized block window and anchor at that height
 
-The real-cluster path now depends on local EC TLS certificates for each node.
-They are generated into `docker/certs/` by
-`docker/scripts/generate-four-node-cluster-certs.sh` and are intentionally kept
-out of git.
+The current f1r3node `/api/status` response does not expose `isValidator`.
+The verifier rejects an explicit `false` if a build supplies that field, but
+cannot prove each node's validator identity from the current HTTP API. The
+four validator identities are configured in `four-node-cluster.yml` and bonded
+in `genesis/cordial-bonds.txt`.
+
+The connected cluster uses a fixed upstream bootstrap TLS key and certificate.
+`docker/scripts/generate-four-node-cluster-certs.sh` creates validator TLS keys
+under `docker/certs/` once and preserves them on later runs. f1r3node generates
+each validator's matching certificate from its mounted key at startup. The
+validator certificates live in the containers' temporary directories, so an
+older certificate in a retained data volume cannot conflict with a key.
+`--data-dir=/var/lib/rnode` keeps node data in the named volumes. TLS material
+under `docker/certs/` is kept out of git.
+
+The five cluster nodes rotate their Docker logs at 20 MB per file, retaining
+three files per node. During a run, compare log and node-data growth with:
+
+```bash
+docker inspect --format '{{.LogPath}}' cordial.validator1
+sudo du -h "$(docker inspect --format '{{.LogPath}}' cordial.validator1)"
+docker system df -v
+docker ps --size --filter name=cordial
+```
+
+Repeat the log check for `cordial.validator2` through `cordial.validator4`
+and `cordial-boot`. `docker system df -v` lists the five named node-data
+volumes; `docker ps --size` shows each container's writable layer. Measure
+these while the containers still exist, because removing them discards their
+logs and writable layers.
+
+For a timed comparison while all five nodes are running, use:
+
+```bash
+sudo sh docker/scripts/measure-four-node-disk.sh 300 \
+  /tmp/cordial-cluster-disk-report "$HOME/cordial-por-four-node"
+```
+
+The script measures active and rotated Docker logs, each node's `/var/lib/rnode`
+data, container writable layers, host free space, and optional PoR shadow data
+before and after five minutes. It saves both snapshots and `docker system df -v`
+output in the report directory, then prints byte deltas. `sudo` is normally
+needed to read Docker's host log files. The sampler does not stop containers or
+remove data; run it before teardown so the evidence is still available.
 
 ## Docker CLI Compatibility
 
@@ -111,7 +164,7 @@ Some environments provide the legacy `docker-compose` command instead of
 Example cluster shutdown:
 
 ```bash
-docker-compose --env-file docker/.env -f docker/four-node-cluster.yml down -v
+docker-compose --env-file docker/.env -f docker/four-node-cluster.yml down
 ```
 
 The `cp -n` warning that may appear while creating `docker/.env` is harmless.

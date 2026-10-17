@@ -49,7 +49,7 @@ theorem observes_of_subBlocklace (B B' : Blocklace) (hsub : SubBlocklace B B')
 
 /-- Block membership is preserved by SubBlocklace: if `a ∈ B.keys` and
 `B ⊆ B'`, then `a ∈ B'.keys`. -/
-private lemma keys_mono {B B' : Blocklace} (hsub : SubBlocklace B B') {a : BlockId}
+lemma keys_mono {B B' : Blocklace} (hsub : SubBlocklace B B') {a : BlockId}
     (ha : a ∈ B.keys) : a ∈ B'.keys := by
   cases hlookup : B.lookup a with
   | none =>
@@ -61,7 +61,7 @@ private lemma keys_mono {B B' : Blocklace} (hsub : SubBlocklace B B') {a : Block
 relation is also in `B.keys`. New blocks added to `B'` cannot be reached
 from B-resident blocks because `Closed B` locks all predecessor lookups
 within `B.keys`, and `SubBlocklace` preserves those lookups unchanged. -/
-private theorem observes_stays_in_B {B B' : Blocklace} (hV : ValidBlocklace B)
+theorem observes_stays_in_B {B B' : Blocklace} (hV : ValidBlocklace B)
     (hsub : SubBlocklace B B') {a b : BlockId} (ha : a ∈ B.keys)
     (h : Observes B' a b) : b ∈ B.keys := by
   have hClosed := closed_of_valid B hV
@@ -83,7 +83,7 @@ private theorem observes_stays_in_B {B B' : Blocklace} (hV : ValidBlocklace B)
 prevents the observation cone of any B-resident block from escaping to
 new blocks, the observation relation restricted to `B.keys` is the same
 in both blocklaces. -/
-private theorem observes_iff_subBlocklace {B B' : Blocklace} (hV : ValidBlocklace B)
+theorem observes_iff_subBlocklace {B B' : Blocklace} (hV : ValidBlocklace B)
     (hsub : SubBlocklace B B') {a b : BlockId} (ha : a ∈ B.keys) (hb : b ∈ B.keys) :
     Observes B a b ↔ Observes B' a b := by
   constructor
@@ -107,7 +107,7 @@ private theorem observes_iff_subBlocklace {B B' : Blocklace} (hV : ValidBlocklac
 
 /-- For `b ∈ B.keys`, `creatorOf` agrees in `B` and `B'` because
 `SubBlocklace` preserves the block's lookup unchanged. -/
-private theorem creatorOf_of_subBlocklace {B B' : Blocklace} (hsub : SubBlocklace B B')
+theorem creatorOf_of_subBlocklace {B B' : Blocklace} (hsub : SubBlocklace B B')
     {b : BlockId} (hb : b ∈ B.keys) : creatorOf B b = creatorOf B' b := by
   cases hlookup : B.lookup b with
   | none =>
@@ -121,7 +121,7 @@ is computed by well-founded recursion over the predecessor relation; since
 `SubBlocklace` preserves every lookup for B-resident blocks, and `Closed B`
 bounds all predecessor lookups within `B.keys`, the entire recursion sees
 identical data in both blocklaces. -/
-private theorem blockDepth_of_subBlocklace {B B' : Blocklace}
+theorem blockDepth_of_subBlocklace {B B' : Blocklace}
     (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
     (hsub : SubBlocklace B B') {b : BlockId} (hb : b ∈ B.keys) :
     blockDepth B hV b = blockDepth B' hV' b := by
@@ -148,7 +148,7 @@ private theorem blockDepth_of_subBlocklace {B B' : Blocklace}
 in `B`. All observations and creator lookups agree in `B` and `B'` for
 B-resident blocks (by `observes_iff_subBlocklace` and `creatorOf_of_subBlocklace`),
 so the `VouchesFor` condition transfers unchanged. -/
-private theorem approves_of_subBlocklace {B B' : Blocklace}
+theorem approves_of_subBlocklace {B B' : Blocklace}
     (hV : ValidBlocklace B) (hsub : SubBlocklace B B')
     {a b : BlockId} (ha : a ∈ B.keys) (hb : b ∈ B.keys)
     (happ : Approves B a b) : Approves B' a b := by
@@ -164,6 +164,51 @@ private theorem approves_of_subBlocklace {B B' : Blocklace}
   apply hvcond b' hcreator_B hne hobs_B
   exact ⟨fun h => hfork.1 (observes_of_subBlocklace B B' hsub h),
          fun h => hfork.2 ((observes_iff_subBlocklace hV hsub hb' hb).mp h)⟩
+
+/-- Approval between old blocks is invariant under append-only growth. -/
+theorem approves_iff_subBlocklace {B B' : Blocklace}
+    (hV : ValidBlocklace B) (hsub : SubBlocklace B B')
+    {a b : BlockId} (ha : a ∈ B.keys) (hb : b ∈ B.keys) :
+    Approves B a b ↔ Approves B' a b := by
+  constructor
+  · exact approves_of_subBlocklace hV hsub ha hb
+  · rintro ⟨hobs, hvcond⟩
+    refine ⟨(observes_iff_subBlocklace hV hsub ha hb).mpr hobs, ?_⟩
+    intro other hcreator hne haOther hfork
+    have hother : other ∈ B.keys := observes_stays_in_B hV hsub ha
+      (observes_of_subBlocklace B B' hsub haOther)
+    have hcreator' : creatorOf B' other = creatorOf B' b :=
+      (creatorOf_of_subBlocklace hsub hother).symm.trans
+        (hcreator.trans (creatorOf_of_subBlocklace hsub hb))
+    apply hvcond other hcreator' hne
+      (observes_of_subBlocklace B B' hsub haOther)
+    exact ⟨
+      fun h => hfork.1 ((observes_iff_subBlocklace hV hsub hb hother).mpr h),
+      fun h => hfork.2 ((observes_iff_subBlocklace hV hsub hother hb).mpr h)⟩
+
+/-- The executable approval decision agrees on pairs of old blocks. -/
+theorem checkApproves_eq_of_subBlocklace {B B' : Blocklace}
+    (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (hsub : SubBlocklace B B') {a b : BlockId}
+    (ha : a ∈ B.keys) (hb : b ∈ B.keys) :
+    CMRef.checkApproves B hV a b = CMRef.checkApproves B' hV' a b := by
+  rw [Bool.eq_iff_iff, CMRef.checkApproves_iff B hV a b ha hb,
+    CMRef.checkApproves_iff B' hV' a b (keys_mono hsub ha) (keys_mono hsub hb)]
+  exact approves_iff_subBlocklace hV hsub ha hb
+
+/-- An old leader cannot approve a genuinely new block: its immutable
+observation cone is contained in the old blocklace. -/
+theorem checkApproves_new_eq_false {B B' : Blocklace}
+    (hV : ValidBlocklace B) (hV' : ValidBlocklace B')
+    (hsub : SubBlocklace B B') {leader block : BlockId}
+    (hLeader : leader ∈ B.keys) (hBlock' : block ∈ B'.keys)
+    (hBlock : block ∉ B.keys) :
+    CMRef.checkApproves B' hV' leader block = false := by
+  apply Bool.eq_false_iff.mpr
+  intro hApproved
+  have hProp := (CMRef.checkApproves_iff B' hV' leader block
+    (keys_mono hsub hLeader) hBlock').mp hApproved
+  exact hBlock (observes_stays_in_B hV hsub hLeader hProp.1)
 
 private theorem ratifies_of_subBlocklace {bonds : NodeId → ℕ} {validators : Finset NodeId}
     {B B' : Blocklace} (hV : ValidBlocklace B) (hsub : SubBlocklace B B')

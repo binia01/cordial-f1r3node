@@ -190,6 +190,8 @@ fn completed_round(fixture: &RoundFixture) -> CompletedPorRatingRound {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&fixture.blocklace, &fixture.output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
     let mut coordinator = PorRatingRoundCoordinator::new(
         &fixture.blocklace,
@@ -360,7 +362,7 @@ fn startup_computes_finality_after_restoring_durable_weights() {
             .ordered_output_reader()
             .latest()
             .and_then(|output| output.anchor.clone()),
-        Some(leader)
+        Some(leader.consensus_identity())
     );
 }
 
@@ -531,6 +533,7 @@ fn invalid_runtime_parameters_fail_before_state_initialization() {
     assert!(!directory.path().join("por").exists());
 }
 
+#[allow(deprecated)]
 #[test]
 fn completed_round_is_automatically_activated_after_commit() {
     let directory = tempdir().unwrap();
@@ -571,6 +574,7 @@ fn completed_round_is_automatically_activated_after_commit() {
     assert_eq!(runtime.ingress().bonds().len(), 1);
 }
 
+#[allow(deprecated)]
 #[test]
 fn committed_round_with_pending_activation_can_be_retried() {
     let directory = tempdir().unwrap();
@@ -612,4 +616,32 @@ fn committed_round_with_pending_activation_can_be_retried() {
         PorWeightActivationOutcome::Activated
     );
     assert!(!runtime.state().has_unactivated_committed_round().unwrap());
+}
+
+#[test]
+fn invalid_penalty_config_fails_before_opening_durable_state() {
+    let directory = tempdir().unwrap();
+    let (_, _, state) = genesis_state();
+    let ingress = LiveIngress::with_consensus_view(
+        (),
+        HashMap::from([(NodeId(vec![1]), 100)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut config = PorConfig::default();
+    config.base_slash_penalty = config.scale + 1;
+    assert!(matches!(
+        PorRuntime::open(
+            directory.path(),
+            state,
+            ingress,
+            config,
+            SHARD_ID,
+            WAVELENGTH
+        ),
+        Err(PorRuntimeError::InvalidConfig(
+            cordial_por::PorError::InvalidConfiguration(_)
+        ))
+    ));
+    assert!(!directory.path().join("por").exists());
 }

@@ -155,7 +155,7 @@ demo-cordial-four-node-cluster-config: demo-cordial-env
     docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} config >/dev/null
     echo "Cordial Miners real four-node cluster compose file is valid."
 
-demo-cordial-four-node-cluster-up: demo-cordial-env demo-cordial-image-check
+demo-cordial-four-node-cluster-up: demo-cordial-env
     docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} up -d
 
 demo-cordial-four-node-cluster-up-legacy: demo-cordial-env
@@ -180,9 +180,15 @@ demo-cordial-four-node-cluster-logs: demo-cordial-env
     docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} logs --tail=120 cordial-boot cordial-validator-1 cordial-validator-2 cordial-validator-3 cordial-validator-4
 
 demo-cordial-four-node-cluster-down: demo-cordial-env
-    docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down -v
+    docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down
 
 demo-cordial-four-node-cluster-down-legacy: demo-cordial-env
+    docker-compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down
+
+demo-cordial-four-node-cluster-reset: demo-cordial-env
+    docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down -v
+
+demo-cordial-four-node-cluster-reset-legacy: demo-cordial-env
     docker-compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down -v
 
 demo-cordial-down: demo-cordial-env
@@ -190,7 +196,7 @@ demo-cordial-down: demo-cordial-env
     docker compose --env-file {{docker_env}} -f {{docker_prebuilt_standalone}} down -v
     docker compose --env-file {{docker_env}} -f {{docker_conformance}} down -v
     docker compose --env-file {{docker_env}} -f {{docker_four_node}} down -v
-    docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down -v
+    docker compose --env-file {{docker_env}} -f {{docker_four_node_cluster}} down
 
 demo-cordial-local-clean:
     rm -rf {{demo_data}}

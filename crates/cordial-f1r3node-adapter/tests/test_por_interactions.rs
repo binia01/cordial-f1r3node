@@ -88,6 +88,8 @@ fn extracts_one_canonical_block_production_interaction_per_recipient() {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&blocklace, &output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
 
     let evidence =
@@ -157,6 +159,8 @@ fn cumulative_output_only_produces_evidence_for_the_opened_wave() {
     let opened = PorFinalityTracker::new()
         .observe_finalized_output(&blocklace, &output)
         .unwrap()
+        .into_iter()
+        .last()
         .unwrap();
 
     let evidence =
@@ -221,7 +225,18 @@ fn extracts_and_admits_known_active_block_producers() {
 }
 
 #[test]
-fn admission_bridge_rejects_an_unknown_block_producer() {
+fn unknown_block_producers_are_silently_skipped_not_rejected() {
+    // Before Bug 3 was fixed, a single unknown recipient caused the entire
+    // admit call to fail with Err(UnknownInteractionRecipient), aborting the
+    // honest rater's batch for all remaining valid recipients.
+    //
+    // After the fix, unknown (and ejected) recipients are filtered before
+    // admission: only the subset that is a known, non-ejected member of the
+    // reputation state is returned. The call never fails for this reason.
+    //
+    // Setup: rater = node(9); producers in wave = node(1), node(2), node(3).
+    // State contains node(1) and node(9) but NOT node(2) or node(3).
+    // Expected: Ok([admitted_for_node_1]) — node(2) and node(3) skipped.
     let (blocklace, leader, second, third) = wave_zero_chain();
     let output = output(&[&leader, &second, &third], Some(&leader), WAVELENGTH);
     let opened = FinalizedRatingRound {
@@ -231,19 +246,21 @@ fn admission_bridge_rejects_an_unknown_block_producer() {
     let mut state = ReputationState::new(0);
     state.set_reputation(node(1), 100);
     state.set_reputation(node(9), 100);
+    // node(2) and node(3) intentionally absent from state.
 
-    assert_eq!(
-        admit_finalized_block_production_interactions(
-            &blocklace,
-            &output,
-            opened,
-            &node(9),
-            &state,
-        ),
-        Err(PorInteractionError::Admission(
-            PorError::UnknownInteractionRecipient
-        ))
-    );
+    let admitted = admit_finalized_block_production_interactions(
+        &blocklace,
+        &output,
+        opened,
+        &node(9),
+        &state,
+    )
+    .expect("unknown producers must be skipped, not cause an error");
+
+    // Only node(1) is a known, non-ejected member; node(2) and node(3) are
+    // absent from the state and must be silently excluded.
+    assert_eq!(admitted.len(), 1, "only node(1) should be admitted");
+    assert_eq!(admitted[0].evidence().recipient, node(1));
 }
 
 #[test]
