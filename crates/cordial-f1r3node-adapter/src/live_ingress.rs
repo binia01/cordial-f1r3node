@@ -1,32 +1,12 @@
-//! Live ingress scaffolding for Cordial Miners integration with f1r3node.
+//! Live ingress boundary for Cordial Miners integration with f1r3node.
 //!
 //! This module is the adapter-side home for the "live interception" path.
-//! It is intentionally narrow in scope for now: the first step is to make
-//! the responsibility boundary explicit before wiring real transport traffic.
+//! Native blocks enter through `ingest_native_block_message`, which verifies
+//! their wire signature and resolves native parent hashes against accepted
+//! Cordial identities. Adapter-owned blocks use `ingest_block_message`.
+//! The native identity index is in memory and no host transport calls this
+//! native entry point yet.
 //!
-//! ## Responsibility
-//!
-//! `live_ingress` is where runtime-facing integration should live once we
-//! connect the adapter crate to real `f1r3node` message flow.
-//!
-//! In future steps this module will be responsible for:
-//!
-//! - receiving live block-bearing messages from a host node
-//! - translating them through existing adapter logic
-//! - feeding translated blocks into a local Cordial blocklace mirror
-//! - exposing enough state for snapshot, finality, and ordering work
-//!
-//! ## Non-goals in this first step
-//!
-//! This module does **not** yet:
-//!
-//! - attach to a real gRPC or transport server
-//! - maintain a full blocklace mirror
-//! - run finality or tau ordering
-//! - compare against HTTP-visible node state
-//!
-//! Those come in follow-up increments.
-
 use std::collections::HashMap;
 
 use cordial_miners_core::Block;
@@ -36,10 +16,11 @@ use cordial_miners_core::crypto::CryptoVerifier;
 use cordial_miners_core::types::BlockIdentity;
 use cordial_miners_core::types::{BlockContent, NodeId};
 use cordial_por::{PorError, ReputationState, authorized_validator_weights};
+use models::rust::casper::protocol::casper_message::BlockMessage as NativeBlockMessage;
 
 use crate::block_translation::BlockMessage;
 use crate::deploy_trace::DeployTracer;
-use crate::grpc_ingest::{BlocklaceAdapter, GrpcBlockMapper};
+use crate::grpc_ingest::{BlocklaceAdapter, GrpcBlockMapper, NativeBlockIdentityIndex};
 use crate::ordered_output::OrderedFinalizedOutput;
 use crate::repository::{BlocklaceRepository, RSpaceBlocklaceRepository, RepoError};
 use crate::shard_conf::CasperShardConf;
@@ -368,6 +349,7 @@ pub struct LiveIngress<A> {
     phase: LiveIngressPhase,
     adapter: A,
     mapper: GrpcBlockMapper,
+    native_index: NativeBlockIdentityIndex,
     mirror: LiveBlocklaceMirror,
     ordering_cache: OrderingCache,
     shared_ordered_output: SharedOrderedOutput,
@@ -386,6 +368,7 @@ impl<A> LiveIngress<A> {
             phase: LiveIngressPhase::Defined,
             adapter,
             mapper: GrpcBlockMapper::new(),
+            native_index: NativeBlockIdentityIndex::new(),
             mirror: LiveBlocklaceMirror::default(),
             ordering_cache: OrderingCache::default(),
             shared_ordered_output: SharedOrderedOutput::new(),
@@ -407,6 +390,7 @@ impl<A> LiveIngress<A> {
             phase: LiveIngressPhase::Defined,
             adapter,
             mapper: GrpcBlockMapper::new(),
+            native_index: NativeBlockIdentityIndex::new(),
             mirror: LiveBlocklaceMirror::default(),
             ordering_cache: OrderingCache::default(),
             shared_ordered_output: SharedOrderedOutput::new(),
@@ -450,6 +434,7 @@ impl<A> LiveIngress<A> {
             phase,
             adapter,
             mapper: GrpcBlockMapper::new(),
+            native_index: NativeBlockIdentityIndex::new(),
             mirror,
             ordering_cache: OrderingCache::default(),
             shared_ordered_output: SharedOrderedOutput::new(),
@@ -810,6 +795,77 @@ impl<A> LiveIngress<A>
 where
     A: BlocklaceAdapter<BlockIdentity>,
 {
+    /// Accept a native f1r3node block after checking its wire hash, signature,
+    /// and complete native-to-Cordial predecessor mapping.
+    ///
+    /// The native index is updated only after both the adapter and mirror have
+    /// accepted the translated block. A recovered mirror without its matching
+    /// native index rejects duplicates until the index is durably restored.
+    pub fn ingest_native_block_message(
+        &mut self,
+        block_msg: &NativeBlockMessage,
+    ) -> Result<MirrorUpdate, LiveIngressError> {
+        let validated = self
+            .mapper
+            .from_protobuf_with_parents(block_msg, &self.native_index)
+            .map_err(LiveIngressError::Mapping)?;
+        self.native_index
+            .check_candidate(&validated)
+            .map_err(LiveIngressError::Mapping)?;
+
+        let block = &validated.block;
+        if let Some(known_identity) = self.native_index.get(&validated.wire_hash) {
+            if self.mirror.blocklace().get(known_identity).is_none() {
+                return Err(LiveIngressError::Mirror(
+                    "indexed native block is absent from the Cordial mirror".to_string(),
+                ));
+            }
+            return Ok(MirrorUpdate {
+                disposition: MirrorDisposition::Duplicate,
+                released_from_buffer: 0,
+            });
+        }
+
+        if self.mirror.blocklace().get(&block.identity).is_some()
+            || self.mirror.pending().contains_key(&block.identity)
+        {
+            return Err(LiveIngressError::Mapping(anyhow::anyhow!(
+                "Cordial block is present without its native wire-hash mapping"
+            )));
+        }
+        if block
+            .content
+            .predecessors
+            .iter()
+            .any(|parent| self.mirror.blocklace().get(parent).is_none())
+        {
+            return Err(LiveIngressError::Mirror(
+                "resolved native parent is absent from the Cordial mirror".to_string(),
+            ));
+        }
+
+        self.adapter
+            .on_block(block.clone())
+            .map_err(LiveIngressError::Adapter)?;
+        let update = self
+            .mirror
+            .ingest(block.clone())
+            .map_err(LiveIngressError::Mirror)?;
+        if update.disposition != MirrorDisposition::Applied {
+            return Err(LiveIngressError::Mirror(
+                "native block was not applied after predecessor preflight".to_string(),
+            ));
+        }
+        self.native_index
+            .record_accepted(&validated)
+            .map_err(LiveIngressError::Mapping)?;
+        if let Some(tracer) = &self.deploy_tracer {
+            correlate_block_payload(tracer, block);
+        }
+        self.phase = LiveIngressPhase::Connected;
+        Ok(update)
+    }
+
     /// Accept an adapter-owned block message in Cordial's hash domain.
     ///
     /// Real f1r3node protobuf messages must first pass through
