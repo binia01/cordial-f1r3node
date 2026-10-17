@@ -273,6 +273,45 @@ fn signed_native_parent_child_chain_resolves_to_cordial_ancestry() {
 }
 
 #[test]
+fn signed_native_child_accepts_validator_justification_for_unsigned_genesis() {
+    let validator = ValidatorIdentity::new(&PrivateKey::from_bytes(&[7u8; 32]));
+    let mapper: GrpcBlockMapper<(), (), ()> = GrpcBlockMapper::new();
+    let mut accepted = NativeBlockIdentityIndex::new();
+
+    let mut genesis = signed_native_block(&validator, None, 0);
+    genesis.sender = Vec::new().into();
+    genesis.sig = Vec::new().into();
+    genesis.sig_algorithm.clear();
+    genesis.seq_num = 0;
+    genesis.block_hash = casper::rust::util::proto_util::hash_block(&genesis);
+    let mapped_genesis = mapper.from_trusted_unsigned_genesis(&genesis).unwrap();
+    assert!(mapped_genesis.block.identity.creator.0.is_empty());
+    accepted.record_accepted(&mapped_genesis).unwrap();
+
+    let mut child = signed_native_block(&validator, Some(&genesis), 1);
+    child.justifications[0].validator = child.sender.clone();
+    let child = validator.sign_block(&child);
+    let mapped_child = mapper
+        .from_protobuf_with_parents(&child, &accepted)
+        .unwrap();
+    assert!(
+        mapped_child
+            .block
+            .content
+            .predecessors
+            .contains(&mapped_genesis.block.identity)
+    );
+
+    let mut malformed = child.clone();
+    malformed.justifications[0].validator = vec![1u8; 20].into();
+    let malformed = validator.sign_block(&malformed);
+    let error = mapper
+        .from_protobuf_with_parents(&malformed, &accepted)
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid validator key length"));
+}
+
+#[test]
 fn distinct_native_blocks_cannot_collapse_to_one_cordial_identity() {
     let validator = ValidatorIdentity::new(&PrivateKey::from_bytes(&[7u8; 32]));
     let mapper: GrpcBlockMapper<(), (), ()> = GrpcBlockMapper::new();
