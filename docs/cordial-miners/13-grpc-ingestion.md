@@ -66,6 +66,24 @@ block without its matching wire-hash mapping are rejected before the adapter
 callback. If a block arrives before its parents, the caller must fetch or
 buffer them. No host transport calls this native entry point yet.
 
+## Full native blocks from a local host node
+
+The public `DeployService` block queries return `LightBlockInfo` summaries.
+Those summaries do not contain the original block body, so rebuilding a
+`BlockMessage` from them cannot reproduce its signed wire hash.
+
+`LocalNativeBlockSource::open(node_data_dir)` opens the existing host block
+storage on the same machine. `LiveGrpcBlockClient::native_blocks_by_heights`
+queries block hashes by height, then reads the corresponding full
+`BlockMessage` values from that storage. A missing block or a stored block
+whose declared hash differs from the requested key is an error. The native
+ingress mapper still verifies the full wire hash and signature before
+acceptance. The source requires access to the host node's data directory.
+
+The source is a transport building block. A subsequent slice must coordinate
+parent backfill, repeated polling, and durable ingestion before it is a
+long-running live mirror.
+
 ## Adapter-owned blocks
 
 `GrpcBlockMapper::from_adapter_message` handles locally constructed adapter
@@ -83,6 +101,7 @@ Run the focused tests with:
 ```bash
 cargo test -j 1 -p cordial-f1r3node-adapter --test test_grpc_ingest --offline
 cargo test -j 1 -p cordial-f1r3node-adapter --test test_live_native_ingress --offline
+cargo test -j 1 -p cordial-f1r3node-adapter --test test_native_block_source --offline
 ```
 
 The signed parent–child test checks native hash verification, parent lookup,
