@@ -25,9 +25,56 @@ use cordial_miners_core::types::BlockIdentity;
 use crate::error::RepoError;
 use crate::repository::BlocklaceRepository;
 
-use super::{CORDIAL_ID_PREFIX, CURSOR_KEY, NATIVE_HASH_PREFIX, RSpaceBlocklaceRepository};
+use super::{
+    CORDIAL_ID_PREFIX, CURSOR_KEY, NATIVE_HASH_PREFIX, NATIVE_HEIGHT_CURSOR_KEY,
+    RSpaceBlocklaceRepository,
+};
 
 impl RSpaceBlocklaceRepository {
+    pub fn native_height_cursor(&self) -> Result<Option<i64>, RepoError> {
+        let meta = self.meta_db.lock()?;
+        let txn = self.env.read_txn()?;
+        match meta.get(&txn, NATIVE_HEIGHT_CURSOR_KEY)? {
+            Some(bytes) => {
+                let height: i64 = bincode::deserialize(bytes)
+                    .map_err(|_| RepoError::NativeCursor("stored value is corrupt".into()))?;
+                if !(0..i64::MAX).contains(&height) {
+                    return Err(RepoError::NativeCursor(
+                        "stored value is out of range".into(),
+                    ));
+                }
+                Ok(Some(height))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn put_native_height_cursor(&self, height: i64) -> Result<(), RepoError> {
+        if height < 0 || height == i64::MAX {
+            return Err(RepoError::NativeCursor("height is out of range".into()));
+        }
+        let value = bincode::serialize(&height)?;
+        let meta = self.meta_db.lock()?;
+        let mut txn = self.env.write_txn()?;
+        if let Some(bytes) = meta.get(&txn, NATIVE_HEIGHT_CURSOR_KEY)? {
+            let previous: i64 = bincode::deserialize(bytes)
+                .map_err(|_| RepoError::NativeCursor("stored value is corrupt".into()))?;
+            if !(0..i64::MAX).contains(&previous) {
+                return Err(RepoError::NativeCursor(
+                    "stored value is out of range".into(),
+                ));
+            }
+            if height < previous {
+                return Err(RepoError::NativeCursor(
+                    "height cannot move backward".into(),
+                ));
+            }
+        }
+        meta.put(&mut txn, NATIVE_HEIGHT_CURSOR_KEY, &value)?;
+        txn.commit()?;
+        Ok(())
+    }
+
     /// Persist a verified native block and both identity directions atomically.
     /// Existing mappings may be replayed, but neither hash domain may be remapped.
     pub fn put_native_block(&self, block: &Block, wire_hash: &[u8; 32]) -> Result<(), RepoError> {
