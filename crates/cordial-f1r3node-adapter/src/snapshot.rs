@@ -207,7 +207,9 @@ pub fn build_snapshot(
     // 1. Walk all blocks, decoding payloads as we go. We'll need the
     //    block_number per block for the height index and for max_block_num.
     let all_ids: Vec<BlockIdentity> = blocklace.dom().into_iter().cloned().collect();
-    let mut payload_for: HashMap<[u8; 32], CordialBlockPayload> = HashMap::new();
+    let mut decoded: Vec<(BlockIdentity, CordialBlockPayload)> = Vec::with_capacity(all_ids.len());
+    let mut payload_for: HashMap<([u8; 32], NodeId), CordialBlockPayload> =
+        HashMap::with_capacity(all_ids.len());
     for id in &all_ids {
         let content = blocklace.content(id).expect("id came from dom()");
         let payload = CordialBlockPayload::from_bytes(&content.payload).map_err(|e| {
@@ -216,15 +218,15 @@ pub fn build_snapshot(
                 reason: e,
             }
         })?;
-        payload_for.insert(id.content_hash, payload);
+        payload_for.insert((id.content_hash, id.creator.clone()), payload.clone());
+        decoded.push((id.clone(), payload));
     }
 
     // 2. Build the simplified DAG representation.
     let mut dag = DagRepresentation::default();
-    for id in &all_ids {
+    for (id, payload) in &decoded {
         dag.dag_set.insert(id.content_hash.to_vec());
 
-        let payload = payload_for.get(&id.content_hash).expect("indexed above");
         let block_number = i64::try_from(payload.state.block_number).map_err(|_| {
             SnapshotError::BlockNumberOverflow {
                 block_hash: id.content_hash,
