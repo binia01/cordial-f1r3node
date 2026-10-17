@@ -46,18 +46,25 @@ signed host block -> verify host hash and signature
                   -> record wire hash to Cordial identity
 ```
 
-`LiveIngress::ingest_native_block_message` now owns that sequence for real
-host messages. It verifies and resolves the block, checks mirror closure and
-identity collisions, calls the adapter, inserts into the mirror, then records
-the mapping. A known wire hash is idempotent and does not repeat the adapter
-callback. Unknown parents and an existing Cordial block without a matching
-wire-hash mapping are rejected before that callback.
+`LiveIngress::ingest_native_block_message` owns that sequence for real host
+messages in memory. For durable native ingress, open an
+`RSpaceBlocklaceRepository`, initialize the ingress with
+`LiveIngress::with_persistent_store`, and call
+`ingest_native_block_message_and_persist(&message, &repo)` for each native
+message. The persistent path verifies and resolves the block, checks mirror
+closure and identity collisions, calls the adapter, writes the translated
+block and both directions of its wire-hash mapping in one LMDB transaction,
+then inserts it into the mirror. A known wire hash is idempotent and does not
+repeat the adapter callback.
 
-The index is currently in memory. A restart loses it even when the Cordial
-blocklace is recovered from storage. Native ingestion fails closed for such
-blocks until durable mapping recovery is implemented. No host transport calls
-this entry point yet. If a block arrives before its parents, the caller must
-fetch or buffer them; the mapper will not discard missing ancestry.
+On restart, `with_persistent_store` replays Cordial blocks and rebuilds the
+native index from the stored mappings. It fails startup if a mapping refers to
+a block that did not replay or if recovered identities collide. Blocks ingested
+through the in-memory method have no durable native mapping and cannot be
+resumed as native blocks after restart. Unknown parents and an existing Cordial
+block without its matching wire-hash mapping are rejected before the adapter
+callback. If a block arrives before its parents, the caller must fetch or
+buffer them. No host transport calls this native entry point yet.
 
 ## Adapter-owned blocks
 
@@ -83,5 +90,5 @@ Cordial predecessor closure, content rehashing, and justification creator
 matching. A separate test checks that distinct host blocks cannot share one
 translated Cordial identity.
 The live-ingress tests cover signed parent–child admission, duplicates,
-adapter rejection and retry, identity collisions, and recovered blocks whose
-native mapping is missing.
+adapter rejection and retry, identity collisions, missing native mappings,
+and LMDB restart recovery of a native parent before its child arrives.
