@@ -1,14 +1,34 @@
+use std::collections::HashMap;
+
 use casper::rust::validator_identity::ValidatorIdentity;
 use cordial_f1r3node_adapter::grpc_ingest::{BlocklaceAdapter, GrpcBlockMapper};
 use cordial_f1r3node_adapter::live_ingress::{
-    LiveIngress, LiveIngressError, LiveIngressPhase, MirrorDisposition,
+    AlreadyValidatedVerifier, LiveIngress, LiveIngressError, LiveIngressPhase, MirrorDisposition,
 };
+use cordial_f1r3node_adapter::repository::RSpaceBlocklaceRepository;
+use cordial_f1r3node_adapter::shard_conf::CasperShardConf;
 use cordial_miners_core::Block;
 use cordial_miners_core::types::BlockIdentity;
 use crypto::rust::private_key::PrivateKey;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, F1r3flyState, Header, Justification,
 };
+use tempfile::tempdir;
+
+const MAP_SIZE: usize = 10 * 1024 * 1024;
+
+fn recovered_ingress(repo: &RSpaceBlocklaceRepository) -> LiveIngress<RecordingAdapter> {
+    LiveIngress::with_persistent_store(
+        RecordingAdapter::default(),
+        HashMap::new(),
+        CasperShardConf::default(),
+        "root",
+        repo,
+        &AlreadyValidatedVerifier,
+    )
+    .unwrap()
+    .0
+}
 
 #[derive(Default)]
 struct RecordingAdapter {
@@ -171,4 +191,118 @@ fn native_identity_collision_is_rejected_before_adapter_callback() {
     );
     assert_eq!(ingress.adapter().calls, 1);
     assert_eq!(ingress.blocklace().dom().len(), 1);
+}
+
+#[test]
+fn persistent_native_parent_mapping_survives_restart() {
+    let dir = tempdir().unwrap();
+    let validator = ValidatorIdentity::new(&PrivateKey::from_bytes(&[7u8; 32]));
+    let parent = signed_block(&validator, None, 0);
+    let child = signed_block(&validator, Some(&parent), 1);
+
+    {
+        let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).unwrap();
+        let mut ingress = recovered_ingress(&repo);
+        assert_eq!(
+            ingress
+                .ingest_native_block_message_and_persist(&parent, &repo)
+                .unwrap()
+                .disposition,
+            MirrorDisposition::Applied
+        );
+        assert_eq!(repo.native_block_mappings().unwrap().len(), 1);
+    }
+
+    let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).unwrap();
+    let mut ingress = recovered_ingress(&repo);
+    assert_eq!(ingress.blocklace().dom().len(), 1);
+    assert_eq!(
+        ingress
+            .ingest_native_block_message_and_persist(&parent, &repo)
+            .unwrap()
+            .disposition,
+        MirrorDisposition::Duplicate
+    );
+    assert_eq!(ingress.adapter().calls, 0);
+    assert_eq!(
+        ingress
+            .ingest_native_block_message_and_persist(&child, &repo)
+            .unwrap()
+            .disposition,
+        MirrorDisposition::Applied
+    );
+    assert_eq!(ingress.blocklace().dom().len(), 2);
+    assert_eq!(repo.native_block_mappings().unwrap().len(), 2);
+}
+
+#[test]
+fn rejected_native_block_does_not_reach_persistent_store() {
+    let dir = tempdir().unwrap();
+    let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).unwrap();
+    let validator = ValidatorIdentity::new(&PrivateKey::from_bytes(&[7u8; 32]));
+    let parent = signed_block(&validator, None, 0);
+    let mut ingress = LiveIngress::new(RecordingAdapter {
+        reject_next: true,
+        ..RecordingAdapter::default()
+    });
+
+    assert!(matches!(
+        ingress.ingest_native_block_message_and_persist(&parent, &repo),
+        Err(LiveIngressError::Adapter(_))
+    ));
+    assert!(repo.native_block_mappings().unwrap().is_empty());
+    assert!(recovered_ingress(&repo).blocklace().dom().is_empty());
+}
+
+#[test]
+fn invalid_stored_native_identity_fails_closed_at_startup() {
+    let dir = tempdir().unwrap();
+    let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).unwrap();
+    let validator = ValidatorIdentity::new(&PrivateKey::from_bytes(&[7u8; 32]));
+    let native = signed_block(&validator, None, 0);
+    let mapper: GrpcBlockMapper<(), (), ()> = GrpcBlockMapper::new();
+    let mut translated = mapper.from_protobuf(&native).unwrap().block;
+    translated.identity.content_hash = [42u8; 32];
+    let wire_hash: [u8; 32] = native.block_hash.as_ref().try_into().unwrap();
+    repo.put_native_block(&translated, &wire_hash).unwrap();
+
+    let result = LiveIngress::with_persistent_store(
+        RecordingAdapter::default(),
+        HashMap::new(),
+        CasperShardConf::default(),
+        "root",
+        &repo,
+        &AlreadyValidatedVerifier,
+    );
+    assert!(result.is_err());
+    let error = result.err().unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("invalid translated Cordial identity"),
+        "unexpected recovery error: {error}"
+    );
+}
+
+#[test]
+fn persistent_identity_collision_does_not_write_partial_mapping() {
+    let dir = tempdir().unwrap();
+    let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).unwrap();
+    let validator = ValidatorIdentity::new(&PrivateKey::from_bytes(&[7u8; 32]));
+    let first = signed_block(&validator, None, 0);
+    let mut second = first.clone();
+    second.header.timestamp += 1;
+    let second = validator.sign_block(&second);
+    let mapper: GrpcBlockMapper<(), (), ()> = GrpcBlockMapper::new();
+    let first = mapper.from_protobuf(&first).unwrap();
+    let second = mapper.from_protobuf(&second).unwrap();
+    assert_eq!(first.block.identity, second.block.identity);
+
+    repo.put_native_block(&first.block, &first.wire_hash)
+        .unwrap();
+    let error = repo
+        .put_native_block(&second.block, &second.wire_hash)
+        .unwrap_err();
+    assert!(error.to_string().contains("distinct native wire hashes"));
+    assert_eq!(repo.native_block_mappings().unwrap().len(), 1);
 }
