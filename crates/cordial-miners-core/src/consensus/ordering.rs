@@ -440,7 +440,13 @@ where
         return None;
     }
 
+    let checkpoint_floor = checkpoint_floor(blocklace, current_leader, wavelength);
     for wave in (0..current_wave).rev() {
+        if let Some((checkpoint, checkpoint_wave)) = &checkpoint_floor
+            && wave <= *checkpoint_wave
+        {
+            return Some(checkpoint.clone());
+        }
         let Some(previous_leader) =
             weighted_final_leader_for_wave(blocklace, wave, wavelength, bonds, leader_selection)
         else {
