@@ -27,9 +27,20 @@ pub enum LiveGrpcError {
     Transport(tonic::transport::Error),
     Status(tonic::Status),
     MissingPayload(&'static str),
-    DecodeHex { field: &'static str, value: String },
-    InvalidHashLength { field: &'static str, got: usize },
+    DecodeHex {
+        field: &'static str,
+        value: String,
+    },
+    InvalidHashLength {
+        field: &'static str,
+        got: usize,
+    },
     NumericOverflow(&'static str),
+    HeightMismatch {
+        hash: String,
+        summary: i64,
+        stored: i64,
+    },
     Ingress(LiveIngressError),
     NativeSource(NativeBlockSourceError),
 }
@@ -47,6 +58,14 @@ impl std::fmt::Display for LiveGrpcError {
                 write!(f, "field {field} must decode to 32 bytes, got {got}")
             }
             Self::NumericOverflow(field) => write!(f, "numeric overflow while converting {field}"),
+            Self::HeightMismatch {
+                hash,
+                summary,
+                stored,
+            } => write!(
+                f,
+                "block {hash} has height {stored} in local storage but {summary} in gRPC"
+            ),
             Self::Ingress(err) => write!(f, "{err}"),
             Self::NativeSource(err) => write!(f, "{err}"),
         }
@@ -153,12 +172,18 @@ impl LiveGrpcBlockClient {
         let mut blocks = Vec::with_capacity(infos.len());
         for info in infos {
             let hash = decode_hex_32("block_hash", &info.block_hash)?;
-            blocks.push(
-                source
-                    .read(hash)
-                    .await
-                    .map_err(LiveGrpcError::NativeSource)?,
-            );
+            let block = source
+                .read(hash)
+                .await
+                .map_err(LiveGrpcError::NativeSource)?;
+            if block.body.state.block_number != info.block_number {
+                return Err(LiveGrpcError::HeightMismatch {
+                    hash: info.block_hash,
+                    summary: info.block_number,
+                    stored: block.body.state.block_number,
+                });
+            }
+            blocks.push(block);
         }
         Ok(blocks)
     }
