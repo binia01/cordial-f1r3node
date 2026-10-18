@@ -24,6 +24,82 @@ use cordial_miners_core::execution::{
 };
 use cordial_miners_core::{Block, BlockContent, BlockIdentity, Blocklace, NodeId};
 use cordial_por::PorConfig;
+use models::casper::{
+    ProcessedSystemDeployProto, SlashSystemDeployDataProto, SystemDeployDataProto,
+    system_deploy_data_proto::SystemDeploy,
+};
+use prost::Message;
+use prost::bytes::Bytes;
+
+// Exercises tiered preparation independently of production host authorization.
+// The synthetic hash and epoch below must never be used to authorize a host slash.
+struct TestSlashFormatter {
+    issuer_public_key: Vec<u8>,
+}
+
+impl TestSlashFormatter {
+    fn new(issuer_public_key: Vec<u8>) -> Self {
+        Self { issuer_public_key }
+    }
+}
+
+impl SlashDeployFormatter<NodeId, Block, BlockIdentity> for TestSlashFormatter {
+    fn to_slash_system_deploys(
+        &self,
+        evidence: &[CordialEquivocationEvidence],
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        Ok(evidence
+            .iter()
+            .map(|record| {
+                let hash = record
+                    .blocks
+                    .iter()
+                    .map(|block| block.identity.content_hash)
+                    .min()
+                    .expect("test evidence has conflicting blocks");
+                ProcessedSystemDeployProto {
+                    system_deploy: Some(SystemDeployDataProto {
+                        system_deploy: Some(SystemDeploy::SlashSystemDeploy(
+                            SlashSystemDeployDataProto {
+                                invalid_block_hash: Bytes::copy_from_slice(&hash),
+                                issuer_public_key: Bytes::copy_from_slice(&self.issuer_public_key),
+                                target_activation_epoch: 0,
+                            },
+                        )),
+                    }),
+                    deploy_log: vec![],
+                    error_msg: String::new(),
+                }
+                .encode_to_vec()
+            })
+            .collect())
+    }
+
+    fn to_tiered_slash_deploys(
+        &self,
+        evidence: &[CordialEquivocationEvidence],
+        penalty_ratio_bps: u32,
+    ) -> anyhow::Result<Vec<FormattedSlashEvidence>> {
+        let deploys = self.to_slash_system_deploys(evidence)?;
+        evidence
+            .iter()
+            .zip(deploys)
+            .map(|(record, slash_system_deploy)| {
+                let mut blocks = record.blocks.iter().collect::<Vec<_>>();
+                blocks.sort_by(|a, b| a.identity.cmp(&b.identity));
+                let conflicting_block_bytes = blocks
+                    .into_iter()
+                    .map(bincode::serialize)
+                    .collect::<Result<_, _>>()?;
+                Ok(FormattedSlashEvidence {
+                    penalty_ratio_bps,
+                    slash_system_deploy,
+                    conflicting_block_bytes,
+                })
+            })
+            .collect()
+    }
+}
 
 fn node(id: u8) -> NodeId {
     NodeId(vec![id; 33])
@@ -124,7 +200,7 @@ fn propose<E: ExecutionEngine>(
     )
     .with_slashing(
         EvidencePoolSource::new(pool, validators.iter().copied().map(node)),
-        F1r3SlashDeployFormatter::new(vec![0xbb; 33]),
+        TestSlashFormatter::new(vec![0xbb; 33]),
     )
     .with_slash_policy(policy);
     proposer.propose_at_time(&Blocklace::new(), &deploy_pool, 100)
@@ -302,7 +378,7 @@ fn tiered_preparation_can_omit_close_block_and_preserve_selected_user_order() {
     .with_close_block(false)
     .with_slashing(
         EvidencePoolSource::new(&pool, [node(1)]),
-        F1r3SlashDeployFormatter::new(vec![0xbb; 33]),
+        TestSlashFormatter::new(vec![0xbb; 33]),
     )
     .with_slash_policy(policy(4, &[(1, 20), (2, 80)]));
     proposer
@@ -377,6 +453,43 @@ fn correlation_includes_all_round_offenders_even_when_only_one_proof_is_selected
         ExecutionBatchItem::SlashSystemDeploy { evidence, .. }
             if evidence.penalty_ratio_bps == 10000
     ));
+}
+
+#[test]
+fn production_formatter_rejects_unverified_tiered_evidence_before_execution() {
+    let mut pool = CordialEvidencePool::new();
+    evidence(&mut pool, 1, 4, 1);
+    let capture = Capture::default();
+    let broadcaster = RecordingBroadcaster::new();
+    let broadcasted = Arc::clone(&broadcaster.blocks);
+    let mut proposer = CordialProposer::new(
+        DisseminationTipSelector,
+        capture.clone(),
+        Secp256k1BlockSigner::new(vec![1; 32]),
+        broadcaster,
+        node(9),
+        weights(&[(1, 90), (2, 10)]),
+        DeployPoolConfig::default(),
+    )
+    .with_slashing(
+        EvidencePoolSource::new(&pool, [node(1)]),
+        F1r3SlashDeployFormatter::new(vec![0xbb; 33]),
+    )
+    .with_slash_policy(policy(4, &[(1, 20), (2, 80)]));
+
+    let result = proposer.propose_at_time(
+        &Blocklace::new(),
+        &DeployPool::new(DeployPoolConfig::default()),
+        100,
+    );
+    let Err(ProposeError::SlashFormat(message)) = result else {
+        panic!("expected production slash formatting to reject unverified host metadata");
+    };
+    assert!(message.contains("native block hash"));
+    assert!(message.contains("target activation epoch"));
+    assert!(capture.prepared.lock().unwrap().is_none());
+    assert!(capture.legacy.lock().unwrap().is_none());
+    assert!(broadcasted.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -487,7 +600,7 @@ impl SlashDeployFormatter<NodeId, Block, BlockIdentity> for CorruptFormatter {
         &self,
         evidence: &[CordialEquivocationEvidence],
     ) -> anyhow::Result<Vec<Vec<u8>>> {
-        F1r3SlashDeployFormatter::new(vec![0xbb; 33]).to_slash_system_deploys(evidence)
+        TestSlashFormatter::new(vec![0xbb; 33]).to_slash_system_deploys(evidence)
     }
 
     fn to_tiered_slash_deploys(
@@ -495,7 +608,7 @@ impl SlashDeployFormatter<NodeId, Block, BlockIdentity> for CorruptFormatter {
         evidence: &[CordialEquivocationEvidence],
         ratio: u32,
     ) -> anyhow::Result<Vec<FormattedSlashEvidence>> {
-        let formatter = F1r3SlashDeployFormatter::new(vec![0xbb; 33]);
+        let formatter = TestSlashFormatter::new(vec![0xbb; 33]);
         let mut formatted = formatter.to_tiered_slash_deploys(evidence, ratio)?;
         match self.0 {
             Corruption::Ratio => formatted[0].penalty_ratio_bps = 10000,
@@ -660,7 +773,7 @@ fn rejected_equivocation_reaches_a_signed_broadcast_and_peer_validation() {
         )
         .with_slashing(
             EvidencePoolSource::new(&pool, [offender.clone()]),
-            F1r3SlashDeployFormatter::new(creator.0.clone()),
+            TestSlashFormatter::new(creator.0.clone()),
         )
         .with_slash_policy(policy);
 

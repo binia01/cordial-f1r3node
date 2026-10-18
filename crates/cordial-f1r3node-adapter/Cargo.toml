@@ -34,8 +34,10 @@ either.workspace = true
 tokio.workspace = true
 clap = { version = "4.6", features = ["derive"] }
 
-casper = { path = "../../../f1r3node/casper" }
-models = { path = "../../../f1r3node/models" }
+casper = { path = "../../../f1r3node-rust/casper" }
+crypto = { path = "../../../f1r3node-rust/crypto" }
+models = { path = "../../../f1r3node-rust/models" }
+block-storage = { path = "../../../f1r3node-rust/block-storage" }
 
 # ── HTTP deploy ingress server ──────────────────────────────────────────────
 axum.workspace = true
@@ -51,7 +53,6 @@ thiserror    = "1"
 tempfile  = "3"
 heed      = "0.20"
 criterion = { version = "0.5", features = ["html_reports"] }
-crypto    = { path = "../../../f1r3node/crypto" }
 tower     = { version = "0.5", features = ["util"] }
 
 [[bench]]

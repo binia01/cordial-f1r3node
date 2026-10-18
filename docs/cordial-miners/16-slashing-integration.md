@@ -1,13 +1,19 @@
 # Cordial Miners Slashing Integration
 
+> Migration status: The `f1r3node-rust` host requires a verified native block
+> hash and target activation epoch. Core Cordial evidence does not carry them.
+> The production formatter currently rejects nonempty evidence, so the flow
+> below describes the intended integration, not active slash execution. See
+> [Slash Formatting](07-slash-formatting.md) for the required host mapping.
+
 ## Purpose
 
 Cordial Miners treats equivocation as a consensus safety failure with an
 economic consequence. The adapter prepares slash requests before normal user
 work.
 
-This integration connects the pure evidence retained by the Cordial core to the
-adapter's prepared execution batch:
+When an authorized formatter is available, this integration connects the pure
+evidence retained by the Cordial core to the adapter's prepared execution batch:
 
 1. the core `EvidencePool` retains raw conflicting Cordial blocks,
 2. the adapter `SlashDeployFormatter` converts that evidence into f1r3node
@@ -17,10 +23,11 @@ adapter's prepared execution batch:
 5. the proposer signs and broadcasts the resulting Cordial block.
 
 For [issue #234's clarified scope](https://github.com/iCog-Labs-Dev/cordial-f1r3node/issues/234#issuecomment-6159081010),
-`penalty_ratio_bps` remains adapter metadata. The host protobuf still carries
-only the invalid block hash and issuer key. Applying the ratio and guaranteeing
-slash-before-user runtime/replay execution require a future integration change;
-this issue does not change the sibling `f1r3node` repository.
+`penalty_ratio_bps` remains adapter metadata. Upstream's host migration now
+requires a verified native block hash and target activation epoch as described
+above. This issue does not extend that protobuf schema or change the sibling
+host repository. Applying the ratio and guaranteeing slash-before-user
+runtime/replay execution still require a future integration change.
 
 ## Cost of Corruption
 
@@ -41,6 +48,11 @@ The Cordial proposer pipeline in
 `crates/cordial-f1r3node-adapter/src/proposer.rs` supports tiered preparation
 through `with_slash_policy(policy)`. The existing `with_slashing` path remains
 available without that policy.
+
+Both production paths currently reject nonempty evidence without verified host
+metadata before execution, signing, or broadcast. The tiered preparation tests
+use a test formatter, keeping penalty calculation and batch ordering coverage
+independent of production host authorization.
 
 ```rust,ignore
 use cordial_f1r3node_adapter::tiered_slashing::TieredSlashPolicy;
@@ -133,13 +145,13 @@ serialization and execution details.
 
 The focused tests inspect adapter requests, not real host punishment or replay:
 
-- `tests/test_slashing.rs`: unchanged host bytes, retained ratios, original
-  signatures, deterministic proof order, and invalid ratios.
+- `tests/test_slashing.rs`: rejection of unverified host metadata on the byte,
+  envelope, and tiered APIs, empty evidence, and invalid ratios.
 - `tests/test_tiered_slashing.rs`: threshold boundaries, distinct round snapshots,
   duplicate offenders, complete round correlation, prepared slash-before-user
   order with and without close-block, input failures, formatter checks, legacy
-  engine compatibility, and signed broadcast/peer validation using the existing
-  mock runtime.
+  engine compatibility, signed broadcast/peer validation with a test formatter
+  and mock runtime, and production rejection before execution or broadcast.
 - `tests/test_proposer.rs`: existing proposal and execution-request regressions,
   including a real core `CordialEvidencePool` feeding `EvidencePoolSource`.
 
