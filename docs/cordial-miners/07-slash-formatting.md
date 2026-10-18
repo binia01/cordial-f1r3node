@@ -4,7 +4,7 @@
 
 The core evidence pool retains conflicting Cordial blocks without host-node
 types. `F1r3SlashDeployFormatter` receives that evidence through the adapter's
-`SlashDeployFormatter` trait. On the `f1r3node-rust` migration branch, the
+`SlashDeployFormatter` trait. With the migrated `f1r3node-rust` host, the
 formatter rejects nonempty evidence with a clear error. It does not emit slash
 system deploy bytes. An empty evidence list still produces an empty list.
 
@@ -34,6 +34,26 @@ Keep the original conflicting Cordial blocks available for proof transport
 and audits. The host slash protobuf contains a block reference, not the full
 conflicting signatures. Tests should cover wire hash mapping, epoch boundaries,
 restarts, and receive-side host authorization before enabling slash emission.
+
+## Tiered formatter API
+
+`SlashDeployFormatter<V, P, Id>` exposes `to_slash_system_deploys` and
+`to_tiered_slash_deploys(evidence, penalty_ratio_bps)`. The tiered API retains
+adapter metadata in `FormattedSlashEvidence`: the ratio, host bytes, and raw
+conflicting blocks. It does not calculate penalties or depend on PoR mathematics.
+
+`F1r3SlashDeployFormatter` accepts `0..=10_000` basis points, where `2500`
+means 25% and `10000` means 100%. It validates this range before invoking the
+same host authorization boundary as the byte API. Both tiers reject nonempty
+evidence without verified host metadata; empty evidence produces no envelopes.
+`to_slash_evidence_envelopes` delegates with `10000`. The trait's default tiered
+method returns an unsupported error, so legacy implementations keep compiling.
+
+The ratio remains adapter metadata and is not encoded into the host protobuf.
+The envelope type retains space for serialized conflicting blocks, preserving
+their signatures when an authorized formatter is available. See
+[Slashing Integration](./16-slashing-integration.md) for issue #234's scope and
+the prepared request interface.
 
 ## Proposer behavior
 

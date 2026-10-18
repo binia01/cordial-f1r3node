@@ -17,6 +17,15 @@ pub trait SlashDeployFormatter<V, P, Id> {
         &self,
         evidence: &[EquivocationEvidence<V, P, Id>],
     ) -> Result<Vec<Vec<u8>>>;
+
+    /// Retain adapter-only penalty metadata alongside the unchanged host bytes.
+    fn to_tiered_slash_deploys(
+        &self,
+        _evidence: &[EquivocationEvidence<V, P, Id>],
+        _penalty_ratio_bps: u32,
+    ) -> Result<Vec<FormattedSlashEvidence>> {
+        bail!("this formatter does not support tiered slash evidence")
+    }
 }
 
 /// Adapter-local proof package: f1r3node slash bytes plus raw Cordial block bytes.
@@ -26,6 +35,8 @@ pub trait SlashDeployFormatter<V, P, Id> {
 /// and signature verification without changing the f1r3node protobuf shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormattedSlashEvidence {
+    /// Adapter metadata only; the host protobuf does not carry this ratio.
+    pub penalty_ratio_bps: u32,
     pub slash_system_deploy: Vec<u8>,
     pub conflicting_block_bytes: Vec<Vec<u8>>,
 }
@@ -53,6 +64,20 @@ impl F1r3SlashDeployFormatter {
         &self,
         evidence: &[EquivocationEvidence<NodeId, Block, BlockIdentity>],
     ) -> Result<Vec<FormattedSlashEvidence>> {
+        // The legacy path represents the original full-slash intent.
+        self.to_tiered_slash_deploys(evidence, 10_000)
+    }
+
+    /// Retain precomputed penalties without extending the host wire format.
+    /// Nonempty evidence still requires verified host metadata before emission.
+    pub fn to_tiered_slash_deploys(
+        &self,
+        evidence: &[EquivocationEvidence<NodeId, Block, BlockIdentity>],
+        penalty_ratio_bps: u32,
+    ) -> Result<Vec<FormattedSlashEvidence>> {
+        if penalty_ratio_bps > 10_000 {
+            bail!("slash penalty must be between 0 and 10000 basis points");
+        }
         let deploys = self.to_slash_system_deploys(evidence)?;
         evidence
             .iter()
@@ -60,6 +85,7 @@ impl F1r3SlashDeployFormatter {
             .map(|(record, slash_system_deploy)| {
                 let conflicting_block_bytes = serialize_conflicting_blocks(record)?;
                 Ok(FormattedSlashEvidence {
+                    penalty_ratio_bps,
                     slash_system_deploy,
                     conflicting_block_bytes,
                 })
@@ -87,6 +113,14 @@ impl SlashDeployFormatter<NodeId, Block, BlockIdentity> for F1r3SlashDeployForma
             .iter()
             .map(|record| self.encode_record(record))
             .collect()
+    }
+
+    fn to_tiered_slash_deploys(
+        &self,
+        evidence: &[EquivocationEvidence<NodeId, Block, BlockIdentity>],
+        penalty_ratio_bps: u32,
+    ) -> Result<Vec<FormattedSlashEvidence>> {
+        F1r3SlashDeployFormatter::to_tiered_slash_deploys(self, evidence, penalty_ratio_bps)
     }
 }
 

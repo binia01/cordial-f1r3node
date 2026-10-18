@@ -80,3 +80,44 @@ fn slash_formatter_rejects_non_conflicting_single_block_evidence() {
 
     assert!(err.to_string().contains("at least two conflicting blocks"));
 }
+
+#[test]
+fn tiered_evidence_also_rejects_unverified_host_metadata_for_both_tiers() {
+    let validator = node(7);
+    let left = block(validator.clone(), 1, vec![0x11; 64]);
+    let right = block(validator.clone(), 2, vec![0x22; 64]);
+    let evidence = vec![EquivocationEvidence::new(
+        validator,
+        4,
+        vec![right.clone(), left.clone()],
+    )];
+    let formatter = F1r3SlashDeployFormatter::new(vec![0xaa; 33]);
+    for ratio in [2500, 10000] {
+        let err = formatter
+            .to_tiered_slash_deploys(&evidence, ratio)
+            .unwrap_err();
+        assert!(err.to_string().contains("native block hash"));
+        assert!(err.to_string().contains("target activation epoch"));
+    }
+}
+
+#[test]
+fn tiered_formatter_rejects_out_of_range_ratios_even_without_evidence() {
+    let formatter = F1r3SlashDeployFormatter::new(vec![0xaa; 33]);
+    for ratio in [10001, u32::MAX] {
+        assert!(formatter.to_tiered_slash_deploys(&[], ratio).is_err());
+    }
+}
+
+#[test]
+fn empty_tiered_evidence_produces_no_envelopes() {
+    let formatter = F1r3SlashDeployFormatter::new(vec![0xaa; 33]);
+    for ratio in [0, 2500, 10000] {
+        assert!(
+            formatter
+                .to_tiered_slash_deploys(&[], ratio)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
