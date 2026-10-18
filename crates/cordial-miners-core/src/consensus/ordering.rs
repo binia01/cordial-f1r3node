@@ -7,10 +7,10 @@ use crate::consensus::approval::{ApprovalMemo, approves_with_memo};
 use crate::consensus::cordiality::{ratifies, weighted_ratifies};
 use crate::consensus::finality::{
     final_leader_for_wave, latest_final_leader, latest_weighted_final_leader,
-    weighted_final_leader_for_wave,
+    leader_block_for_wave, weighted_final_leader_for_wave,
 };
 use crate::consensus::round::depth;
-use crate::consensus::wave::{leader_round_of_wave, wave_of_round};
+use crate::consensus::wave::wave_of_round;
 use crate::consensus::weight_snapshot::WeightSnapshot;
 #[cfg(feature = "trace")]
 use crate::trace::{self, EmitOutputEvent, TauOrderEvent, TraceEvent};
@@ -370,10 +370,11 @@ where
     }
     let round = depth(blocklace, checkpoint)?;
     let wave = wave_of_round(round, wavelength)?;
-    // Only an elected leader block may stand in for the previous final
-    // leader; an explicit checkpoint at any other block is ignored here.
-    if leader_round_of_wave(wave, wavelength) != Some(round)
-        || leader_selection(wave).as_ref() != Some(&checkpoint.creator)
+    // Only the unique leader block of its wave may stand in for the previous
+    // final leader (same definition as finality; an equivocating or
+    // non-leader explicit checkpoint is ignored here).
+    if leader_block_for_wave(blocklace, wave, wavelength, leader_selection).as_ref()
+        != Some(checkpoint)
     {
         return None;
     }
