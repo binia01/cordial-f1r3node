@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::consensus::{
-    CheckpointGc, checkpoint_after_finality, checkpoint_after_weighted_finality, tau, weighted_tau,
+    CheckpointGc, checkpoint_after_finality, checkpoint_after_weighted_finality, depth,
+    latest_final_leader, latest_weighted_final_leader, leader_blocks_of_wave,
+    previous_final_leader, tau, wave_of_round, weighted_previous_final_leader, weighted_tau,
 };
 use cordial_miners_core::crypto::CryptoVerifier;
 use cordial_miners_core::{Block, BlockContent, BlockIdentity, NodeId};
@@ -438,5 +440,93 @@ fn repeated_checkpoint_advances_preserve_finalized_prefix() {
     assert!(
         advances >= 3,
         "expected repeated checkpoint advances, got {advances}"
+    );
+}
+
+#[test]
+fn explicit_non_leader_checkpoint_is_not_a_previous_final_leader() {
+    let validators = vec![node(1), node(2), node(3), node(4)];
+    let leader = round_robin_leader(&validators);
+    let mut lace = Blocklace::new();
+
+    for block in fully_connected_rounds(&validators, 15) {
+        insert(&mut lace, &block);
+    }
+
+    let l = latest_final_leader(&lace, 3, 4, 1, leader).expect("should find a latest final leader");
+    let l_round = depth(&lace, &l).expect("depth of L");
+    let l_wave = wave_of_round(l_round, 3).expect("wave of L");
+    assert!(l_wave >= 2, "expected L in wave >= 2, got wave {l_wave}");
+
+    // Pick a block X that is not a leader block, in wave < l_wave, and precedes L.
+    let non_leader_round = (l_wave - 1) * 3 + 1;
+    let x = lace
+        .dom()
+        .into_iter()
+        .find(|id| depth(&lace, id) == Some(non_leader_round))
+        .expect("should find a block at non-leader round")
+        .clone();
+    let wave_x = wave_of_round(non_leader_round, 3).expect("wave of X");
+    assert!(wave_x < l_wave);
+    assert!(lace.precedes(&x, &l));
+    assert!(
+        !leader_blocks_of_wave(&lace, wave_x, 3, leader)
+            .iter()
+            .any(|b| b.identity == x)
+    );
+
+    lace.prune_below_checkpoint(&x)
+        .expect("prune below non-leader checkpoint should succeed");
+
+    let prev = previous_final_leader(&lace, &l, 3, 4, 1, leader);
+    assert_ne!(
+        prev,
+        Some(x),
+        "explicit non-leader checkpoint must not be returned as previous final leader"
+    );
+}
+
+#[test]
+fn explicit_non_leader_checkpoint_is_not_a_weighted_previous_final_leader() {
+    let validators = vec![node(1), node(2), node(3), node(4)];
+    let weights = bonds(&[(1, 25), (2, 25), (3, 25), (4, 25)]);
+    let leader = round_robin_leader(&validators);
+    let mut lace = Blocklace::new();
+
+    for block in fully_connected_rounds(&validators, 15) {
+        insert(&mut lace, &block);
+    }
+
+    let l = latest_weighted_final_leader(&lace, 3, &weights, leader)
+        .expect("should find a latest weighted final leader");
+    let l_round = depth(&lace, &l).expect("depth of L");
+    let l_wave = wave_of_round(l_round, 3).expect("wave of L");
+    assert!(l_wave >= 2, "expected L in wave >= 2, got wave {l_wave}");
+
+    // Pick a block X that is not a leader block, in wave < l_wave, and precedes L.
+    let non_leader_round = (l_wave - 1) * 3 + 1;
+    let x = lace
+        .dom()
+        .into_iter()
+        .find(|id| depth(&lace, id) == Some(non_leader_round))
+        .expect("should find a block at non-leader round")
+        .clone();
+    let wave_x = wave_of_round(non_leader_round, 3).expect("wave of X");
+    assert!(wave_x < l_wave);
+    assert!(lace.precedes(&x, &l));
+    assert!(
+        !leader_blocks_of_wave(&lace, wave_x, 3, leader)
+            .iter()
+            .any(|b| b.identity == x)
+    );
+
+    lace.prune_below_checkpoint(&x)
+        .expect("prune below non-leader checkpoint should succeed");
+
+    let prev = weighted_previous_final_leader(&lace, &l, 3, &weights, leader);
+    assert_ne!(
+        prev,
+        Some(x),
+        "explicit non-leader checkpoint must not be returned as weighted previous final leader"
     );
 }
