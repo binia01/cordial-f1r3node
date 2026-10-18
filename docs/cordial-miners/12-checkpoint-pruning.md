@@ -91,7 +91,8 @@ Checkpoint pruning must preserve:
 - **Explicit checkpoints.** `prune_below_checkpoint` does not verify finality; callers must pass a
   block already proven final (prefer `checkpoint_after_finality` /
   `checkpoint_after_weighted_finality`). The previous-leader search only treats the checkpoint as a
-  floor when it is the elected leader block of its wave (leader round, elected creator); otherwise
+  floor when it is the unique leader block of its wave (`leader_block_for_wave`: leader round, elected
+  creator, no equivocation); otherwise
   the search runs as it would without a checkpoint floor.
 - checkpoint monotonicity, meaning the checkpoint cannot move backwards
 - branch continuity, meaning a new checkpoint must observe the current one

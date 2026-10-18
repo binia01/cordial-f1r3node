@@ -25,7 +25,7 @@ pub trait CheckpointGc<Id> {
     /// verify finality, and after pruning the evidence needed to verify it may
     /// be gone. Ordering trusts the installed checkpoint as a final leader.
     /// The previous-leader search only does so when the checkpoint is the
-    /// elected leader block of its wave. Prefer `checkpoint_after_finality` or
+    /// unique leader block of its wave (as `leader_block_for_wave` defines it). Prefer `checkpoint_after_finality` or
     /// `checkpoint_after_weighted_finality`, which prove finality first.
     fn prune_below_checkpoint(
         &mut self,
