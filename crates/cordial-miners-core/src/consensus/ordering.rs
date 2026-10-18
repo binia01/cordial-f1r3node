@@ -10,7 +10,7 @@ use crate::consensus::finality::{
     weighted_final_leader_for_wave,
 };
 use crate::consensus::round::depth;
-use crate::consensus::wave::wave_of_round;
+use crate::consensus::wave::{leader_round_of_wave, wave_of_round};
 use crate::consensus::weight_snapshot::WeightSnapshot;
 #[cfg(feature = "trace")]
 use crate::trace::{self, EmitOutputEvent, TauOrderEvent, TraceEvent};
@@ -355,17 +355,29 @@ where
 /// the checkpoint boundary, so re-checking ratification of the checkpoint can
 /// fail (see #170). Previous-leader searches therefore stop at the checkpoint
 /// instead of re-verifying it or walking below it.
-fn checkpoint_floor(
+fn checkpoint_floor<F>(
     blocklace: &Blocklace,
     current_leader: &BlockIdentity,
     wavelength: u64,
-) -> Option<(BlockIdentity, u64)> {
+    leader_selection: F,
+) -> Option<(BlockIdentity, u64)>
+where
+    F: Fn(u64) -> Option<NodeId>,
+{
     let checkpoint = blocklace.checkpoint()?;
     if checkpoint == current_leader || !blocklace.precedes(checkpoint, current_leader) {
         return None;
     }
     let round = depth(blocklace, checkpoint)?;
-    Some((checkpoint.clone(), wave_of_round(round, wavelength)?))
+    let wave = wave_of_round(round, wavelength)?;
+    // Only an elected leader block may stand in for the previous final
+    // leader; an explicit checkpoint at any other block is ignored here.
+    if leader_round_of_wave(wave, wavelength) != Some(round)
+        || leader_selection(wave).as_ref() != Some(&checkpoint.creator)
+    {
+        return None;
+    }
+    Some((checkpoint.clone(), wave))
 }
 
 /// Return the newest earlier final leader ratified by `current_leader`.
@@ -393,7 +405,8 @@ where
         return None;
     }
 
-    let checkpoint_floor = checkpoint_floor(blocklace, current_leader, wavelength);
+    let checkpoint_floor =
+        checkpoint_floor(blocklace, current_leader, wavelength, leader_selection);
     for wave in (0..current_wave).rev() {
         if let Some((checkpoint, checkpoint_wave)) = &checkpoint_floor
             && wave <= *checkpoint_wave
@@ -440,7 +453,8 @@ where
         return None;
     }
 
-    let checkpoint_floor = checkpoint_floor(blocklace, current_leader, wavelength);
+    let checkpoint_floor =
+        checkpoint_floor(blocklace, current_leader, wavelength, leader_selection);
     for wave in (0..current_wave).rev() {
         if let Some((checkpoint, checkpoint_wave)) = &checkpoint_floor
             && wave <= *checkpoint_wave
