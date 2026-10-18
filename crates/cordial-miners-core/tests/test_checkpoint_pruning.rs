@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cordial_miners_core::blocklace::Blocklace;
+use cordial_miners_core::consensus::finality::leader_block_for_wave;
 use cordial_miners_core::consensus::{
     CheckpointGc, checkpoint_after_finality, checkpoint_after_weighted_finality, depth,
     latest_final_leader, latest_weighted_final_leader, leader_blocks_of_wave,
@@ -528,5 +529,146 @@ fn explicit_non_leader_checkpoint_is_not_a_weighted_previous_final_leader() {
         prev,
         Some(x),
         "explicit non-leader checkpoint must not be returned as weighted previous final leader"
+    );
+}
+
+#[test]
+fn equivocating_leader_checkpoint_is_not_a_previous_final_leader() {
+    let validators = vec![node(1), node(2), node(3), node(4)];
+    let leader = round_robin_leader(&validators);
+    let mut lace = Blocklace::new();
+
+    let history = fully_connected_rounds(&validators, 15);
+    for block in &history {
+        insert(&mut lace, block);
+    }
+
+    let l = latest_final_leader(&lace, 3, 4, 1, leader).expect("should find a latest final leader");
+    let l_round = depth(&lace, &l).expect("depth of L");
+    let l_wave = wave_of_round(l_round, 3).expect("wave of L");
+    assert!(l_wave >= 2, "expected L in wave >= 2, got wave {l_wave}");
+
+    let w = l_wave - 1;
+    let r = w * 3;
+    let elected_creator = leader(w).expect("elected leader for wave w");
+    let c = history[r as usize * 4..r as usize * 4 + 4]
+        .iter()
+        .find(|b| b.identity.creator == elected_creator)
+        .expect("should find block C created by leader(w)")
+        .clone();
+
+    let parents: Vec<&Block> = history[(r - 1) as usize * 4..(r - 1) as usize * 4 + 4]
+        .iter()
+        .collect();
+    let e = child(&elected_creator, 10_000, &parents);
+    insert(&mut lace, &e);
+
+    assert_eq!(leader_block_for_wave(&lace, w, 3, leader), None);
+
+    lace.prune_below_checkpoint(&c.identity)
+        .expect("prune below checkpoint should succeed");
+
+    let prev = previous_final_leader(&lace, &l, 3, 4, 1, leader);
+    assert_ne!(
+        prev,
+        Some(c.identity.clone()),
+        "equivocating leader checkpoint must not be returned as previous final leader"
+    );
+}
+
+#[test]
+fn equivocating_leader_checkpoint_is_not_a_weighted_previous_final_leader() {
+    let validators = vec![node(1), node(2), node(3), node(4)];
+    let weights = bonds(&[(1, 25), (2, 25), (3, 25), (4, 25)]);
+    let leader = round_robin_leader(&validators);
+    let mut lace = Blocklace::new();
+
+    let history = fully_connected_rounds(&validators, 15);
+    for block in &history {
+        insert(&mut lace, block);
+    }
+
+    let l = latest_weighted_final_leader(&lace, 3, &weights, leader)
+        .expect("should find a latest weighted final leader");
+    let l_round = depth(&lace, &l).expect("depth of L");
+    let l_wave = wave_of_round(l_round, 3).expect("wave of L");
+    assert!(l_wave >= 2, "expected L in wave >= 2, got wave {l_wave}");
+
+    let w = l_wave - 1;
+    let r = w * 3;
+    let elected_creator = leader(w).expect("elected leader for wave w");
+    let c = history[r as usize * 4..r as usize * 4 + 4]
+        .iter()
+        .find(|b| b.identity.creator == elected_creator)
+        .expect("should find block C created by leader(w)")
+        .clone();
+
+    let parents: Vec<&Block> = history[(r - 1) as usize * 4..(r - 1) as usize * 4 + 4]
+        .iter()
+        .collect();
+    let e = child(&elected_creator, 10_000, &parents);
+    insert(&mut lace, &e);
+
+    assert_eq!(leader_block_for_wave(&lace, w, 3, leader), None);
+
+    lace.prune_below_checkpoint(&c.identity)
+        .expect("prune below checkpoint should succeed");
+
+    let prev = weighted_previous_final_leader(&lace, &l, 3, &weights, leader);
+    assert_ne!(
+        prev,
+        Some(c.identity.clone()),
+        "equivocating leader checkpoint must not be returned as weighted previous final leader"
+    );
+}
+
+#[test]
+fn legitimate_checkpoint_is_still_the_previous_final_leader_floor() {
+    let validators = vec![node(1), node(2), node(3), node(4)];
+    let leader = round_robin_leader(&validators);
+    let mut lace = Blocklace::new();
+
+    let history = fully_connected_rounds(&validators, 21);
+    for block in &history[..15 * 4] {
+        insert(&mut lace, block);
+    }
+
+    let report = checkpoint_after_finality(&mut lace, 3, 4, 1, leader)
+        .expect("checkpoint_after_finality should not error")
+        .expect("15 rounds should produce a checkpoint");
+    let c = report.checkpoint;
+
+    let c_round = depth(&lace, &c).expect("depth of C");
+    let c_wave = wave_of_round(c_round, 3).expect("wave of C");
+    assert_eq!(
+        leader_block_for_wave(&lace, c_wave, 3, leader),
+        Some(c.clone()),
+        "unique leader must still be found after pruning"
+    );
+
+    for block in &history[15 * 4..] {
+        insert(&mut lace, block);
+    }
+
+    let l = latest_final_leader(&lace, 3, 4, 1, leader).expect("should find a latest final leader");
+    let l_round = depth(&lace, &l).expect("depth of L");
+    let l_wave = wave_of_round(l_round, 3).expect("wave of L");
+    assert!(
+        l_wave > c_wave,
+        "expected L wave > C wave ({l_wave} > {c_wave})"
+    );
+
+    let mut current = l;
+    let mut reached_c = false;
+    while let Some(prev) = previous_final_leader(&lace, &current, 3, 4, 1, leader) {
+        if prev == c {
+            reached_c = true;
+            break;
+        }
+        current = prev;
+    }
+    assert!(
+        reached_c,
+        "previous_final_leader search should have reached checkpoint floor C"
     );
 }
