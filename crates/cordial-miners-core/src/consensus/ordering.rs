@@ -348,13 +348,16 @@ where
     previous
 }
 
-/// Return the checkpoint and its wave when it lies strictly below `current_leader`.
+/// Return the checkpoint and its wave when it lies strictly below `current_leader`
+/// and is the unique leader block of its wave (`leader_block_for_wave`).
 ///
 /// A checkpoint is a leader already proven final, and its stored prefix stands
 /// in for the pruned history beneath it. After pruning, `observe()` stops at
 /// the checkpoint boundary, so re-checking ratification of the checkpoint can
 /// fail (see #170). Previous-leader searches therefore stop at the checkpoint
-/// instead of re-verifying it or walking below it.
+/// instead of re-verifying it or walking below it. A checkpoint that is not
+/// the unique leader block of its wave (a non-leader or equivocating explicit
+/// checkpoint) is not used as a floor.
 fn checkpoint_floor<F>(
     blocklace: &Blocklace,
     current_leader: &BlockIdentity,
