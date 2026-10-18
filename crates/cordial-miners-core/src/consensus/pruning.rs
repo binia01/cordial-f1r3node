@@ -15,6 +15,18 @@ use crate::types::{BlockIdentity, NodeId};
 /// Trait for DAG stores that can expose and advance a finalized checkpoint.
 pub trait CheckpointGc<Id> {
     fn current_checkpoint(&self) -> Option<&Id>;
+
+    /// Prune every block observed by `checkpoint` (except the protected closure)
+    /// and install `checkpoint` as the new in-memory genesis.
+    ///
+    /// # Precondition
+    ///
+    /// `checkpoint` must already be proven final. This method does **not**
+    /// verify finality, and after pruning the evidence needed to verify it may
+    /// be gone. Ordering trusts the installed checkpoint as a final leader.
+    /// The previous-leader search only does so when the checkpoint is the
+    /// elected leader block of its wave. Prefer `checkpoint_after_finality` or
+    /// `checkpoint_after_weighted_finality`, which prove finality first.
     fn prune_below_checkpoint(
         &mut self,
         checkpoint: &Id,
