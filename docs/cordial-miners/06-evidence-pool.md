@@ -83,3 +83,20 @@ The expected lifecycle is:
 4. A higher layer verifies signatures and packages the retained raw blocks into
    whatever proof format the host chain requires.
 
+
+
+## Verified proof boundary
+
+Retention is not authentication. verify_equivocation_evidence consumes a raw
+CordialEquivocationEvidence and a validated blocklace, and returns a private-
+invariant VerifiedEquivocationEvidence only after checking signed contents,
+creator, distinct consensus identities, complete ancestry, derived round and
+incomparability. Duplicate blocks, honest chains and unresolved/pruned ancestry
+cannot establish equivocation. The evidence round is the earliest conflicting
+depth, including when branches have different depths.
+
+Canonical bytes include full signed blocks and deterministically sorted
+predecessor references. The verified type has no unchecked public constructor,
+deserializer or mutable accessor. It grants no authority to punish:
+cordial-por requires a separate explicit policy. The f1r3node adapter approves
+only exact signed authorization payloads included in trusted finalized output.
