@@ -215,6 +215,14 @@ rating-policy documents when the rule is implemented. Preserve v1 decoding
 for existing durable histories or provide an explicit migration; do not
 reinterpret an old commitment under the new rule.
 
+The rating-format slice now has a v2 source-bound signing payload, signature
+verification, canonical batch verification, and a versioned checkpoint rating
+envelope and batch encoder. The v2 envelope decoder checks structure; signature
+and finalized-window evidence checks belong to admission. The live rating
+collector and exchange still use v1 wave ratings. Checkpoint evidence admission,
+v2 exchange and durable lifecycle integration remain pending before the shadow
+runner can commit checkpoint-driven rounds.
+
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
 eligible checkpoint, and restart recovers its cursor, weights, and commitment.
