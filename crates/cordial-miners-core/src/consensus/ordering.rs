@@ -7,7 +7,7 @@ use crate::consensus::approval::{ApprovalMemo, approves_with_memo};
 use crate::consensus::cordiality::{ratifies, weighted_ratifies};
 use crate::consensus::finality::{
     final_leader_for_wave, latest_final_leader, latest_weighted_final_leader,
-    weighted_final_leader_for_wave,
+    leader_block_for_wave, weighted_final_leader_for_wave,
 };
 use crate::consensus::round::depth;
 use crate::consensus::wave::wave_of_round;
@@ -348,6 +348,42 @@ where
     previous
 }
 
+/// Return the checkpoint and its wave when it lies strictly below `current_leader`
+/// and is the unique leader block of its wave (`leader_block_for_wave`).
+///
+/// A checkpoint is a leader already proven final, and its stored prefix stands
+/// in for the pruned history beneath it. After pruning, `observe()` stops at
+/// the checkpoint boundary, so re-checking ratification of the checkpoint can
+/// fail (see #170). Previous-leader searches therefore stop at the checkpoint
+/// instead of re-verifying it or walking below it. A checkpoint that is not
+/// the unique leader block of its wave (a non-leader or equivocating explicit
+/// checkpoint) is not used as a floor.
+fn checkpoint_floor<F>(
+    blocklace: &Blocklace,
+    current_leader: &BlockIdentity,
+    wavelength: u64,
+    leader_selection: F,
+) -> Option<(BlockIdentity, u64)>
+where
+    F: Fn(u64) -> Option<NodeId>,
+{
+    let checkpoint = blocklace.checkpoint()?;
+    if checkpoint == current_leader || !blocklace.precedes(checkpoint, current_leader) {
+        return None;
+    }
+    let round = depth(blocklace, checkpoint)?;
+    let wave = wave_of_round(round, wavelength)?;
+    // Only the unique leader block of its wave may stand in for the previous
+    // final leader (same definition as finality; an equivocating or
+    // non-leader explicit checkpoint is ignored here).
+    if leader_block_for_wave(blocklace, wave, wavelength, leader_selection).as_ref()
+        != Some(checkpoint)
+    {
+        return None;
+    }
+    Some((checkpoint.clone(), wave))
+}
+
 /// Return the newest earlier final leader ratified by `current_leader`.
 ///
 /// This is the recursion edge used by `tau`: given a current leader block,
@@ -373,7 +409,14 @@ where
         return None;
     }
 
+    let checkpoint_floor =
+        checkpoint_floor(blocklace, current_leader, wavelength, leader_selection);
     for wave in (0..current_wave).rev() {
+        if let Some((checkpoint, checkpoint_wave)) = &checkpoint_floor
+            && wave <= *checkpoint_wave
+        {
+            return Some(checkpoint.clone());
+        }
         let Some(previous_leader) =
             final_leader_for_wave(blocklace, wave, wavelength, n, f, leader_selection)
         else {
@@ -414,7 +457,14 @@ where
         return None;
     }
 
+    let checkpoint_floor =
+        checkpoint_floor(blocklace, current_leader, wavelength, leader_selection);
     for wave in (0..current_wave).rev() {
+        if let Some((checkpoint, checkpoint_wave)) = &checkpoint_floor
+            && wave <= *checkpoint_wave
+        {
+            return Some(checkpoint.clone());
+        }
         let Some(previous_leader) =
             weighted_final_leader_for_wave(blocklace, wave, wavelength, bonds, leader_selection)
         else {
