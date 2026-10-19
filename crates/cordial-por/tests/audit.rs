@@ -1,6 +1,7 @@
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    CheckpointReputationBlockContext, MissingEntryPolicy, PorConfig, PorError, RatingRecord,
+    CHECKPOINT_REPUTATION_BLOCK_VERSION, CheckpointReputationBlockContext, MissingEntryPolicy,
+    PorConfig, PorError, RatingRecord,
     RatingSourceCheckpoint, ReputationBlock, ReputationBlockContext, ReputationEntry,
     ReputationList, ReputationVector, build_checkpoint_reputation_block, build_rating_batch,
     build_reputation_block, clamp_reputation_value, replay_reputation_transition,
@@ -110,7 +111,7 @@ fn block_for(
 }
 
 #[test]
-fn v1_audit_does_not_accept_a_checkpoint_block() {
+fn wave_audit_does_not_accept_a_checkpoint_block() {
     let ratings = ratings();
     let config = config();
     let batch = build_rating_batch(ROUND, ratings.clone(), &config).unwrap();
@@ -134,7 +135,9 @@ fn v1_audit_does_not_accept_a_checkpoint_block() {
     .unwrap();
     assert_eq!(
         verify_reputation_transition(&previous_reputation(), &ratings, &block, context(), &config),
-        Err(PorError::UnsupportedReputationBlockAuditVersion(2))
+        Err(PorError::UnsupportedReputationBlockAuditVersion(
+            CHECKPOINT_REPUTATION_BLOCK_VERSION
+        ))
     );
 }
 

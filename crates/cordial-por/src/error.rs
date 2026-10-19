@@ -54,6 +54,7 @@ pub enum PorError {
     PreviousReputationBlockShardMismatch,
     ReputationBlockShardMismatch,
     ReputationBlockSourceWaveMismatch,
+    ReputationBlockSourceCheckpointMismatch,
     UnsupportedReputationBlockAuditVersion(u16),
     ReputationBlockPreviousHashMismatch,
     ReputationBlockConfigHashMismatch,
@@ -251,6 +252,10 @@ impl fmt::Display for PorError {
             Self::ReputationBlockSourceWaveMismatch => write!(
                 f,
                 "reputation block source wave does not match the audit context"
+            ),
+            Self::ReputationBlockSourceCheckpointMismatch => write!(
+                f,
+                "reputation block source checkpoint does not match the audit context"
             ),
             Self::UnsupportedReputationBlockAuditVersion(version) => {
                 write!(

@@ -24,7 +24,8 @@ pub mod weights;
 
 pub use audit::{
     replay_reputation_transition, replay_reputation_transition_with_penalties,
-    verify_reputation_transition, verify_reputation_transition_with_penalties,
+    verify_checkpoint_reputation_transition, verify_reputation_transition,
+    verify_reputation_transition_with_penalties,
 };
 pub use commitments::{
     MAX_PENALTY_EVIDENCE_LEN, POR_CHECKPOINT_RATING_BATCH_COMMITMENT_DOMAIN,
