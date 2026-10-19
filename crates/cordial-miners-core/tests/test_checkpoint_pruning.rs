@@ -381,32 +381,60 @@ fn round_robin_leader(validators: &[NodeId]) -> impl Fn(u64) -> Option<NodeId> +
     move |wave| Some(validators[(wave as usize) % validators.len()].clone())
 }
 
+/// Feed `blocks` one at a time into a pruned blocklace (advancing the
+/// checkpoint after every insert via `advance`) and an unpruned reference,
+/// and assert at every step that the pruned output equals the reference
+/// output and extends the previous pruned output. Returns how many times the
+/// checkpoint advanced.
+fn assert_pruned_output_matches_reference(
+    blocks: &[Block],
+    mut advance: impl FnMut(&mut Blocklace) -> bool,
+    order: impl Fn(&Blocklace) -> Vec<BlockIdentity>,
+    label: &str,
+) -> usize {
+    let mut pruned = Blocklace::new();
+    let mut reference = Blocklace::new();
+    let mut previous = Vec::new();
+    let mut advances = 0usize;
+
+    for (step, block) in blocks.iter().enumerate() {
+        insert(&mut pruned, block);
+        insert(&mut reference, block);
+        if advance(&mut pruned) {
+            advances += 1;
+        }
+
+        let output = order(&pruned);
+        let expected = order(&reference);
+        assert_eq!(
+            output, expected,
+            "{label}: pruned output differs from the unpruned reference at step {step}"
+        );
+        assert!(
+            output.starts_with(&previous),
+            "{label}: output dropped finalized blocks at step {step}"
+        );
+        previous = output;
+    }
+
+    advances
+}
+
 #[test]
 fn repeated_weighted_checkpoint_advances_preserve_finalized_prefix() {
     let validators = vec![node(1), node(2), node(3), node(4)];
     let weights = bonds(&[(1, 25), (2, 25), (3, 25), (4, 25)]);
     let leader = round_robin_leader(&validators);
-    let mut blocklace = Blocklace::new();
-    let mut previous_output = Vec::new();
-    let mut advances = 0usize;
-
-    for (step, block) in fully_connected_rounds(&validators, 15).iter().enumerate() {
-        insert(&mut blocklace, block);
-        if checkpoint_after_weighted_finality(&mut blocklace, 3, &weights, leader)
-            .expect("weighted checkpoint advance should not error")
-            .is_some()
-        {
-            advances += 1;
-        }
-
-        let output = weighted_tau(&blocklace, 3, &weights, leader).expect("weighted tau");
-        assert!(
-            output.starts_with(&previous_output),
-            "weighted tau dropped finalized blocks at step {step}"
-        );
-        previous_output = output;
-    }
-
+    let advances = assert_pruned_output_matches_reference(
+        &fully_connected_rounds(&validators, 15),
+        |lace| {
+            checkpoint_after_weighted_finality(lace, 3, &weights, leader)
+                .expect("weighted checkpoint advance should not error")
+                .is_some()
+        },
+        |lace| weighted_tau(lace, 3, &weights, leader).expect("weighted tau"),
+        "weighted",
+    );
     assert!(
         advances >= 3,
         "expected repeated checkpoint advances, got {advances}"
@@ -417,27 +445,37 @@ fn repeated_weighted_checkpoint_advances_preserve_finalized_prefix() {
 fn repeated_checkpoint_advances_preserve_finalized_prefix() {
     let validators = vec![node(1), node(2), node(3), node(4)];
     let leader = round_robin_leader(&validators);
-    let mut blocklace = Blocklace::new();
-    let mut previous_output = Vec::new();
-    let mut advances = 0usize;
+    let advances = assert_pruned_output_matches_reference(
+        &fully_connected_rounds(&validators, 15),
+        |lace| {
+            checkpoint_after_finality(lace, 3, 4, 1, leader)
+                .expect("checkpoint advance should not error")
+                .is_some()
+        },
+        |lace| tau(lace, 3, 4, 1, leader).expect("tau"),
+        "unweighted",
+    );
+    assert!(
+        advances >= 3,
+        "expected repeated checkpoint advances, got {advances}"
+    );
+}
 
-    for (step, block) in fully_connected_rounds(&validators, 15).iter().enumerate() {
-        insert(&mut blocklace, block);
-        if checkpoint_after_finality(&mut blocklace, 3, 4, 1, leader)
-            .expect("checkpoint advance should not error")
-            .is_some()
-        {
-            advances += 1;
-        }
-
-        let output = tau(&blocklace, 3, 4, 1, leader).expect("tau");
-        assert!(
-            output.starts_with(&previous_output),
-            "tau dropped finalized blocks at step {step}"
-        );
-        previous_output = output;
-    }
-
+#[test]
+fn repeated_weighted_checkpoint_advances_match_reference_with_unequal_stake() {
+    let validators = vec![node(1), node(2), node(3), node(4)];
+    let weights = bonds(&[(1, 40), (2, 30), (3, 20), (4, 10)]);
+    let leader = round_robin_leader(&validators);
+    let advances = assert_pruned_output_matches_reference(
+        &fully_connected_rounds(&validators, 15),
+        |lace| {
+            checkpoint_after_weighted_finality(lace, 3, &weights, leader)
+                .expect("weighted checkpoint advance should not error")
+                .is_some()
+        },
+        |lace| weighted_tau(lace, 3, &weights, leader).expect("weighted tau"),
+        "weighted, unequal stake",
+    );
     assert!(
         advances >= 3,
         "expected repeated checkpoint advances, got {advances}"
