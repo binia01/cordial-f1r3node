@@ -71,6 +71,7 @@ pub enum PorError {
     ReputationStateSnapshotRoundMismatch,
     ReputationStateSnapshotExclusionMismatch,
     ReputationStateSnapshotBlockRoundMismatch,
+    ReputationStateSnapshotBlockVersionMismatch,
     ReputationStateSnapshotHasPendingRatings,
     // Audit-replay-specific errors
     MissingReputationBlockEntry,
@@ -315,6 +316,12 @@ impl fmt::Display for PorError {
                 write!(
                     f,
                     "reputation state snapshot latest block is from another round"
+                )
+            }
+            Self::ReputationStateSnapshotBlockVersionMismatch => {
+                write!(
+                    f,
+                    "reputation state snapshot version does not match its block"
                 )
             }
             Self::ReputationStateSnapshotHasPendingRatings => {

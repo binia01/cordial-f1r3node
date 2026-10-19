@@ -3,8 +3,8 @@ use cordial_miners_core::{
     crypto::{Blake2b256Hasher, Hasher},
 };
 use cordial_por::{
-    MAX_REPUTATION_STATE_NODE_ID_LEN, MissingEntryPolicy, POR_STATE_SNAPSHOT_MAGIC,
-    POR_STATE_SNAPSHOT_VERSION, PorConfig, PorError, RatingRecord, ReputationBlockContext,
+    MAX_REPUTATION_STATE_NODE_ID_LEN, MissingEntryPolicy, POR_CHECKPOINT_STATE_SNAPSHOT_VERSION,
+    POR_STATE_SNAPSHOT_MAGIC, PorConfig, PorError, RatingRecord, ReputationBlockContext,
     ReputationEntry, ReputationState, ReputationVector, build_rating_batch, build_reputation_block,
     decode_reputation_state_snapshot, encode_reputation_state_snapshot,
     replay_reputation_transition,
@@ -131,11 +131,11 @@ fn rejects_unsupported_or_truncated_snapshots() {
     let mut unsupported = encoded.clone();
     let version_offset = POR_STATE_SNAPSHOT_MAGIC.len();
     unsupported[version_offset..version_offset + 2]
-        .copy_from_slice(&(POR_STATE_SNAPSHOT_VERSION + 1).to_be_bytes());
+        .copy_from_slice(&(POR_CHECKPOINT_STATE_SNAPSHOT_VERSION + 1).to_be_bytes());
     assert_eq!(
         decode_reputation_state_snapshot(&unsupported),
         Err(PorError::UnsupportedReputationStateSnapshotVersion(
-            POR_STATE_SNAPSHOT_VERSION + 1
+            POR_CHECKPOINT_STATE_SNAPSHOT_VERSION + 1
         ))
     );
 

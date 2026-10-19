@@ -55,8 +55,9 @@ pub use ratings::{
 };
 pub use snapshot::{
     MAX_REPUTATION_STATE_ENTRIES, MAX_REPUTATION_STATE_NODE_ID_LEN,
-    MAX_REPUTATION_STATE_SNAPSHOT_LEN, POR_STATE_SNAPSHOT_MAGIC, POR_STATE_SNAPSHOT_VERSION,
-    decode_reputation_state_snapshot, encode_reputation_state_snapshot,
+    MAX_REPUTATION_STATE_SNAPSHOT_LEN, POR_CHECKPOINT_STATE_SNAPSHOT_VERSION,
+    POR_STATE_SNAPSHOT_MAGIC, POR_STATE_SNAPSHOT_VERSION, decode_reputation_state_snapshot,
+    encode_reputation_state_snapshot,
 };
 pub use state::ReputationState;
 
