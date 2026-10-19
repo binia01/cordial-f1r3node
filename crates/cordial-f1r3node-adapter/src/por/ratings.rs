@@ -13,15 +13,18 @@ use cordial_miners_core::{
 use cordial_por::{
     AdmittedInteraction, PorConfig, PorError, RatingBatch, RatingRecord, RatingSourceCheckpoint,
     ReputationRound, ReputationState, build_rating_batch, build_rating_from_interaction,
-    canonical_checkpoint_rating_payload, canonical_rating_payload, score_admitted_interaction,
-    validate_rating,
+    canonical_checkpoint_rating_payload, canonical_rating_payload,
+    score_admitted_checkpoint_interaction, score_admitted_interaction, validate_rating,
 };
 
 use crate::ordered_output::OrderedFinalizedOutput;
 
 use super::{
-    finality::FinalizedRatingRound,
-    interactions::{PorInteractionError, admit_finalized_block_production_interactions},
+    finality::{FinalizedPrefixCheckpoint, FinalizedRatingRound},
+    interactions::{
+        PorInteractionError, admit_checkpoint_block_production_interactions,
+        admit_finalized_block_production_interactions,
+    },
 };
 
 /// Failures at the adapter's signed-rating boundary.
@@ -184,6 +187,42 @@ pub fn build_finalized_block_production_rating_batch(
         .collect::<Result<Vec<_>, _>>()?;
 
     build_verified_rating_batch(opened.rating_round, ratings, config)
+}
+
+/// Build checkpoint-bound ratings from only the selected finalized window.
+///
+/// The adapter proves the source prefix and block references before the core
+/// admits participants against the preceding PoR state. This function returns
+/// no partial batch if evidence, signing, or verification fails.
+pub fn build_finalized_checkpoint_rating_batch(
+    blocklace: &Blocklace,
+    output: &OrderedFinalizedOutput,
+    checkpoint: &FinalizedPrefixCheckpoint,
+    rater: &NodeId,
+    state: &ReputationState,
+    config: &PorConfig,
+    private_key: &[u8],
+) -> Result<RatingBatch, PorRatingError> {
+    let admitted = admit_checkpoint_block_production_interactions(
+        blocklace, output, checkpoint, rater, state,
+    )?;
+    let source = checkpoint.rating_source();
+    let ratings = admitted
+        .into_iter()
+        .map(|interaction| {
+            let evidence = interaction.evidence();
+            let mut rating = RatingRecord::new(
+                source.round,
+                evidence.rater.clone(),
+                evidence.recipient.clone(),
+                score_admitted_checkpoint_interaction(&interaction, config)?,
+                Vec::new(),
+            );
+            rating.interaction_ref = Some(evidence.evidence_ref.clone());
+            sign_checkpoint_rating(rating, &source, config, private_key)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    build_verified_checkpoint_rating_batch(&source, ratings, config)
 }
 
 /// Verify a rating's DER-encoded secp256k1 signature against its rater key.

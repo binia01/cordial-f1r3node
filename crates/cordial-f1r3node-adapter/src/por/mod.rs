@@ -41,8 +41,9 @@ pub use history::{
     PorReputationBlockHistory, PorReputationBlockHistoryError,
 };
 pub use interactions::{
-    PorInteractionError, admit_finalized_block_production_interactions,
-    extract_block_production_evidence, validate_finalized_rating_round,
+    PorInteractionError, admit_checkpoint_block_production_interactions,
+    admit_finalized_block_production_interactions, extract_block_production_evidence,
+    extract_checkpoint_block_production_evidence, validate_finalized_rating_round,
 };
 pub use lifecycle::cutoff::{
     DEFAULT_RATING_CUTOFF_WAVE_LAG, PorRatingCutoffError, PorRatingRoundCutoffPolicy,
@@ -61,10 +62,10 @@ pub use persistence::{
 };
 pub use ratings::{
     PorRatingError, build_finalized_block_production_rating_batch,
-    build_verified_checkpoint_rating_batch, build_verified_rating_batch,
-    checkpoint_rating_signing_hash, rating_signing_hash, sign_admitted_interaction,
-    sign_checkpoint_rating, validate_checkpoint_signed_rating, validate_signed_rating,
-    verify_checkpoint_rating_signature, verify_rating_signature,
+    build_finalized_checkpoint_rating_batch, build_verified_checkpoint_rating_batch,
+    build_verified_rating_batch, checkpoint_rating_signing_hash, rating_signing_hash,
+    sign_admitted_interaction, sign_checkpoint_rating, validate_checkpoint_signed_rating,
+    validate_signed_rating, verify_checkpoint_rating_signature, verify_rating_signature,
 };
 pub use runtime::{CommittedPorRound, PorRuntime, PorRuntimeError};
 pub use transition::{AppliedPorReputationRound, apply_completed_reputation_round};

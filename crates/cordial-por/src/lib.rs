@@ -38,8 +38,10 @@ pub use commitments::{
 pub use config::{MissingEntryPolicy, PorConfig};
 pub use error::PorError;
 pub use interactions::{
-    AdmittedInteraction, InteractionEvidence, InteractionKind, admit_interaction_evidence,
-    build_rating_from_interaction, score_admitted_interaction,
+    AdmittedCheckpointInteraction, AdmittedInteraction, CheckpointInteractionEvidence,
+    InteractionEvidence, InteractionKind, admit_checkpoint_interaction_evidence,
+    admit_interaction_evidence, build_rating_from_interaction,
+    score_admitted_checkpoint_interaction, score_admitted_interaction,
 };
 pub use liquid_rank::compute_liquid_rank_contribution;
 pub use matrix::build_rating_matrix;
