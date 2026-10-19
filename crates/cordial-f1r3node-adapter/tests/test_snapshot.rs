@@ -221,17 +221,13 @@ fn latest_messages_map_tracks_each_validator_tip() {
     // v1 extends
     let mut preds_a = HashSet::new();
     preds_a.insert(g.identity.clone());
-    let mut p_a = simple_payload(1, vec![]);
-    p_a.state.post_state_hash = vec![1; 32];
-    let b1a = make_block(v1.clone(), p_a, preds_a, 2);
+    let b1a = make_block(v1.clone(), simple_payload(1, vec![]), preds_a, 2);
     bl.insert(b1a.clone(), &MockVerifier).unwrap();
 
     // v2 builds on g
     let mut preds_b = HashSet::new();
     preds_b.insert(g.identity.clone());
-    let mut p_b = simple_payload(1, vec![]);
-    p_b.state.post_state_hash = vec![2; 32];
-    let b2a = make_block(v2.clone(), p_b, preds_b, 3);
+    let b2a = make_block(v2.clone(), simple_payload(1, vec![]), preds_b, 3);
     bl.insert(b2a.clone(), &MockVerifier).unwrap();
 
     let bonds_map = bonds(&[(1, 100), (2, 100)]);
@@ -287,15 +283,9 @@ fn last_finalized_block_matches_finality_detector() {
 
     let mut r1_preds = HashSet::new();
     r1_preds.insert(g.identity.clone());
-    let mut p2 = simple_payload(1, vec![]);
-    p2.state.post_state_hash = vec![2; 32];
-    let mut p3 = simple_payload(1, vec![]);
-    p3.state.post_state_hash = vec![3; 32];
-    let mut p4 = simple_payload(1, vec![]);
-    p4.state.post_state_hash = vec![4; 32];
-    let b2 = make_block(v2.clone(), p2, r1_preds.clone(), 2);
-    let b3 = make_block(v3.clone(), p3, r1_preds.clone(), 3);
-    let b4 = make_block(v4.clone(), p4, r1_preds, 4);
+    let b2 = make_block(v2.clone(), simple_payload(1, vec![]), r1_preds.clone(), 2);
+    let b3 = make_block(v3.clone(), simple_payload(1, vec![]), r1_preds.clone(), 3);
+    let b4 = make_block(v4.clone(), simple_payload(1, vec![]), r1_preds, 4);
     bl.insert(b2.clone(), &MockVerifier).unwrap();
     bl.insert(b3.clone(), &MockVerifier).unwrap();
     bl.insert(b4.clone(), &MockVerifier).unwrap();
@@ -304,15 +294,9 @@ fn last_finalized_block_matches_finality_detector() {
     r2_preds.insert(b2.identity.clone());
     r2_preds.insert(b3.identity.clone());
     r2_preds.insert(b4.identity.clone());
-    let mut c2_p = simple_payload(2, vec![]);
-    c2_p.state.post_state_hash = vec![12; 32];
-    let mut c3_p = simple_payload(2, vec![]);
-    c3_p.state.post_state_hash = vec![13; 32];
-    let mut c4_p = simple_payload(2, vec![]);
-    c4_p.state.post_state_hash = vec![14; 32];
-    let c2 = make_block(v2.clone(), c2_p, r2_preds.clone(), 5);
-    let c3 = make_block(v3.clone(), c3_p, r2_preds.clone(), 6);
-    let c4 = make_block(v4.clone(), c4_p, r2_preds, 7);
+    let c2 = make_block(v2.clone(), simple_payload(2, vec![]), r2_preds.clone(), 5);
+    let c3 = make_block(v3.clone(), simple_payload(2, vec![]), r2_preds.clone(), 6);
+    let c4 = make_block(v4.clone(), simple_payload(2, vec![]), r2_preds, 7);
     bl.insert(c2, &MockVerifier).unwrap();
     bl.insert(c3, &MockVerifier).unwrap();
     bl.insert(c4, &MockVerifier).unwrap();
@@ -353,15 +337,9 @@ fn no_finality_when_single_validator_has_no_supermajority() {
     // With 3 independent genesis blocks from 3 validators, none of them are
     // in the ancestry of > 2/3 of the validators' tips, so no LFB.
     let mut bl = Blocklace::new();
-    let mut p1 = simple_payload(0, vec![]);
-    p1.state.post_state_hash = vec![1; 32];
-    let mut p2 = simple_payload(0, vec![]);
-    p2.state.post_state_hash = vec![2; 32];
-    let mut p3 = simple_payload(0, vec![]);
-    p3.state.post_state_hash = vec![3; 32];
-    let g1 = make_block(node(1), p1, HashSet::new(), 1);
-    let g2 = make_block(node(2), p2, HashSet::new(), 2);
-    let g3 = make_block(node(3), p3, HashSet::new(), 3);
+    let g1 = make_block(node(1), simple_payload(0, vec![]), HashSet::new(), 1);
+    let g2 = make_block(node(2), simple_payload(0, vec![]), HashSet::new(), 2);
+    let g3 = make_block(node(3), simple_payload(0, vec![]), HashSet::new(), 3);
     bl.insert(g1, &MockVerifier).unwrap();
     bl.insert(g2, &MockVerifier).unwrap();
     bl.insert(g3, &MockVerifier).unwrap();
@@ -584,323 +562,4 @@ fn undecodable_payload_produces_error() {
     let bonds_map = bonds(&[(1, 100)]);
     let err = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap_err();
     assert!(matches!(err, SnapshotError::PayloadDecodeFailed { .. }));
-}
-
-// ── Ambiguous content hash resolution (Issue #278) ─────────────────────────
-
-fn test_signing_key(seed: u8) -> Vec<u8> {
-    let mut key = vec![0u8; 32];
-    key[0] = seed;
-    for (i, item) in key.iter_mut().enumerate().skip(1) {
-        *item = ((seed as u16).wrapping_mul(i as u16 + 1)) as u8;
-    }
-    key
-}
-
-fn derive_snapshot_key(content_hash: &[u8; 32], creator: &NodeId) -> Vec<u8> {
-    use cordial_f1r3node_adapter::crypto_bridge::{Blake2b256Hasher, Hasher};
-    let mut input = Vec::with_capacity(23 + 32 + creator.0.len());
-    input.extend_from_slice(b"cordial-snapshot-key-v1");
-    input.extend_from_slice(content_hash);
-    input.extend_from_slice(&creator.0);
-    Blake2b256Hasher.hash(&input).to_vec()
-}
-
-#[test]
-fn same_content_from_two_creators_stays_distinct() {
-    let mut bl = Blocklace::new();
-    let v1 = node(1);
-    let v2 = node(2);
-    let payload = simple_payload(1, vec![]);
-    let b1 = make_block(v1.clone(), payload.clone(), HashSet::new(), 1);
-    let b2 = make_block(v2.clone(), payload, HashSet::new(), 2);
-    assert_eq!(b1.identity.content_hash, b2.identity.content_hash);
-
-    bl.insert(b1.clone(), &MockVerifier).unwrap();
-    bl.insert(b2.clone(), &MockVerifier).unwrap();
-
-    let bonds_map = bonds(&[(1, 100), (2, 100)]);
-    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    assert_eq!(snap.dag.dag_set.len(), 2);
-    let key1 = derive_snapshot_key(&b1.identity.content_hash, &v1);
-    let key2 = derive_snapshot_key(&b2.identity.content_hash, &v2);
-
-    assert!(snap.dag.dag_set.contains(&key1));
-    assert!(snap.dag.dag_set.contains(&key2));
-    assert_ne!(key1, key2);
-    assert_ne!(key1, b1.identity.content_hash.to_vec());
-    assert_ne!(key2, b2.identity.content_hash.to_vec());
-}
-
-#[test]
-fn same_content_keys_are_deterministic_and_order_independent() {
-    let v_a = node(1);
-    let v_b = node(2);
-    let payload = simple_payload(1, vec![]);
-    let b_a = make_block(v_a.clone(), payload.clone(), HashSet::new(), 1);
-    let b_b = make_block(v_b.clone(), payload, HashSet::new(), 2);
-    let bonds_map = bonds(&[(1, 100), (2, 100)]);
-
-    let mut bl1 = Blocklace::new();
-    bl1.insert(b_a.clone(), &MockVerifier).unwrap();
-    bl1.insert(b_b.clone(), &MockVerifier).unwrap();
-    let snap1 = build_snapshot(&bl1, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    let mut bl2 = Blocklace::new();
-    bl2.insert(b_b.clone(), &MockVerifier).unwrap();
-    bl2.insert(b_a.clone(), &MockVerifier).unwrap();
-    let snap2 = build_snapshot(&bl2, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    assert_eq!(snap1.dag.dag_set, snap2.dag.dag_set);
-    assert_eq!(snap1.dag.block_number_map, snap2.dag.block_number_map);
-    assert_eq!(snap1.dag.child_map, snap2.dag.child_map);
-
-    let expected_a = derive_snapshot_key(&b_a.identity.content_hash, &v_a);
-    let expected_b = derive_snapshot_key(&b_b.identity.content_hash, &v_b);
-    assert!(snap1.dag.dag_set.contains(&expected_a));
-    assert!(snap1.dag.dag_set.contains(&expected_b));
-}
-
-#[test]
-fn child_edges_follow_the_right_creator() {
-    let mut bl = Blocklace::new();
-    let v_a = node(1);
-    let v_b = node(2);
-    let v_c = node(3);
-
-    let payload = simple_payload(1, vec![]);
-    let b_a = make_block(v_a.clone(), payload.clone(), HashSet::new(), 1);
-    let b_b = make_block(v_b.clone(), payload, HashSet::new(), 2);
-
-    let mut child_predecessors = HashSet::new();
-    child_predecessors.insert(b_a.identity.clone());
-    let child = make_block(
-        v_c.clone(),
-        simple_payload(2, vec![]),
-        child_predecessors,
-        3,
-    );
-
-    bl.insert(b_a.clone(), &MockVerifier).unwrap();
-    bl.insert(b_b.clone(), &MockVerifier).unwrap();
-    bl.insert(child.clone(), &MockVerifier).unwrap();
-
-    let bonds_map = bonds(&[(1, 100), (2, 100), (3, 100)]);
-    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    let key_a = derive_snapshot_key(&b_a.identity.content_hash, &v_a);
-    let key_b = derive_snapshot_key(&b_b.identity.content_hash, &v_b);
-    let key_child = child.identity.content_hash.to_vec();
-
-    let children_of_a = snap
-        .dag
-        .child_map
-        .get(&key_a)
-        .expect("child_map for A exists");
-    assert!(children_of_a.contains(&key_child));
-
-    if let Some(children_of_b) = snap.dag.child_map.get(&key_b) {
-        assert!(!children_of_b.contains(&key_child));
-    }
-}
-
-#[test]
-fn latest_messages_keep_each_creator() {
-    let mut bl = Blocklace::new();
-    let v_a = node(1);
-    let v_b = node(2);
-    let payload = simple_payload(1, vec![]);
-    let b_a = make_block(v_a.clone(), payload.clone(), HashSet::new(), 1);
-    let b_b = make_block(v_b.clone(), payload, HashSet::new(), 2);
-
-    bl.insert(b_a.clone(), &MockVerifier).unwrap();
-    bl.insert(b_b.clone(), &MockVerifier).unwrap();
-
-    let bonds_map = bonds(&[(1, 100), (2, 100)]);
-    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    let key_a = derive_snapshot_key(&b_a.identity.content_hash, &v_a);
-    let key_b = derive_snapshot_key(&b_b.identity.content_hash, &v_b);
-
-    assert_eq!(snap.dag.latest_messages_map.get(&v_a.0), Some(&key_a));
-    assert_eq!(snap.dag.latest_messages_map.get(&v_b.0), Some(&key_b));
-    assert_ne!(key_a, key_b);
-}
-
-#[test]
-fn snapshot_references_are_all_in_dag_set() {
-    let mut bl = Blocklace::new();
-    let v_a = node(1);
-    let v_b = node(2);
-    let v_c = node(3);
-
-    let payload = simple_payload(1, vec![]);
-    let b_a = make_block(v_a.clone(), payload.clone(), HashSet::new(), 1);
-    let b_b = make_block(v_b.clone(), payload, HashSet::new(), 2);
-
-    let mut preds = HashSet::new();
-    preds.insert(b_a.identity.clone());
-    preds.insert(b_b.identity.clone());
-    let b_c = make_block(v_c.clone(), simple_payload(2, vec![]), preds, 3);
-
-    bl.insert(b_a.clone(), &MockVerifier).unwrap();
-    bl.insert(b_b.clone(), &MockVerifier).unwrap();
-    bl.insert(b_c.clone(), &MockVerifier).unwrap();
-
-    let bonds_map = bonds(&[(1, 100), (2, 100), (3, 100)]);
-    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    for tip in &snap.tips {
-        assert!(snap.dag.dag_set.contains(tip));
-    }
-    if !snap.lca.is_empty() {
-        assert!(snap.dag.dag_set.contains(&snap.lca));
-    }
-    for just in &snap.justifications {
-        if !just.latest_block_hash.is_empty() {
-            assert!(snap.dag.dag_set.contains(&just.latest_block_hash));
-        }
-    }
-    for fb in &snap.ordered_finalized_blocks {
-        assert!(snap.dag.dag_set.contains(fb));
-    }
-    for fb in &snap.dag.finalized_blocks_set {
-        assert!(snap.dag.dag_set.contains(fb));
-    }
-    for msg in &snap.parents {
-        assert!(snap.dag.dag_set.contains(&msg.block_hash));
-    }
-}
-
-#[test]
-fn unique_content_hashes_keep_raw_hash_keys() {
-    let mut bl = Blocklace::new();
-    let v1 = node(1);
-    let v2 = node(2);
-    let p1 = simple_payload(1, vec![]);
-    let p2 = simple_payload(2, vec![]);
-    let b1 = make_block(v1.clone(), p1, HashSet::new(), 1);
-    let b2 = make_block(
-        v2.clone(),
-        p2,
-        [b1.identity.clone()].into_iter().collect(),
-        2,
-    );
-
-    bl.insert(b1.clone(), &MockVerifier).unwrap();
-    bl.insert(b2.clone(), &MockVerifier).unwrap();
-
-    let bonds_map = bonds(&[(1, 100), (2, 100)]);
-    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
-
-    assert_eq!(snap.dag.dag_set.len(), 2);
-    let raw1 = b1.identity.content_hash.to_vec();
-    let raw2 = b2.identity.content_hash.to_vec();
-    assert!(snap.dag.dag_set.contains(&raw1));
-    assert!(snap.dag.dag_set.contains(&raw2));
-    for key in &snap.dag.dag_set {
-        assert!(key == &raw1 || key == &raw2);
-    }
-}
-
-#[test]
-fn idle_native_round_snapshot_is_lossless() {
-    use cordial_f1r3node_adapter::proposer::{
-        CordialProposer, DisseminationTipSelector, RecordingBroadcaster, RuntimeExecutionEngine,
-        Secp256k1BlockSigner,
-    };
-    use cordial_miners_core::execution::{DeployPool, DeployPoolConfig, MockRuntime};
-
-    let v_a = node(1);
-    let v_b = node(2);
-    let bonds_map = bonds(&[(1, 100), (2, 100)]);
-
-    let key_a = test_signing_key(1);
-    let key_b = test_signing_key(2);
-    let signer_a = Secp256k1BlockSigner::new(key_a);
-    let signer_b = Secp256k1BlockSigner::new(key_b);
-
-    let broadcaster_a = RecordingBroadcaster::default();
-    let broadcaster_b = RecordingBroadcaster::default();
-    let runtime_a = MockRuntime::new();
-    let runtime_b = MockRuntime::new();
-
-    let mut proposer_a = CordialProposer::new(
-        DisseminationTipSelector,
-        RuntimeExecutionEngine::new(runtime_a),
-        signer_a,
-        broadcaster_a,
-        v_a.clone(),
-        bonds_map.clone(),
-        DeployPoolConfig::default(),
-    );
-
-    let mut proposer_b = CordialProposer::new(
-        DisseminationTipSelector,
-        RuntimeExecutionEngine::new(runtime_b),
-        signer_b,
-        broadcaster_b,
-        v_b.clone(),
-        bonds_map.clone(),
-        DeployPoolConfig::default(),
-    );
-
-    let deploy_pool = DeployPool::new(DeployPoolConfig::default());
-    let mut blocklace = Blocklace::new();
-
-    // Round 1
-    let block_a1 = proposer_a
-        .propose_at_time(&blocklace, &deploy_pool, 1000)
-        .expect("propose A1");
-    let block_b1 = proposer_b
-        .propose_at_time(&blocklace, &deploy_pool, 1000)
-        .expect("propose B1");
-
-    assert_eq!(
-        block_a1.identity.content_hash,
-        block_b1.identity.content_hash
-    );
-
-    blocklace
-        .insert(block_a1.clone(), &MockVerifier)
-        .expect("insert A1");
-    blocklace
-        .insert(block_b1.clone(), &MockVerifier)
-        .expect("insert B1");
-
-    let snap_r1 = build_snapshot(&blocklace, &bonds_map, default_shard_conf(), "root")
-        .expect("snapshot R1 should succeed");
-    assert_eq!(snap_r1.dag.dag_set.len(), 2);
-
-    // Round 2
-    let block_a2 = proposer_a
-        .propose_at_time(&blocklace, &deploy_pool, 2000)
-        .expect("propose A2");
-    let block_b2 = proposer_b
-        .propose_at_time(&blocklace, &deploy_pool, 2000)
-        .expect("propose B2");
-
-    assert_eq!(
-        block_a2.identity.content_hash,
-        block_b2.identity.content_hash
-    );
-
-    let mut blocklace_r2 = Blocklace::new();
-    blocklace_r2
-        .insert(block_a1, &MockVerifier)
-        .expect("insert A1 into r2");
-    blocklace_r2
-        .insert(block_b1, &MockVerifier)
-        .expect("insert B1 into r2");
-    blocklace_r2
-        .insert(block_a2, &MockVerifier)
-        .expect("insert A2 into r2");
-    blocklace_r2
-        .insert(block_b2, &MockVerifier)
-        .expect("insert B2 into r2");
-
-    let snap_r2 = build_snapshot(&blocklace_r2, &bonds_map, default_shard_conf(), "root")
-        .expect("snapshot R2 should succeed");
-    assert_eq!(snap_r2.dag.dag_set.len(), 4);
 }

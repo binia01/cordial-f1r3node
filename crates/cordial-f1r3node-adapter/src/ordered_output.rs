@@ -142,10 +142,6 @@ impl OrderedFinalizedOutput {
     ///
     /// Convenience for callers that only need hash references (e.g., to
     /// compare against a prior output or to format for logging).
-    ///
-    /// Returns content hashes, which are lossy when two creators share a
-    /// content hash; callers who need consensus identity must use
-    /// [blocks](Self::blocks).
     pub fn block_hashes(&self) -> Vec<Vec<u8>> {
         self.blocks
             .iter()

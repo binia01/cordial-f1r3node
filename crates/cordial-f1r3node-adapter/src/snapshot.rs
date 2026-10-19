@@ -42,20 +42,20 @@
 //! Construction returns [`SnapshotError`] if any block's payload fails to
 //! decode. Partial state is not returned — snapshots are all-or-nothing.
 //!
-//! ## Content-hash indexing policy
+//! ## Known limitation: content-hash collisions
 //!
-//! Host-facing snapshots key blocks by byte strings:
-//! - For blocks with unique content hashes across the blocklace, the key is the
-//!   raw 32-byte content hash (`content_hash.to_vec()`).
-//! - When two or more creators share a content hash, the key is derived as
-//!   `Blake2b-256(b"cordial-snapshot-key-v1" || content_hash || creator.0)`.
+//! The snapshot's `dag_set`, `block_number_map`, `height_map`, and
+//! `child_map` are keyed by `content_hash: [u8; 32]`. In the blocklace,
+//! `BlockIdentity` uses `(content_hash, creator, signature)` so two blocks
+//! with identical content but different creators can coexist — but they
+//! will collapse to one entry in the snapshot indices. This matters only
+//! when two validators sign over byte-identical `BlockContent`, which is
+//! rare in practice (payloads usually differ per block) but possible.
 //!
-//! This preserves `content_hash` as the fast, natural key in the common case while
-//! guaranteeing no silent loss of blocks or child edges when two validators sign
-//! byte-identical blocks (e.g., during idle rounds on native proposer paths).
-//! All snapshot fields (`dag_set`, `block_number_map`, `height_map`, `child_map`,
-//! `latest_messages_map`, `finalized_blocks_set`, `tips`, `lca`, `justifications`,
-//! `parents`) use these keys uniformly.
+//! The proper fix belongs to Phase 3.4 (crypto bridge): compute an
+//! f1r3node-style `block_hash` that mixes the creator into the hash, so
+//! distinct validators always produce distinct block hashes even over
+//! equal content.
 //!
 //! ## Single-validator fork awareness is shared across seams
 //!
@@ -74,9 +74,8 @@
 //! anchor, while `ordered_block_identities_with_cache` additionally computes
 //! ordered blocks.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-use crate::crypto_bridge::{Blake2b256Hasher, Hasher};
 use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::consensus::{
     OrderingCache, collect_validator_tips, compute_all_depths, fork_choice, last_round_of_wave,
@@ -190,60 +189,6 @@ pub enum SnapshotError {
     OrderedOutputPrefixViolation,
 }
 
-/// Prefix used when deriving distinct host-facing snapshot keys for blocks
-/// in an ambiguous content-hash group (#278).
-const SNAPSHOT_KEY_V1_PREFIX: &[u8] = b"cordial-snapshot-key-v1";
-
-/// Host-facing key for each consensus block in a snapshot.
-///
-/// A block's key is its content hash unless another creator signed the same
-/// content; then every block in that group gets a creator-mixed key so no
-/// consensus identity is merged away (#278).
-#[derive(Debug, Default)]
-struct SnapshotKeys {
-    keys: HashMap<([u8; 32], NodeId), Vec<u8>>,
-}
-
-impl SnapshotKeys {
-    fn build(blocklace: &Blocklace) -> Self {
-        let mut creators_by_hash: BTreeMap<[u8; 32], BTreeSet<NodeId>> = BTreeMap::new();
-        for id in blocklace.dom() {
-            creators_by_hash
-                .entry(id.content_hash)
-                .or_default()
-                .insert(id.creator.clone());
-        }
-
-        let mut keys = HashMap::new();
-        for (content_hash, creators) in creators_by_hash {
-            if creators.len() >= 2 {
-                for creator in creators {
-                    let mut input =
-                        Vec::with_capacity(SNAPSHOT_KEY_V1_PREFIX.len() + 32 + creator.0.len());
-                    input.extend_from_slice(SNAPSHOT_KEY_V1_PREFIX);
-                    input.extend_from_slice(&content_hash);
-                    input.extend_from_slice(&creator.0);
-                    let derived = Blake2b256Hasher.hash(&input);
-                    keys.insert((content_hash, creator), derived.to_vec());
-                }
-            } else {
-                for creator in creators {
-                    keys.insert((content_hash, creator), content_hash.to_vec());
-                }
-            }
-        }
-
-        Self { keys }
-    }
-
-    fn key(&self, id: &BlockIdentity) -> Vec<u8> {
-        self.keys
-            .get(&(id.content_hash, id.creator.clone()))
-            .cloned()
-            .unwrap_or_else(|| id.content_hash.to_vec())
-    }
-}
-
 /// Build a [`CasperSnapshot`] from the current blocklace state.
 ///
 /// The `bonds` map defines which validators count and their stakes.
@@ -259,8 +204,6 @@ pub fn build_snapshot(
     shard_conf: CasperShardConf,
     shard_id: &str,
 ) -> Result<CasperSnapshot, SnapshotError> {
-    let keys = SnapshotKeys::build(blocklace);
-
     // 1. Walk all blocks, decoding payloads as we go. We'll need the
     //    block_number per block for the height index and for max_block_num.
     let all_ids: Vec<BlockIdentity> = blocklace.dom().into_iter().cloned().collect();
@@ -282,7 +225,7 @@ pub fn build_snapshot(
     // 2. Build the simplified DAG representation.
     let mut dag = DagRepresentation::default();
     for (id, payload) in &decoded {
-        dag.dag_set.insert(keys.key(id));
+        dag.dag_set.insert(id.content_hash.to_vec());
 
         let block_number = i64::try_from(payload.state.block_number).map_err(|_| {
             SnapshotError::BlockNumberOverflow {
@@ -290,11 +233,12 @@ pub fn build_snapshot(
                 value: payload.state.block_number,
             }
         })?;
-        dag.block_number_map.insert(keys.key(id), block_number);
+        dag.block_number_map
+            .insert(id.content_hash.to_vec(), block_number);
         dag.height_map
             .entry(block_number)
             .or_default()
-            .insert(keys.key(id));
+            .insert(id.content_hash.to_vec());
     }
 
     // 3. child_map: invert the predecessor relation.
@@ -302,9 +246,9 @@ pub fn build_snapshot(
         let content = blocklace.content(id).expect("id came from dom()");
         for pred_id in &content.predecessors {
             dag.child_map
-                .entry(keys.key(pred_id))
+                .entry(pred_id.content_hash.to_vec())
                 .or_default()
-                .insert(keys.key(id));
+                .insert(id.content_hash.to_vec());
         }
     }
 
@@ -312,16 +256,18 @@ pub fn build_snapshot(
     let validator_tips = collect_validator_tips(blocklace, bonds);
     for (node_id, tip_id) in &validator_tips {
         dag.latest_messages_map
-            .insert(node_id.0.clone(), keys.key(tip_id));
+            .insert(node_id.0.clone(), tip_id.content_hash.to_vec());
     }
 
     // 5. last_finalized_block: compute via paper-native leader finality.
     if let Some(lfb_id) = latest_finalized_block_id(blocklace, bonds) {
-        dag.last_finalized_block_hash = keys.key(&lfb_id);
-        dag.finalized_blocks_set.insert(keys.key(&lfb_id));
+        dag.last_finalized_block_hash = lfb_id.content_hash.to_vec();
+        dag.finalized_blocks_set
+            .insert(lfb_id.content_hash.to_vec());
         // All ancestors of the LFB are also finalized. Walk them.
         for anc in blocklace.ancestors_inclusive(&lfb_id) {
-            dag.finalized_blocks_set.insert(keys.key(&anc.identity));
+            dag.finalized_blocks_set
+                .insert(anc.identity.content_hash.to_vec());
         }
     }
     // invalid_blocks_set stays empty — validation rejects before insertion.
@@ -330,8 +276,8 @@ pub fn build_snapshot(
     let fc = fork_choice(blocklace, bonds);
     let (tips_vec, lca_bytes): (Vec<Vec<u8>>, Vec<u8>) = match &fc {
         Some(fc) => (
-            fc.tips.iter().map(|id| keys.key(id)).collect(),
-            keys.key(&fc.lca),
+            fc.tips.iter().map(|id| id.content_hash.to_vec()).collect(),
+            fc.lca.content_hash.to_vec(),
         ),
         None => (vec![], vec![]),
     };
@@ -346,9 +292,8 @@ pub fn build_snapshot(
             let tip_block = blocklace
                 .get(tip_id)
                 .expect("tip came from fork_choice, must exist");
-            let mut msg = block_to_message(&tip_block, shard_id)
+            let msg = block_to_message(&tip_block, shard_id)
                 .map_err(SnapshotError::TipTranslationFailed)?;
-            msg.block_hash = keys.key(tip_id);
             parents.push(msg);
         }
     }
@@ -358,7 +303,7 @@ pub fn build_snapshot(
         .iter()
         .map(|(node_id, tip_id)| Justification {
             validator: node_id.0.clone(),
-            latest_block_hash: keys.key(tip_id),
+            latest_block_hash: tip_id.content_hash.to_vec(),
         })
         .collect();
 
@@ -409,8 +354,8 @@ pub fn build_snapshot(
 
     Ok(CasperSnapshot {
         dag,
-        last_finalized_block: dag_lfb(&blocklace_lfb_from(blocklace, bonds), &keys),
-        ordered_finalized_blocks: ordered_finalized_block_hashes_with_keys(blocklace, bonds, &keys),
+        last_finalized_block: dag_lfb(&blocklace_lfb_from(blocklace, bonds)),
+        ordered_finalized_blocks: ordered_finalized_block_hashes(blocklace, bonds),
         lca: lca_bytes,
         tips: tips_vec,
         parents,
@@ -435,18 +380,10 @@ fn blocklace_lfb_from(
     latest_finalized_block_id(blocklace, bonds)
 }
 
-fn dag_lfb(id: &Option<BlockIdentity>, keys: &SnapshotKeys) -> Vec<u8> {
-    id.as_ref().map(|i| keys.key(i)).unwrap_or_default()
-}
-
-fn ordered_finalized_block_hashes_with_keys(
-    blocklace: &Blocklace,
-    bonds: &HashMap<NodeId, u64>,
-    keys: &SnapshotKeys,
-) -> Vec<Vec<u8>> {
-    let (blocks, _anchor) =
-        ordered_block_identities_with_cache(blocklace, bonds, &mut OrderingCache::default());
-    blocks.into_iter().map(|id| keys.key(&id)).collect()
+fn dag_lfb(id: &Option<BlockIdentity>) -> Vec<u8> {
+    id.as_ref()
+        .map(|i| i.content_hash.to_vec())
+        .unwrap_or_default()
 }
 
 /// Resolve the latest weighted final leader using the current ES defaults:
@@ -483,6 +420,13 @@ pub(crate) fn latest_finalized_block_id(
         let idx = usize::try_from(wave).ok()? % leaders.len();
         Some(leaders[idx].clone())
     })
+}
+
+pub(crate) fn ordered_finalized_block_hashes(
+    blocklace: &Blocklace,
+    bonds: &HashMap<NodeId, u64>,
+) -> Vec<Vec<u8>> {
+    ordered_finalized_block_hashes_with_cache(blocklace, bonds, &mut OrderingCache::default())
 }
 
 /// Unified dispatch: ordered finalized block identities and anchor in one pass.
