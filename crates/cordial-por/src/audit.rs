@@ -9,7 +9,7 @@
 //! or perform networking.
 
 use crate::{
-    block::{ReputationBlockContext, validate_reputation_block},
+    block::{REPUTATION_BLOCK_VERSION, ReputationBlockContext, validate_reputation_block},
     clamp::clamp_reputation_transition,
     commitments::{
         config_commitment, penalty_events_commitment, rating_batch_commitment,
@@ -130,6 +130,11 @@ pub fn verify_reputation_transition_with_penalties(
     validate_reputation_block(proposed_block)?;
 
     let header = &proposed_block.header;
+    if header.version != REPUTATION_BLOCK_VERSION {
+        return Err(PorError::UnsupportedReputationBlockAuditVersion(
+            header.version,
+        ));
+    }
     if header.shard_id != context.shard_id {
         return Err(PorError::ReputationBlockShardMismatch);
     }

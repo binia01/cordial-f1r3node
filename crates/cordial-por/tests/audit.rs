@@ -1,9 +1,10 @@
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    MissingEntryPolicy, PorConfig, PorError, RatingRecord, ReputationBlock, ReputationBlockContext,
-    ReputationEntry, ReputationList, ReputationVector, build_rating_batch, build_reputation_block,
-    clamp_reputation_value, replay_reputation_transition, reputation_list_commitment,
-    verify_reputation_transition,
+    CheckpointReputationBlockContext, MissingEntryPolicy, PorConfig, PorError, RatingRecord,
+    RatingSourceCheckpoint, ReputationBlock, ReputationBlockContext, ReputationEntry,
+    ReputationList, ReputationVector, build_checkpoint_reputation_block, build_rating_batch,
+    build_reputation_block, clamp_reputation_value, replay_reputation_transition,
+    reputation_list_commitment, verify_reputation_transition,
 };
 
 const ROUND: u64 = 7;
@@ -106,6 +107,35 @@ fn block_for(
         config,
     )
     .unwrap()
+}
+
+#[test]
+fn v1_audit_does_not_accept_a_checkpoint_block() {
+    let ratings = ratings();
+    let config = config();
+    let batch = build_rating_batch(ROUND, ratings.clone(), &config).unwrap();
+    let block = build_checkpoint_reputation_block(
+        CheckpointReputationBlockContext {
+            shard_id: SHARD_ID,
+            source: RatingSourceCheckpoint {
+                round: ROUND,
+                finalized_prefix_len: 16 * ROUND,
+                finalized_prefix_hash: [7; 32],
+            },
+            previous_block: None,
+        },
+        &batch,
+        ReputationList {
+            round: ROUND,
+            entries: expected_entries(),
+        },
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        verify_reputation_transition(&previous_reputation(), &ratings, &block, context(), &config),
+        Err(PorError::UnsupportedReputationBlockAuditVersion(2))
+    );
 }
 
 fn block(round: u64, entries: Vec<ReputationEntry>) -> ReputationBlock {

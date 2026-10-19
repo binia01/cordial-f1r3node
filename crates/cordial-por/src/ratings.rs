@@ -31,6 +31,19 @@ pub struct RatingSourceCheckpoint {
     pub finalized_prefix_hash: [u8; 32],
 }
 
+impl RatingSourceCheckpoint {
+    /// Check the fixed source boundary and a nonzero consecutive PoR round.
+    pub fn validate(&self) -> Result<(), PorError> {
+        if self.round == 0
+            || self.round.checked_mul(POR_FINALIZED_BLOCKS_PER_CHECKPOINT)
+                != Some(self.finalized_prefix_len)
+        {
+            return Err(PorError::InvalidRatingSourceCheckpoint);
+        }
+        Ok(())
+    }
+}
+
 pub const POR_FINALIZED_BLOCKS_PER_CHECKPOINT: u64 = 16;
 
 /// Encode all signed fields of a rating using the canonical v1 wire layout.
@@ -96,14 +109,7 @@ pub fn canonical_checkpoint_rating_payload(
     if rating.round != source.round {
         return Err(PorError::InvalidRatingRound);
     }
-    if source.round == 0
-        || source
-            .round
-            .checked_mul(POR_FINALIZED_BLOCKS_PER_CHECKPOINT)
-            != Some(source.finalized_prefix_len)
-    {
-        return Err(PorError::InvalidRatingSourceCheckpoint);
-    }
+    source.validate()?;
 
     let mut payload = Vec::with_capacity(
         CHECKPOINT_RATING_SIGNING_DOMAIN.len()

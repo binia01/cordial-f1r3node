@@ -7,6 +7,8 @@
 
 use cordial_miners_core::NodeId;
 
+use crate::ratings::RatingSourceCheckpoint;
+
 /// Logical PoR processing round.
 pub type ReputationRound = u64;
 
@@ -186,8 +188,11 @@ pub struct ReputationBlockHeader {
     /// Shard whose finalized activity produced this reputation update.
     pub shard_id: Vec<u8>,
 
-    /// Finalized Cordial wave containing the rated interactions.
+    /// Finalized Cordial source wave for v1; reserved as zero in v2.
     pub source_finalized_wave: u64,
+
+    /// Finalized-prefix source identity for v2; absent in v1.
+    pub source_checkpoint: Option<RatingSourceCheckpoint>,
 
     pub round: ReputationRound,
 

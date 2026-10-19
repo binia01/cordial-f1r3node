@@ -48,11 +48,13 @@ pub enum PorError {
     MissingReputationBlockShardId,
     ReputationBlockShardIdTooLong,
     InvalidReputationBlockSourceWave,
+    InvalidReputationBlockSourceCheckpoint,
     InvalidReputationBlockRound,
     InvalidPreviousReputationBlockRound,
     PreviousReputationBlockShardMismatch,
     ReputationBlockShardMismatch,
     ReputationBlockSourceWaveMismatch,
+    UnsupportedReputationBlockAuditVersion(u16),
     ReputationBlockPreviousHashMismatch,
     ReputationBlockConfigHashMismatch,
     ReputationBlockRatingsHashMismatch,
@@ -225,6 +227,10 @@ impl fmt::Display for PorError {
                 f,
                 "reputation block round does not immediately follow its finalized source wave"
             ),
+            Self::InvalidReputationBlockSourceCheckpoint => write!(
+                f,
+                "reputation block source is not a valid finalized-prefix checkpoint"
+            ),
             Self::InvalidReputationBlockRound => write!(
                 f,
                 "reputation block header round does not match the reputation list round"
@@ -246,6 +252,12 @@ impl fmt::Display for PorError {
                 f,
                 "reputation block source wave does not match the audit context"
             ),
+            Self::UnsupportedReputationBlockAuditVersion(version) => {
+                write!(
+                    f,
+                    "reputation block version {version} is not supported by this audit"
+                )
+            }
             Self::ReputationBlockPreviousHashMismatch => {
                 write!(
                     f,
