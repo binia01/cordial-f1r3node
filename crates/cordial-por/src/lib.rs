@@ -46,8 +46,9 @@ pub use penalties::{
     compute_slash_penalty,
 };
 pub use ratings::{
-    RATING_SIGNING_DOMAIN, build_rating_batch, canonical_rating_payload,
-    rating_round_from_finalized_wave, validate_rating,
+    CHECKPOINT_RATING_SIGNING_DOMAIN, POR_FINALIZED_BLOCKS_PER_CHECKPOINT, RATING_SIGNING_DOMAIN,
+    RatingSourceCheckpoint, build_rating_batch, canonical_checkpoint_rating_payload,
+    canonical_rating_payload, rating_round_from_finalized_wave, validate_rating,
 };
 pub use snapshot::{
     MAX_REPUTATION_STATE_ENTRIES, MAX_REPUTATION_STATE_NODE_ID_LEN,

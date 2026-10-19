@@ -15,13 +15,13 @@ use cordial_miners_core::{
     crypto::{Blake2b256Hasher, Hasher},
     types::BlockIdentity,
 };
-use cordial_por::{PorError, ReputationRound, rating_round_from_finalized_wave};
+pub use cordial_por::POR_FINALIZED_BLOCKS_PER_CHECKPOINT;
+use cordial_por::{
+    PorError, RatingSourceCheckpoint, ReputationRound, rating_round_from_finalized_wave,
+};
 
 use crate::ordered_output::OrderedFinalizedOutput;
 
-/// Number of canonical finalized blocks in one checkpoint-driven PoR window.
-/// This value is part of the source-round protocol and must be versioned if changed.
-pub const POR_FINALIZED_BLOCKS_PER_CHECKPOINT: u64 = 16;
 const POR_FINALIZED_PREFIX_HASH_DOMAIN: &[u8] = b"cordial-por:finalized-prefix:v1";
 
 /// A source checkpoint selected from a fixed position in Cordial's finalized
@@ -33,6 +33,17 @@ pub struct FinalizedPrefixCheckpoint {
     /// Rolling commitment to every full block identity in the prefix.
     pub prefix_hash: [u8; 32],
     pub terminal_block: BlockIdentity,
+}
+
+impl FinalizedPrefixCheckpoint {
+    /// Source context to include in checkpoint-driven rating signatures.
+    pub fn rating_source(&self) -> RatingSourceCheckpoint {
+        RatingSourceCheckpoint {
+            round: self.por_round,
+            finalized_prefix_len: self.finalized_prefix_len,
+            finalized_prefix_hash: self.prefix_hash,
+        }
+    }
 }
 
 /// A PoR rating round opened by a finalized Cordial Miners wave.

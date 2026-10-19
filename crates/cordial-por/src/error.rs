@@ -7,6 +7,7 @@ use cordial_miners_core::NodeId;
 pub enum PorError {
     InvalidConfiguration(String),
     InvalidRatingRound,
+    InvalidRatingSourceCheckpoint,
     RatingRoundOverflow,
     InvalidInteractionRound,
     InvalidInteractionStateRound,
@@ -97,6 +98,12 @@ impl fmt::Display for PorError {
             }
             Self::InvalidRatingRound => {
                 write!(f, "rating round does not match the target batch round")
+            }
+            Self::InvalidRatingSourceCheckpoint => {
+                write!(
+                    f,
+                    "rating source is not a valid finalized-prefix checkpoint"
+                )
             }
             Self::RatingRoundOverflow => {
                 write!(f, "finalized wave cannot advance to a rating round")
