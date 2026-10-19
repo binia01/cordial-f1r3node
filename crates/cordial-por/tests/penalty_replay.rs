@@ -1,4 +1,11 @@
-use cordial_miners_core::NodeId;
+use cordial_miners_core::{
+    Block, BlockContent, BlockIdentity, Blocklace, NodeId,
+    consensus::{
+        CordialEquivocationEvidence, VerifiedEquivocationEvidence, verify_equivocation_evidence,
+    },
+    crypto,
+};
+use cordial_por::{EquivocationAuthorizationContext, EquivocationAuthorizationPolicy};
 use cordial_por::{
     EquivocationPenalty, InactivityPenalty, PorConfig, PorError, RatingRecord, ReputationBlock,
     ReputationBlockContext, ReputationEntry, ReputationPenaltyEvents, ReputationState,
@@ -8,9 +15,80 @@ use cordial_por::{
     reputation_list_commitment, verify_reputation_transition,
     verify_reputation_transition_with_penalties,
 };
+use k256::ecdsa::SigningKey;
+use std::{collections::HashSet, sync::OnceLock};
 
+fn keys() -> &'static Vec<(NodeId, [u8; 32])> {
+    static KEYS: OnceLock<Vec<(NodeId, [u8; 32])>> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        let mut keys: Vec<_> = (1..=8)
+            .map(|seed| {
+                let private = [seed; 32];
+                let signing = SigningKey::from_slice(&private).unwrap();
+                let node = NodeId(
+                    signing
+                        .verifying_key()
+                        .to_encoded_point(true)
+                        .as_bytes()
+                        .to_vec(),
+                );
+                (node, private)
+            })
+            .collect();
+        keys.sort_by(|a, b| a.0.cmp(&b.0));
+        keys
+    })
+}
 fn node(id: u8) -> NodeId {
-    NodeId(vec![id])
+    keys()[usize::from(id - 1)].0.clone()
+}
+
+// Explicit test authorization policy. Production uses finalized Cordial payloads.
+struct TestAuthorization;
+impl EquivocationAuthorizationPolicy for TestAuthorization {
+    fn authorize(
+        &self,
+        _: &EquivocationAuthorizationContext,
+        _: &VerifiedEquivocationEvidence,
+    ) -> Result<(), PorError> {
+        Ok(())
+    }
+}
+
+fn proof(id: u8, tag: u8) -> VerifiedEquivocationEvidence {
+    let blocks = [0, 1].map(|branch| {
+        let content = BlockContent {
+            payload: vec![tag, branch],
+            predecessors: HashSet::new(),
+        };
+        let content_hash = crypto::hash_content(&content);
+        Block {
+            identity: BlockIdentity {
+                content_hash,
+                creator: node(id),
+                signature: crypto::sign(&content_hash, &keys()[usize::from(id - 1)].1),
+            },
+            content,
+        }
+    });
+    verify_equivocation_evidence(
+        &CordialEquivocationEvidence::new(node(id), 0, blocks.to_vec()),
+        &Blocklace::new(),
+    )
+    .unwrap()
+}
+
+fn penalty_at(id: u8, tag: u8, round: u64) -> EquivocationPenalty {
+    EquivocationPenalty::authorize(
+        &proof(id, tag),
+        EquivocationAuthorizationContext {
+            shard_id: b"root".to_vec(),
+            source_finalized_wave: round - 1,
+            round,
+        },
+        &TestAuthorization,
+    )
+    .unwrap()
 }
 fn previous() -> ReputationVector {
     ReputationVector {
@@ -26,13 +104,7 @@ fn config() -> PorConfig {
 fn events(slashed: &[u8], inactive: &[u8]) -> ReputationPenaltyEvents {
     ReputationPenaltyEvents {
         round: 1,
-        equivocations: slashed
-            .iter()
-            .map(|id| EquivocationPenalty {
-                offender: node(*id),
-                evidence: vec![*id],
-            })
-            .collect(),
+        equivocations: slashed.iter().map(|id| penalty_at(*id, 0, 1)).collect(),
         inactivity: inactive
             .iter()
             .map(|id| InactivityPenalty {
@@ -372,25 +444,34 @@ fn evidence_substitution_is_rejected_even_when_the_result_is_identical() {
     let block = block(&original);
     let mut replaced = original.clone();
     replaced.equivocations[0].evidence = vec![99];
-    // Both evidence references justify the same arithmetic but are different inputs.
-    assert_eq!(
+    // Replacing proof bytes invalidates authority even if the arithmetic
+    // would otherwise produce the same reputation list.
+    assert!(matches!(
         replay_reputation_transition_with_penalties(
             &previous(),
             &[],
             1,
             &config(),
-            Some(&original)
-        )
-        .unwrap(),
-        replay_reputation_transition_with_penalties(
+            Some(&replaced),
+        ),
+        Err(PorError::InvalidPenaltyEvents(_)),
+    ));
+    assert!(matches!(
+        verify_reputation_transition_with_penalties(
             &previous(),
             &[],
-            1,
+            &block,
+            context(),
             &config(),
-            Some(&replaced)
-        )
-        .unwrap()
-    );
+            Some(&replaced),
+        ),
+        Err(PorError::InvalidPenaltyEvents(_)),
+    ));
+    assert!(cordial_por::penalty_events_commitment(1, Some(&replaced)).is_err());
+
+    // A different valid, independently authorized proof still changes the
+    // commitment and cannot be substituted into an already committed block.
+    replaced.equivocations[0] = penalty_at(1, 99, 1);
     assert_eq!(
         verify_reputation_transition_with_penalties(
             &previous(),
@@ -398,9 +479,9 @@ fn evidence_substitution_is_rejected_even_when_the_result_is_identical() {
             &block,
             context(),
             &config(),
-            Some(&replaced)
+            Some(&replaced),
         ),
-        Err(PorError::ReputationBlockPenaltiesHashMismatch)
+        Err(PorError::ReputationBlockPenaltiesHashMismatch),
     );
     let mut tampered = block.clone();
     tampered.header.penalties_hash =
@@ -650,9 +731,13 @@ fn canonical_penalty_commitment_covers_categories_round_and_offenders() {
     assert_ne!(penalty_events_commitment(1, Some(&changed)).unwrap(), hash);
     let mut changed = original.clone();
     changed.equivocations[0].offender = node(5);
+    assert!(penalty_events_commitment(1, Some(&changed)).is_err());
+    changed.equivocations[0] = penalty_at(5, 0, 1);
     assert_ne!(penalty_events_commitment(1, Some(&changed)).unwrap(), hash);
     let mut changed = original.clone();
     changed.round = 2;
+    assert!(penalty_events_commitment(2, Some(&changed)).is_err());
+    changed.equivocations = vec![penalty_at(1, 0, 2), penalty_at(2, 0, 2)];
     assert_ne!(penalty_events_commitment(2, Some(&changed)).unwrap(), hash);
     assert!(penalty_events_commitment(1, Some(&changed)).is_err());
     assert_eq!(
@@ -721,4 +806,152 @@ fn retained_capital_cannot_be_active_or_disappear_from_an_audited_successor() {
         verify_reputation_transition(&prior, &[], &forged, context, &config()),
         Err(PorError::ReputationValueMismatch)
     );
+}
+
+#[test]
+fn arbitrary_nonempty_bytes_cannot_authorize_ejection_or_reputation_loss() {
+    let valid = events(&[1], &[]);
+    let proposed = block(&valid);
+    let forged = ReputationPenaltyEvents {
+        round: 1,
+        equivocations: vec![EquivocationPenalty::unverified(node(1), vec![1])],
+        inactivity: vec![],
+    };
+    let mut state = ReputationState::new(0);
+    for entry in previous().values {
+        state.set_reputation(entry.node_id, entry.reputation);
+    }
+    let original = state.clone();
+    assert!(matches!(
+        state.apply_reputation_block_with_penalties(
+            b"root",
+            0,
+            &[],
+            proposed,
+            &config(),
+            Some(&forged),
+        ),
+        Err(PorError::InvalidPenaltyEvents(_)),
+    ));
+    assert_eq!(state, original);
+    assert!(!state.is_ejected(&node(1)));
+    assert!(
+        replay_reputation_transition_with_penalties(&previous(), &[], 1, &config(), Some(&forged),)
+            .is_err()
+    );
+}
+
+#[test]
+fn verified_evidence_requires_policy_approval() {
+    struct Deny;
+    impl EquivocationAuthorizationPolicy for Deny {
+        fn authorize(
+            &self,
+            _: &EquivocationAuthorizationContext,
+            _: &VerifiedEquivocationEvidence,
+        ) -> Result<(), PorError> {
+            Err(PorError::InvalidPenaltyEvents("not authorized".into()))
+        }
+    }
+    assert!(
+        EquivocationPenalty::authorize(
+            &proof(1, 0),
+            EquivocationAuthorizationContext {
+                shard_id: b"root".to_vec(),
+                source_finalized_wave: 0,
+                round: 1,
+            },
+            &Deny,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn authorized_evidence_cannot_cross_shards() {
+    let events = events(&[1], &[]);
+    let proposed = block(&events);
+    let other = ReputationBlockContext {
+        shard_id: b"other",
+        ..context()
+    };
+    assert!(
+        build_reputation_block_with_penalties(
+            other,
+            &build_rating_batch(1, vec![], &config()).unwrap(),
+            proposed.reputation_list.clone(),
+            &config(),
+            Some(&events),
+        )
+        .is_err()
+    );
+    assert!(
+        verify_reputation_transition_with_penalties(
+            &previous(),
+            &[],
+            &proposed,
+            other,
+            &config(),
+            Some(&events),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn unrelated_evidence_rounds_do_not_inflate_correlated_slashing() {
+    let parent_content = BlockContent {
+        payload: vec![9],
+        predecessors: HashSet::new(),
+    };
+    let parent_hash = crypto::hash_content(&parent_content);
+    let parent = Block {
+        identity: BlockIdentity {
+            content_hash: parent_hash,
+            creator: node(8),
+            signature: crypto::sign(&parent_hash, &keys()[7].1),
+        },
+        content: parent_content,
+    };
+    let mut lace = Blocklace::new();
+    lace.insert(parent.clone(), &crypto::Secp256k1Scheme)
+        .unwrap();
+    let branches = [0, 1].map(|branch| {
+        let content = BlockContent {
+            payload: vec![branch],
+            predecessors: HashSet::from([parent.identity.clone()]),
+        };
+        let content_hash = crypto::hash_content(&content);
+        Block {
+            identity: BlockIdentity {
+                content_hash,
+                creator: node(2),
+                signature: crypto::sign(&content_hash, &keys()[1].1),
+            },
+            content,
+        }
+    });
+    let later = verify_equivocation_evidence(
+        &CordialEquivocationEvidence::new(node(2), 1, branches.to_vec()),
+        &lace,
+    )
+    .unwrap();
+    let second = EquivocationPenalty::authorize(
+        &later,
+        EquivocationAuthorizationContext {
+            shard_id: b"root".to_vec(),
+            source_finalized_wave: 0,
+            round: 1,
+        },
+        &TestAuthorization,
+    )
+    .unwrap();
+    let mut events = events(&[1], &[]);
+    events.equivocations.push(second);
+    let next =
+        replay_reputation_transition_with_penalties(&previous(), &[], 1, &config(), Some(&events))
+            .unwrap();
+    // Each distinct Cordial round contains only 25% equivocating weight.
+    assert_eq!(next.entries[0].retained_reputation, 750);
+    assert_eq!(next.entries[1].retained_reputation, 750);
 }

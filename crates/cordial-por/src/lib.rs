@@ -10,6 +10,7 @@ pub mod clamp;
 pub mod commitments;
 pub mod config;
 pub mod error;
+pub mod evidence;
 pub mod interactions;
 pub mod liquid_rank;
 pub mod matrix;
@@ -34,6 +35,10 @@ pub use commitments::{
 };
 pub use config::{MissingEntryPolicy, PorConfig};
 pub use error::PorError;
+pub use evidence::{
+    EquivocationAuthorizationContext, EquivocationAuthorizationPolicy,
+    POR_EQUIVOCATION_AUTHORIZATION_DOMAIN, equivocation_authorization_payload,
+};
 pub use interactions::{
     AdmittedInteraction, InteractionEvidence, InteractionKind, admit_interaction_evidence,
     build_rating_from_interaction, score_admitted_interaction,

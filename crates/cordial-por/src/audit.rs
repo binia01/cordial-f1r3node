@@ -45,7 +45,8 @@ pub fn replay_reputation_transition(
     replay_reputation_transition_with_penalties(previous_reputation, ratings, round, config, None)
 }
 
-/// Replay with optional, externally authenticated penalty events for this round.
+/// Replay with optional penalty events for this round. Equivocations require
+/// intact proof authorization; inactivity authentication remains caller-owned.
 /// Penalties are applied after clamp, using previous-round weights. Missing
 /// ratings alone do not trigger decay. `None` preserves the no-penalty path.
 pub fn replay_reputation_transition_with_penalties(
@@ -115,7 +116,7 @@ pub fn verify_reputation_transition(
 }
 
 /// Verify a penalty-inclusive block against the same finalized events used by
-/// its producer. Events must be authenticated out of band, just like ratings;
+/// its producer. Equivocation authorization is checked against this context;
 /// the exact event set is bound by the block's penalties hash. Substitution or
 /// omission fails even when the resulting reputation values are identical.
 pub fn verify_reputation_transition_with_penalties(
@@ -128,6 +129,7 @@ pub fn verify_reputation_transition_with_penalties(
 ) -> Result<(), PorError> {
     config.validate()?;
     validate_reputation_block(proposed_block)?;
+    crate::evidence::validate_penalty_context(penalties, context)?;
 
     let header = &proposed_block.header;
     if header.shard_id != context.shard_id {

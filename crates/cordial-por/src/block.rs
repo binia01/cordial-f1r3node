@@ -73,6 +73,7 @@ pub fn build_reputation_block_with_penalties(
     penalties: Option<&crate::types::ReputationPenaltyEvents>,
 ) -> Result<ReputationBlock, PorError> {
     config.validate()?;
+    crate::evidence::validate_penalty_context(penalties, context)?;
     validate_shard_id(context.shard_id)?;
     let round = rating_round_from_finalized_wave(context.source_finalized_wave)?;
     if ratings.round != round {

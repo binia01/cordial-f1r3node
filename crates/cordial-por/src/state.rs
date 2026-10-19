@@ -279,8 +279,9 @@ impl ReputationState {
     }
 
     /// Audit a penalty-inclusive block before atomically replacing the snapshot.
-    /// The caller supplies finalized penalty events; this method does not
-    /// authenticate evidence or transfer capital. Audited equivocations atomically
+    /// Equivocations must carry an intact, round-bound proof authorization;
+    /// arbitrary evidence bytes cannot authorize this transition. Inactivity
+    /// authentication and capital transfers remain caller-owned. Equivocations atomically
     /// eject their keys and retain the post-slash balance outside voting weight.
     pub fn apply_reputation_block_with_penalties(
         &mut self,
