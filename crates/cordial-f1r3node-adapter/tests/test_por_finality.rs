@@ -70,6 +70,12 @@ fn fixed_prefix_checkpoints_do_not_depend_on_poll_frequency() {
 
     assert_eq!(first.finalized_prefix_len, 16);
     assert_eq!(first.terminal_block, early.blocks[15]);
+    assert_eq!(first.rating_source().round, 1);
+    assert_eq!(first.rating_source().finalized_prefix_len, 16);
+    assert_eq!(
+        first.rating_source().finalized_prefix_hash,
+        first.prefix_hash
+    );
     assert_eq!(
         finalized_prefix_checkpoint(&late, 1).unwrap(),
         Some(first.clone())
