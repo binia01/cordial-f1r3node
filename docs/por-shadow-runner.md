@@ -30,7 +30,7 @@ one-validator bonds file and gRPC port instead:
 ```sh
 cargo run -j 1 -p cordial-f1r3node-adapter --bin live_por_shadow -- \
   --grpc-url http://127.0.0.1:40401 \
-  --bonds-file ../f1r3node/run-local/data/standalone/genesis/bonds.txt \
+  --bonds-file ../f1r3node-rust/run-local/data/standalone/genesis/bonds.txt \
   --data-dir /tmp/cordial-por-standalone
 ```
 
