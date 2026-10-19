@@ -217,11 +217,13 @@ reinterpret an old commitment under the new rule.
 
 The rating-format slice now has a v2 source-bound signing payload, signature
 verification, canonical batch verification, and a versioned checkpoint rating
-envelope and batch encoder. The v2 envelope decoder checks structure; signature
-and finalized-window evidence checks belong to admission. The live rating
-collector and exchange still use v1 wave ratings. Checkpoint evidence admission,
-v2 exchange and durable lifecycle integration remain pending before the shadow
-runner can commit checkpoint-driven rounds.
+envelope and batch encoder. The v2 envelope decoder checks structure.
+Checkpoint-window extraction now checks the finalized prefix, selects
+block-production references only from the 16-block source window, and admits
+participants against the preceding PoR state before signing a local batch.
+The live rating collector and exchange still use v1 wave ratings. Remote v2
+evidence admission, exchange, and durable lifecycle integration remain pending
+before the shadow runner can commit checkpoint-driven rounds.
 
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
