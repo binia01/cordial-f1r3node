@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use cordial_miners_core::Block;
 use cordial_miners_core::blocklace::Blocklace;
-use cordial_miners_core::consensus::{CordialEvidencePool, EvidencePool, select_predecessors};
+use cordial_miners_core::consensus::{
+    CordialEvidencePool, EquivocationEvidence, EvidencePool, select_predecessors,
+};
 use cordial_miners_core::crypto::{CryptoVerifier, hash_content};
 use cordial_miners_core::execution::{
     Bond, CordialBlockPayload, Deploy, DeployPool, DeployPoolConfig, DeploySignatureAlgorithm,
@@ -18,7 +20,49 @@ use cordial_f1r3node_adapter::proposer::{
     ExecutionEngine, ProposeError, RecordingBroadcaster, RuntimeExecutionEngine,
     Secp256k1BlockSigner, TipSelector,
 };
-use cordial_f1r3node_adapter::slashing::F1r3SlashDeployFormatter;
+use cordial_f1r3node_adapter::slashing::SlashDeployFormatter;
+use models::casper::{
+    ProcessedSystemDeployProto, SlashSystemDeployDataProto, SystemDeployDataProto,
+    system_deploy_data_proto::SystemDeploy,
+};
+use prost::Message;
+use prost::bytes::Bytes;
+
+// Exercises proposer ordering independently of production host slash authorization.
+struct TestSlashFormatter;
+
+impl SlashDeployFormatter<NodeId, Block, BlockIdentity> for TestSlashFormatter {
+    fn to_slash_system_deploys(
+        &self,
+        evidence: &[EquivocationEvidence<NodeId, Block, BlockIdentity>],
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        Ok(evidence
+            .iter()
+            .map(|record| {
+                let hash = record
+                    .blocks
+                    .iter()
+                    .map(|block| block.identity.content_hash)
+                    .min()
+                    .expect("test evidence has conflicting blocks");
+                ProcessedSystemDeployProto {
+                    system_deploy: Some(SystemDeployDataProto {
+                        system_deploy: Some(SystemDeploy::SlashSystemDeploy(
+                            SlashSystemDeployDataProto {
+                                invalid_block_hash: Bytes::copy_from_slice(&hash),
+                                issuer_public_key: Bytes::new(),
+                                target_activation_epoch: 0,
+                            },
+                        )),
+                    }),
+                    deploy_log: vec![],
+                    error_msg: String::new(),
+                }
+                .encode_to_vec()
+            })
+            .collect())
+    }
+}
 
 struct MockVerifier;
 
@@ -621,7 +665,7 @@ fn proposer_chain_head_tiebreak_is_deterministic() {
 }
 
 #[test]
-fn proposer_formats_evidence_and_prioritizes_slash_system_deploys() {
+fn proposer_prioritizes_formatted_slash_system_deploys() {
     let validator = node(1);
     let bond_map = bonds(&[(1, 100), (2, 100)]);
 
@@ -660,7 +704,7 @@ fn proposer_formats_evidence_and_prioritizes_slash_system_deploys() {
     )
     .with_slashing(
         EvidencePoolSource::new(&evidence_pool, vec![validator.clone(), validator.clone()]),
-        F1r3SlashDeployFormatter::new(node(9).0),
+        TestSlashFormatter,
     );
 
     let block = proposer.propose(&blocklace, &deploy_pool).expect("propose");

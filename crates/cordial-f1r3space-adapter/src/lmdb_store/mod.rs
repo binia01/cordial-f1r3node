@@ -23,12 +23,18 @@ use heed::{Database, Env};
 /// key: `bincode(BlockIdentity)` — val: `bincode(Block)`
 pub(crate) const BLOCKS_DB: &str = "cordial-blocks";
 
-/// Named database for node metadata.
-/// Currently holds one key: `CURSOR_KEY`.
+/// Named database for the finalized cursor and native identity mappings.
 pub(crate) const META_DB: &str = "cordial-meta";
 
 /// Fixed key under which the finalized cursor is stored in `META_DB`.
 pub(crate) const CURSOR_KEY: &[u8] = b"finalized_cursor";
+
+/// Last fully ingested native block height. A missing key starts at height zero.
+pub(crate) const NATIVE_HEIGHT_CURSOR_KEY: &[u8] = b"native_height_cursor";
+
+/// Prefixes for the two directions of the native wire-hash mapping in `META_DB`.
+pub(crate) const NATIVE_HASH_PREFIX: &[u8] = b"native_hash/";
+pub(crate) const CORDIAL_ID_PREFIX: &[u8] = b"cordial_id/";
 
 /// Format marker for hashes stored in `cordial-blocks`.
 ///
