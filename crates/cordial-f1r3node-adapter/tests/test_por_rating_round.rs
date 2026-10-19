@@ -580,3 +580,211 @@ fn finalized_wave_cutoff_policy_validates_lag_and_overflow() {
         })
     );
 }
+
+fn signed_evidence_block(seed: u8, payload: Vec<u8>) -> Block {
+    let content = BlockContent {
+        payload,
+        predecessors: HashSet::new(),
+    };
+    let content_hash = cordial_miners_core::crypto::hash_content(&content);
+    Block {
+        identity: BlockIdentity {
+            content_hash,
+            creator: node(seed),
+            signature: cordial_miners_core::crypto::sign(&content_hash, &private_key(seed)),
+        },
+        content,
+    }
+}
+
+fn equivocation_claim() -> cordial_miners_core::consensus::CordialEquivocationEvidence {
+    cordial_miners_core::consensus::CordialEquivocationEvidence::new(
+        node(8),
+        0,
+        vec![
+            signed_evidence_block(8, vec![1]),
+            signed_evidence_block(8, vec![2]),
+        ],
+    )
+}
+
+fn add_finalized_penalty_authorization(fixture: &mut Fixture) {
+    let proof = cordial_miners_core::consensus::verify_equivocation_evidence(
+        &equivocation_claim(),
+        &fixture.blocklace,
+    )
+    .unwrap();
+    let context = cordial_por::EquivocationAuthorizationContext {
+        shard_id: SHARD_ID.to_vec(),
+        source_finalized_wave: fixture.opened.finalized_wave,
+        round: fixture.opened.rating_round,
+    };
+    let payload = cordial_por::equivocation_authorization_payload(&context, &proof).unwrap();
+    let authorization = signed_evidence_block(9, payload);
+    fixture
+        .blocklace
+        .insert(
+            authorization.clone(),
+            &cordial_miners_core::crypto::Secp256k1Scheme,
+        )
+        .unwrap();
+    fixture
+        .output
+        .blocks
+        .push(authorization.identity.consensus_identity());
+}
+
+fn evidence_membership() -> std::collections::HashMap<NodeId, u64> {
+    [1, 2, 8, 9]
+        .into_iter()
+        .map(|seed| (node(seed), 100))
+        .collect()
+}
+
+#[test]
+fn verified_evidence_without_finalized_authorization_is_rejected() {
+    let fixture = fixture();
+    assert!(
+        complete_local_round(&fixture)
+            .with_authorized_equivocations(
+                &[equivocation_claim()],
+                &fixture.blocklace,
+                &fixture.output,
+                &evidence_membership(),
+                SHARD_ID,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn finalized_authorization_cannot_authenticate_a_forged_proof_or_unknown_offender() {
+    let mut fixture = fixture();
+    add_finalized_penalty_authorization(&mut fixture);
+    let mut forged = equivocation_claim();
+    forged.blocks[0].identity.signature.clear();
+    assert!(
+        complete_local_round(&fixture)
+            .with_authorized_equivocations(
+                &[forged],
+                &fixture.blocklace,
+                &fixture.output,
+                &evidence_membership(),
+                SHARD_ID,
+            )
+            .is_err()
+    );
+    let mut membership = evidence_membership();
+    membership.remove(&node(8));
+    assert!(
+        complete_local_round(&fixture)
+            .with_authorized_equivocations(
+                &[equivocation_claim()],
+                &fixture.blocklace,
+                &fixture.output,
+                &membership,
+                SHARD_ID,
+            )
+            .is_err()
+    );
+    let mut membership = evidence_membership();
+    membership.remove(&node(9));
+    assert!(
+        complete_local_round(&fixture)
+            .with_authorized_equivocations(
+                &[equivocation_claim()],
+                &fixture.blocklace,
+                &fixture.output,
+                &membership,
+                SHARD_ID,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn authorized_evidence_flows_through_local_checkpoint_and_durable_application() {
+    use cordial_f1r3node_adapter::por::{
+        DurablePorState, PorCheckpointCollector, PorCheckpointPolicy, ReputationBlockPublicationV1,
+    };
+
+    let mut fixture = fixture();
+    add_finalized_penalty_authorization(&mut fixture);
+    let no_penalties = complete_local_round(&fixture);
+    let completed = no_penalties
+        .clone()
+        .with_authorized_equivocations(
+            &[equivocation_claim()],
+            &fixture.blocklace,
+            &fixture.output,
+            &evidence_membership(),
+            SHARD_ID,
+        )
+        .unwrap();
+    let applied = apply_completed_reputation_round(
+        &completed,
+        &mut fixture.state.clone(),
+        &fixture.config,
+        SHARD_ID,
+    )
+    .unwrap();
+    let ejected = applied
+        .block
+        .reputation_list
+        .entries
+        .iter()
+        .find(|entry| entry.node_id == node(8))
+        .unwrap();
+    assert!(ejected.is_excluded);
+    assert_eq!(ejected.reputation, 0);
+    assert_eq!(ejected.retained_reputation, 75);
+    assert!(!applied.reputation_weights.contains_key(&node(8)));
+
+    let attesters = [1, 2, 8, 9].map(node);
+    let mut collector = PorCheckpointCollector::new(
+        &fixture.state,
+        &completed,
+        &fixture.config,
+        SHARD_ID,
+        attesters.clone(),
+        PorCheckpointPolicy::default(),
+    )
+    .unwrap();
+    for seed in [1, 2, 9] {
+        collector
+            .observe(
+                ReputationBlockPublicationV1::sign(
+                    node(seed),
+                    applied.block.clone(),
+                    &private_key(seed),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    let attested = collector.into_attested().unwrap();
+    // Attestations cannot substitute for the receiver's own authorized evidence.
+    let mut uninformed = PorCheckpointCollector::new(
+        &fixture.state,
+        &no_penalties,
+        &fixture.config,
+        SHARD_ID,
+        attesters,
+        PorCheckpointPolicy::default(),
+    )
+    .unwrap();
+    assert!(uninformed.observe(ReputationBlockPublicationV1::sign(
+        node(1), applied.block.clone(), &private_key(1),
+    ).unwrap()).is_err());
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut durable = DurablePorState::open(dir.path(), fixture.state.clone()).unwrap();
+    assert!(
+        durable
+            .apply_attested_checkpoint(&attested, &no_penalties, &fixture.config, SHARD_ID,)
+            .is_err()
+    );
+    durable
+        .apply_attested_checkpoint(&attested, &completed, &fixture.config, SHARD_ID)
+        .unwrap();
+}

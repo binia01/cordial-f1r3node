@@ -40,6 +40,9 @@ pub enum PorRuntimeError {
     #[error("cannot publish the Cordial finalized view: {0:?}")]
     FinalizedOutput(SnapshotError),
 
+    #[error("cannot authorize PoR equivocation evidence: {0}")]
+    PenaltyAuthorization(#[source] PorError),
+
     #[error("cannot restore or activate durable PoR state: {0}")]
     Durable(#[from] DurablePorStateError),
 }
@@ -156,6 +159,26 @@ impl<A> PorRuntime<A> {
         self.ingress
             .latest_finalized_ordered_output(self.wavelength)
             .map_err(PorRuntimeError::FinalizedOutput)
+    }
+
+    /// Admit retained raw evidence using this runtime's own finalized view,
+    /// Cordial membership and shard. Call before collecting checkpoint
+    /// attestations so every replay uses the same authorized penalty set.
+    pub fn authorize_equivocations(
+        &mut self,
+        completed: CompletedPorRatingRound,
+        raw: &[cordial_miners_core::consensus::CordialEquivocationEvidence],
+    ) -> Result<CompletedPorRatingRound, PorRuntimeError> {
+        let output = self.publish_finalized_output()?;
+        completed
+            .with_authorized_equivocations(
+                raw,
+                self.ingress.blocklace(),
+                &output,
+                self.ingress.bonds(),
+                &self.shard_id,
+            )
+            .map_err(PorRuntimeError::PenaltyAuthorization)
     }
 
     /// Commit a completed local rating round and immediately activate its weights.

@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use cordial_miners_core::NodeId;
 use cordial_por::{
     PorConfig, PorError, ReputationBlock, ReputationBlockContext, ReputationState,
-    ReputationVector, ReputationWeight, build_reputation_block, replay_reputation_transition,
-    reputation_weights,
+    ReputationVector, ReputationWeight, build_reputation_block_with_penalties,
+    replay_reputation_transition_with_penalties, reputation_weights,
 };
 
 use super::lifecycle::{CompletedPorRatingRound, PorRatingRoundCloseReason};
@@ -55,9 +55,14 @@ pub(super) fn stage_completed_reputation_round(
         values: state.reputation_list().entries.clone(),
     };
     let batch = completed.batch();
-    let reputation_list =
-        replay_reputation_transition(&previous, &batch.ratings, batch.round, config)?;
-    let block = build_reputation_block(
+    let reputation_list = replay_reputation_transition_with_penalties(
+        &previous,
+        &batch.ratings,
+        batch.round,
+        config,
+        completed.penalties(),
+    )?;
+    let block = build_reputation_block_with_penalties(
         ReputationBlockContext {
             shard_id,
             source_finalized_wave: completed.opened().finalized_wave,
@@ -66,6 +71,7 @@ pub(super) fn stage_completed_reputation_round(
         batch,
         reputation_list,
         config,
+        completed.penalties(),
     )?;
 
     stage_reputation_block(completed, state, config, shard_id, block)
@@ -95,12 +101,13 @@ fn stage_reputation_block(
 ) -> Result<(ReputationState, AppliedPorReputationRound), PorError> {
     let batch = completed.batch();
     let mut staged = state.clone();
-    staged.apply_reputation_block(
+    staged.apply_reputation_block_with_penalties(
         shard_id,
         completed.opened().finalized_wave,
         &batch.ratings,
         block.clone(),
         config,
+        completed.penalties(),
     )?;
     let weights = reputation_weights(&staged);
 

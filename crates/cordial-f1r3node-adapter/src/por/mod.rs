@@ -7,6 +7,7 @@
 pub mod activation;
 pub mod checkpoint;
 pub mod collector;
+pub mod evidence;
 pub mod finality;
 pub mod history;
 pub mod interactions;
@@ -29,6 +30,7 @@ pub use checkpoint::{
     PorCheckpointPolicy, PorCheckpointProgress,
 };
 pub use collector::{BlockProductionRatingCollector, PorRatingCollectorError};
+pub use evidence::FinalizedEquivocationAuthorization;
 pub use finality::{FinalizedRatingRound, PorFinalityError, PorFinalityTracker};
 pub use history::{
     POR_REPUTATION_BLOCK_HISTORY_DIRECTORY, PorReputationBlockAppendOutcome,

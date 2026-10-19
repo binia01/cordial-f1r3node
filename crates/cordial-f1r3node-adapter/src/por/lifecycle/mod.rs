@@ -12,7 +12,7 @@ pub mod quorum;
 use std::fmt;
 
 use cordial_miners_core::{Blocklace, NodeId};
-use cordial_por::{PorConfig, RatingBatch, ReputationState};
+use cordial_por::{PorConfig, RatingBatch, ReputationPenaltyEvents, ReputationState};
 
 use crate::ordered_output::OrderedFinalizedOutput;
 
@@ -166,9 +166,18 @@ pub struct CompletedPorRatingRound {
     opened: FinalizedRatingRound,
     batch: RatingBatch,
     close_reason: PorRatingRoundCloseReason,
+    penalties: Option<ReputationPenaltyEvents>,
 }
 
 impl CompletedPorRatingRound {
+    pub fn penalties(&self) -> Option<&ReputationPenaltyEvents> {
+        self.penalties.as_ref()
+    }
+
+    pub(super) fn set_authorized_penalties(&mut self, events: ReputationPenaltyEvents) {
+        self.penalties = Some(events);
+    }
+
     pub fn opened(&self) -> FinalizedRatingRound {
         self.opened
     }
@@ -263,6 +272,7 @@ impl<'a> PorRatingRoundCoordinator<'a> {
             opened: self.opened,
             batch,
             close_reason,
+            penalties: None,
         })
     }
 
