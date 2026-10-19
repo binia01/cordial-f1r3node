@@ -60,9 +60,11 @@ pub use persistence::{
     PorStateStoreError,
 };
 pub use ratings::{
-    PorRatingError, build_finalized_block_production_rating_batch, build_verified_rating_batch,
-    rating_signing_hash, sign_admitted_interaction, validate_signed_rating,
-    verify_rating_signature,
+    PorRatingError, build_finalized_block_production_rating_batch,
+    build_verified_checkpoint_rating_batch, build_verified_rating_batch,
+    checkpoint_rating_signing_hash, rating_signing_hash, sign_admitted_interaction,
+    sign_checkpoint_rating, validate_checkpoint_signed_rating, validate_signed_rating,
+    verify_checkpoint_rating_signature, verify_rating_signature,
 };
 pub use runtime::{CommittedPorRound, PorRuntime, PorRuntimeError};
 pub use transition::{AppliedPorReputationRound, apply_completed_reputation_round};
@@ -85,9 +87,12 @@ pub use transport::reputation_block_channel::{
 };
 pub use transport::wire::{
     BLOCK_PRODUCTION_RATING_ENVELOPE_DOMAIN, BLOCK_PRODUCTION_RATING_ENVELOPE_VERSION,
-    BlockProductionRatingEnvelopeV1, MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN, PorRatingWireError,
+    BlockProductionRatingEnvelopeV1, BlockProductionRatingEnvelopeV2,
+    CHECKPOINT_RATING_ENVELOPE_VERSION, MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN,
+    MAX_CHECKPOINT_RATING_ENVELOPE_LEN, PorRatingWireError,
 };
 pub use transport::{
     FnRatingEnvelopeBroadcaster, PorRatingTransportError, RatingEnvelopeBroadcaster,
-    broadcast_rating_batch, encode_rating_batch, receive_rating_envelope,
+    broadcast_rating_batch, encode_checkpoint_rating_batch, encode_rating_batch,
+    receive_rating_envelope,
 };
