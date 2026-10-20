@@ -999,6 +999,7 @@ fn build_test_block_with_predecessors(
     state_tag: u8,
 ) -> Block {
     let payload = CordialBlockPayload {
+        por_authorizations: vec![],
         state: BlockState {
             pre_state_hash: vec![state_tag; 32],
             post_state_hash: vec![state_tag.wrapping_add(1); 32],

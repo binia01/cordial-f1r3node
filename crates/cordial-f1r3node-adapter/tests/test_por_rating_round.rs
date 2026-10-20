@@ -609,18 +609,34 @@ fn equivocation_claim() -> cordial_miners_core::consensus::CordialEquivocationEv
 }
 
 fn add_finalized_penalty_authorization(fixture: &mut Fixture) {
-    let proof = cordial_miners_core::consensus::verify_equivocation_evidence(
-        &equivocation_claim(),
-        &fixture.blocklace,
-    )
-    .unwrap();
-    let context = cordial_por::EquivocationAuthorizationContext {
-        shard_id: SHARD_ID.to_vec(),
-        source_finalized_wave: fixture.opened.finalized_wave,
-        round: fixture.opened.rating_round,
-    };
-    let payload = cordial_por::equivocation_authorization_payload(&context, &proof).unwrap();
-    let authorization = signed_evidence_block(9, payload);
+    add_finalized_penalty_authorizations(fixture, &[equivocation_claim()]);
+}
+
+fn add_finalized_penalty_authorizations(
+    fixture: &mut Fixture,
+    claims: &[cordial_miners_core::consensus::CordialEquivocationEvidence],
+) {
+    let mut payload = cordial_miners_core::execution::CordialBlockPayload::genesis(vec![]);
+    for claim in claims {
+        let proof =
+            cordial_miners_core::consensus::verify_equivocation_evidence(claim, &fixture.blocklace)
+                .unwrap();
+        let context = cordial_por::EquivocationAuthorizationContext {
+            shard_id: SHARD_ID.to_vec(),
+            source_finalized_wave: fixture.opened.finalized_wave,
+            round: fixture.opened.rating_round,
+        };
+        let message = cordial_por::equivocation_authorization_payload(&context, &proof).unwrap();
+        payload.por_authorizations.push(
+            cordial_miners_core::execution::PorEquivocationAuthorization {
+                shard_id: context.shard_id,
+                source_finalized_wave: context.source_finalized_wave,
+                round: context.round,
+                message,
+            },
+        );
+    }
+    let authorization = signed_evidence_block(9, payload.to_bytes());
     fixture
         .blocklace
         .insert(
@@ -773,9 +789,18 @@ fn authorized_evidence_flows_through_local_checkpoint_and_durable_application() 
         PorCheckpointPolicy::default(),
     )
     .unwrap();
-    assert!(uninformed.observe(ReputationBlockPublicationV1::sign(
-        node(1), applied.block.clone(), &private_key(1),
-    ).unwrap()).is_err());
+    assert!(
+        uninformed
+            .observe(
+                ReputationBlockPublicationV1::sign(
+                    node(1),
+                    applied.block.clone(),
+                    &private_key(1),
+                )
+                .unwrap()
+            )
+            .is_err()
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let mut durable = DurablePorState::open(dir.path(), fixture.state.clone()).unwrap();
@@ -787,4 +812,116 @@ fn authorized_evidence_flows_through_local_checkpoint_and_durable_application() 
     durable
         .apply_attested_checkpoint(&attested, &completed, &fixture.config, SHARD_ID)
         .unwrap();
+}
+
+#[test]
+fn finalized_authorizations_cannot_be_omitted_or_bypassed() {
+    let mut fixture = fixture();
+    let first = equivocation_claim();
+    let second = cordial_miners_core::consensus::CordialEquivocationEvidence::new(
+        node(2),
+        0,
+        vec![
+            signed_evidence_block(2, vec![3]),
+            signed_evidence_block(2, vec![4]),
+        ],
+    );
+    add_finalized_penalty_authorizations(
+        &mut fixture,
+        &[first.clone(), second.clone(), first.clone()],
+    );
+    let completed = complete_local_round(&fixture);
+    let previous = fixture.state.clone();
+    assert!(
+        apply_completed_reputation_round(&completed, &mut fixture.state, &fixture.config, SHARD_ID)
+            .is_err()
+    );
+    assert_eq!(fixture.state, previous);
+    for omitted in [vec![], vec![first.clone()]] {
+        assert!(
+            completed
+                .clone()
+                .with_authorized_equivocations(
+                    &omitted,
+                    &fixture.blocklace,
+                    &fixture.output,
+                    &evidence_membership(),
+                    SHARD_ID,
+                )
+                .is_err()
+        );
+    }
+    // Even supplying a truncated output cannot replace the coordinator's snapshot.
+    let mut truncated = fixture.output.clone();
+    truncated.blocks.pop();
+    assert!(
+        completed
+            .clone()
+            .with_authorized_equivocations(
+                &[],
+                &fixture.blocklace,
+                &truncated,
+                &evidence_membership(),
+                SHARD_ID,
+            )
+            .is_err()
+    );
+    let admitted = completed
+        .clone()
+        .with_authorized_equivocations(
+            &[first.clone(), second.clone()],
+            &fixture.blocklace,
+            &fixture.output,
+            &evidence_membership(),
+            SHARD_ID,
+        )
+        .unwrap();
+    let reordered = completed
+        .with_authorized_equivocations(
+            &[second, first.clone(), first],
+            &fixture.blocklace,
+            &fixture.output,
+            &evidence_membership(),
+            SHARD_ID,
+        )
+        .unwrap();
+    assert_eq!(admitted, reordered);
+    assert_eq!(admitted.penalties().unwrap().equivocations.len(), 2);
+}
+
+#[test]
+fn raw_authorization_bytes_are_not_a_production_carrier() {
+    let mut fixture = fixture();
+    let claim = equivocation_claim();
+    let proof =
+        cordial_miners_core::consensus::verify_equivocation_evidence(&claim, &fixture.blocklace)
+            .unwrap();
+    let context = cordial_por::EquivocationAuthorizationContext {
+        shard_id: SHARD_ID.to_vec(),
+        source_finalized_wave: 0,
+        round: 1,
+    };
+    let block = signed_evidence_block(
+        9,
+        cordial_por::equivocation_authorization_payload(&context, &proof).unwrap(),
+    );
+    fixture
+        .blocklace
+        .insert(block.clone(), &cordial_miners_core::crypto::Secp256k1Scheme)
+        .unwrap();
+    fixture
+        .output
+        .blocks
+        .push(block.identity.consensus_identity());
+    assert!(
+        complete_local_round(&fixture)
+            .with_authorized_equivocations(
+                &[claim],
+                &fixture.blocklace,
+                &fixture.output,
+                &evidence_membership(),
+                SHARD_ID,
+            )
+            .is_err()
+    );
 }
