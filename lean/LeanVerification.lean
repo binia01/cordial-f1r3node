@@ -7,6 +7,7 @@ import LeanVerification.Block
 import LeanVerification.Blocklace
 import LeanVerification.Observe
 import LeanVerification.Equivocation
+import LeanVerification.Slashing
 import LeanVerification.Approval
 import LeanVerification.Finality
 import LeanVerification.Ordering
