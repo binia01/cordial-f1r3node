@@ -42,20 +42,16 @@
 //! Construction returns [`SnapshotError`] if any block's payload fails to
 //! decode. Partial state is not returned — snapshots are all-or-nothing.
 //!
-//! ## Known limitation: content-hash collisions
+//! ## Native block identity: creator-bound (format v3)
 //!
-//! The snapshot's `dag_set`, `block_number_map`, `height_map`, and
-//! `child_map` are keyed by `content_hash: [u8; 32]`. In the blocklace,
-//! `BlockIdentity` uses `(content_hash, creator, signature)` so two blocks
-//! with identical content but different creators can coexist — but they
-//! will collapse to one entry in the snapshot indices. This matters only
-//! when two validators sign over byte-identical `BlockContent`, which is
-//! rare in practice (payloads usually differ per block) but possible.
+//! Under format v3 (`block_hash`), native block hashes are domain-separated with
+//! `cordial-block-hash-v3` and commit to both the creator `NodeId` (length-prefixed)
+//! and the block content. This guarantees that blocks created by different
+//! validators with identical content (e.g. idle rounds with empty payloads and
+//! the same predecessors) produce distinct native block hashes. Consequently,
+//! snapshot indices (`dag_set`, `block_number_map`, `height_map`, and `child_map`)
+//! never collapse distinct blocks into a single entry.
 //!
-//! The proper fix belongs to Phase 3.4 (crypto bridge): compute an
-//! f1r3node-style `block_hash` that mixes the creator into the hash, so
-//! distinct validators always produce distinct block hashes even over
-//! equal content.
 //!
 //! ## Single-validator fork awareness is shared across seams
 //!
