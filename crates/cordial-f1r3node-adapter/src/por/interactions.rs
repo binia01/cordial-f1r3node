@@ -81,14 +81,7 @@ pub fn extract_checkpoint_block_production_evidence(
     checkpoint: &FinalizedPrefixCheckpoint,
     rater: &NodeId,
 ) -> Result<Vec<CheckpointInteractionEvidence>, PorInteractionError> {
-    validate_finalized_prefix_checkpoint(output, checkpoint)
-        .map_err(PorInteractionError::Checkpoint)?;
-    if finalized_wave_from_output(blocklace, output)
-        .map_err(PorInteractionError::Checkpoint)?
-        .is_none()
-    {
-        return Err(PorInteractionError::MissingFinalLeader);
-    }
+    validate_finalized_checkpoint_window(blocklace, output, checkpoint)?;
 
     let end = usize::try_from(checkpoint.finalized_prefix_len).map_err(|_| {
         PorInteractionError::Checkpoint(PorFinalityError::InvalidPrefixCheckpointRound)
@@ -96,7 +89,6 @@ pub fn extract_checkpoint_block_production_evidence(
     let window_len = usize::try_from(POR_FINALIZED_BLOCKS_PER_CHECKPOINT).expect("fixed window");
     let mut canonical_blocks: BTreeMap<&NodeId, &BlockIdentity> = BTreeMap::new();
     for block in &output.blocks[end - window_len..end] {
-        depth(blocklace, block).ok_or(PorInteractionError::UnknownFinalizedBlock)?;
         if &block.creator == rater {
             continue;
         }
@@ -120,6 +112,34 @@ pub fn extract_checkpoint_block_production_evidence(
             evidence_ref: block.content_hash.to_vec(),
         })
         .collect())
+}
+
+/// Check the source commitment, final leader anchor, and every window block.
+///
+/// A collector calls this even when no ratings arrive, so an empty batch never
+/// bypasses the finalized-evidence boundary.
+pub fn validate_finalized_checkpoint_window(
+    blocklace: &Blocklace,
+    output: &OrderedFinalizedOutput,
+    checkpoint: &FinalizedPrefixCheckpoint,
+) -> Result<(), PorInteractionError> {
+    validate_finalized_prefix_checkpoint(output, checkpoint)
+        .map_err(PorInteractionError::Checkpoint)?;
+    if finalized_wave_from_output(blocklace, output)
+        .map_err(PorInteractionError::Checkpoint)?
+        .is_none()
+    {
+        return Err(PorInteractionError::MissingFinalLeader);
+    }
+
+    let end = usize::try_from(checkpoint.finalized_prefix_len).map_err(|_| {
+        PorInteractionError::Checkpoint(PorFinalityError::InvalidPrefixCheckpointRound)
+    })?;
+    let window_len = usize::try_from(POR_FINALIZED_BLOCKS_PER_CHECKPOINT).expect("fixed window");
+    for block in &output.blocks[end - window_len..end] {
+        depth(blocklace, block).ok_or(PorInteractionError::UnknownFinalizedBlock)?;
+    }
+    Ok(())
 }
 
 /// Extract and admit checkpoint-window production evidence as one operation.

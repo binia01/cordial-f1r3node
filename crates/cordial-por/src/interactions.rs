@@ -123,6 +123,33 @@ pub fn admit_checkpoint_interaction_evidence(
     Ok(AdmittedCheckpointInteraction(evidence))
 }
 
+/// Check that a checkpoint rater is active even when it has no recipients.
+pub fn validate_checkpoint_rater(
+    source: &RatingSourceCheckpoint,
+    rater: &NodeId,
+    state: &ReputationState,
+) -> Result<(), PorError> {
+    source.validate()?;
+    validate_interaction_rater(source.round, rater, state)
+}
+
+fn validate_interaction_rater(
+    round: ReputationRound,
+    rater: &NodeId,
+    state: &ReputationState,
+) -> Result<(), PorError> {
+    if state.round().checked_add(1) != Some(round) {
+        return Err(PorError::InvalidInteractionStateRound);
+    }
+    if !state_contains(state, rater) {
+        return Err(PorError::UnknownInteractionRater);
+    }
+    if state.is_ejected(rater) {
+        return Err(PorError::EjectedInteractionRater);
+    }
+    Ok(())
+}
+
 fn validate_interaction_participants(
     round: ReputationRound,
     rater: &NodeId,
@@ -139,12 +166,7 @@ fn validate_interaction_participants(
     if evidence_ref.is_empty() {
         return Err(PorError::MissingInteractionReference);
     }
-    if !state_contains(state, rater) {
-        return Err(PorError::UnknownInteractionRater);
-    }
-    if state.is_ejected(rater) {
-        return Err(PorError::EjectedInteractionRater);
-    }
+    validate_interaction_rater(round, rater, state)?;
     if !state_contains(state, recipient) {
         return Err(PorError::UnknownInteractionRecipient);
     }

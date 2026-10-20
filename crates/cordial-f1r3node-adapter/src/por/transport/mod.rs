@@ -18,7 +18,10 @@ use cordial_por::{RatingBatch, RatingSourceCheckpoint};
 use self::wire::{
     BlockProductionRatingEnvelopeV1, BlockProductionRatingEnvelopeV2, PorRatingWireError,
 };
-use super::collector::{BlockProductionRatingCollector, PorRatingCollectorError};
+use super::collector::{
+    BlockProductionRatingCollector, CheckpointBlockProductionRatingCollector,
+    PorRatingCollectorError,
+};
 
 /// Synchronous delivery boundary for one already-encoded rating envelope.
 pub trait RatingEnvelopeBroadcaster {
@@ -168,6 +171,16 @@ pub fn receive_rating_envelope(
     encoded: &[u8],
 ) -> Result<(), PorRatingTransportError> {
     let envelope = BlockProductionRatingEnvelopeV1::decode(encoded)?;
+    collector.insert_envelope(envelope)?;
+    Ok(())
+}
+
+/// Decode a v2 envelope and admit it against one finalized source checkpoint.
+pub fn receive_checkpoint_rating_envelope(
+    collector: &mut CheckpointBlockProductionRatingCollector<'_>,
+    encoded: &[u8],
+) -> Result<(), PorRatingTransportError> {
+    let envelope = BlockProductionRatingEnvelopeV2::decode(encoded)?;
     collector.insert_envelope(envelope)?;
     Ok(())
 }

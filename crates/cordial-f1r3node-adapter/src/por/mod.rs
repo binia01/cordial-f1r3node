@@ -30,7 +30,10 @@ pub use checkpoint::{
     PorCheckpointConflictEvidence, PorCheckpointError, PorCheckpointObservation,
     PorCheckpointPolicy, PorCheckpointProgress,
 };
-pub use collector::{BlockProductionRatingCollector, PorRatingCollectorError};
+pub use collector::{
+    BlockProductionRatingCollector, CheckpointBlockProductionRatingCollector,
+    PorRatingCollectorError,
+};
 pub use finality::{
     FinalizedPrefixCheckpoint, FinalizedRatingRound, POR_FINALIZED_BLOCKS_PER_CHECKPOINT,
     PorFinalityError, PorFinalityTracker, finalized_prefix_checkpoint,
@@ -43,7 +46,8 @@ pub use history::{
 pub use interactions::{
     PorInteractionError, admit_checkpoint_block_production_interactions,
     admit_finalized_block_production_interactions, extract_block_production_evidence,
-    extract_checkpoint_block_production_evidence, validate_finalized_rating_round,
+    extract_checkpoint_block_production_evidence, validate_finalized_checkpoint_window,
+    validate_finalized_rating_round,
 };
 pub use lifecycle::cutoff::{
     DEFAULT_RATING_CUTOFF_WAVE_LAG, PorRatingCutoffError, PorRatingRoundCutoffPolicy,
@@ -95,5 +99,5 @@ pub use transport::wire::{
 pub use transport::{
     FnRatingEnvelopeBroadcaster, PorRatingTransportError, RatingEnvelopeBroadcaster,
     broadcast_rating_batch, encode_checkpoint_rating_batch, encode_rating_batch,
-    receive_rating_envelope,
+    receive_checkpoint_rating_envelope, receive_rating_envelope,
 };
