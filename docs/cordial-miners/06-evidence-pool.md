@@ -99,4 +99,19 @@ Canonical bytes include full signed blocks and deterministically sorted
 predecessor references. The verified type has no unchecked public constructor,
 deserializer or mutable accessor. It grants no authority to punish:
 cordial-por requires a separate explicit policy. The f1r3node adapter approves
-only exact signed authorization payloads included in trusted finalized output.
+only exact authorization messages carried inside signed `CordialBlockPayload`
+values in trusted finalized output. The carrier binds the shard, source wave and
+PoR round; a raw message used as the entire block payload is not a carrier.
+
+A completed rating round snapshots the complete carrier set from its finalized
+source wave. `with_authorized_equivocations` verifies the supplied proofs and
+requires an exact match with that set for the selected shard. Missing proofs
+must be obtained before proceeding. Empty or partial lists, extra claims and
+truncated replacement outputs cannot waive finalized authorizations. Local
+replay, checkpoint audit and durable application enforce the same requirement,
+including when admission was never called.
+
+Repeated messages are deduplicated and input order has no effect. Every distinct
+finalized proof must be verified; when several proofs name the same offender,
+the lexicographically first canonical authorization message supplies the single
+penalty event for that offender.
