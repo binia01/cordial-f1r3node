@@ -199,6 +199,25 @@ fn child_block_roundtrips_predecessor_set() {
     assert_eq!(rec_pred.creator, parent_id.creator);
 }
 
+#[test]
+fn roundtrip_preserves_creator_bound_identity_across_distinct_creators() {
+    let payload = sample_payload();
+    let b1 = build_block(node(1), payload.clone(), HashSet::new(), vec![0x01; 64]);
+    let b2 = build_block(node(2), payload, HashSet::new(), vec![0x02; 64]);
+
+    assert_ne!(b1.identity.content_hash, b2.identity.content_hash);
+
+    let msg1 = block_to_message(&b1, "root").unwrap();
+    let msg2 = block_to_message(&b2, "root").unwrap();
+
+    let rec1 = message_to_block(&msg1).unwrap();
+    let rec2 = message_to_block(&msg2).unwrap();
+
+    assert_eq!(rec1.identity.content_hash, b1.identity.content_hash);
+    assert_eq!(rec2.identity.content_hash, b2.identity.content_hash);
+    assert_ne!(rec1.identity.content_hash, rec2.identity.content_hash);
+}
+
 // ── Predecessor union (f1r3node → blocklace) ─────────────────────────────
 
 #[test]

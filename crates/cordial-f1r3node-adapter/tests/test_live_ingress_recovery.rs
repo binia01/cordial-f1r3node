@@ -353,3 +353,41 @@ fn recovery_skips_corrupt_lmdb_entries_without_panic() {
         .expect("live ingress must stay usable after recovering past corrupt entries");
     assert!(ingress.blocklace().get(&next.identity).is_some());
 }
+
+#[test]
+fn opening_v2_store_with_v3_code_fails_closed() {
+    use cordial_f1r3space_adapter::RepoError;
+    use heed::EnvOpenOptions;
+    use heed::types::Bytes;
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("blocklace");
+    std::fs::create_dir_all(&db_path).unwrap();
+
+    {
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .map_size(MAP_SIZE)
+                .max_dbs(10)
+                .max_readers(128)
+                .open(&db_path)
+                .unwrap()
+        };
+        let mut wtxn = env.write_txn().unwrap();
+        let meta: heed::Database<Bytes, Bytes> = env
+            .create_database(&mut wtxn, Some("cordial-meta"))
+            .unwrap();
+        let v2: u32 = 2;
+        meta.put(&mut wtxn, BLOCK_HASH_FORMAT_VERSION_KEY, &v2.to_be_bytes())
+            .unwrap();
+        wtxn.commit().unwrap();
+    }
+
+    match RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE) {
+        Err(RepoError::IncompatibleStorage(msg)) => {
+            assert!(msg.contains("version 2 is not supported; expected version 3"));
+        }
+        Err(other) => panic!("expected IncompatibleStorage, got {other:?}"),
+        Ok(_) => panic!("expected open to fail with IncompatibleStorage, but it succeeded"),
+    }
+}

@@ -426,6 +426,40 @@ fn wrong_content_hash_fails() {
     );
 }
 
+#[test]
+fn validation_rejects_block_when_creator_does_not_match_hash() {
+    let bl = Blocklace::new();
+    let content = BlockContent {
+        payload: vec![42],
+        predecessors: HashSet::new(),
+    };
+    // Content hash was computed using creator node(1)
+    let content_hash = block_hash(&node(1), &content);
+    // But identity declares creator node(2)
+    let block = Block {
+        identity: BlockIdentity {
+            content_hash,
+            creator: node(2),
+            signature: vec![],
+        },
+        content,
+    };
+    let b = bonds(&[(1, 100), (2, 100)]);
+    let config = ValidationConfig {
+        check_content_hash: true,
+        check_signature: false,
+        ..Default::default()
+    };
+    let result = validate_block(&block, &bl, &b, &config);
+    assert!(!result.is_valid());
+    assert!(
+        result
+            .errors()
+            .iter()
+            .any(|e| matches!(e, InvalidBlock::InvalidContentHash { .. }))
+    );
+}
+
 // ── Signature ──
 
 #[test]

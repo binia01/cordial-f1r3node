@@ -745,3 +745,54 @@ fn proposer_prioritizes_formatted_slash_system_deploys() {
         SystemDeployRequest::CloseBlock
     ));
 }
+
+#[test]
+fn two_validators_proposing_in_idle_round_get_distinct_native_proposals() {
+    let bond_map = bonds(&[(1, 100), (2, 100)]);
+
+    let mut blocklace = Blocklace::new();
+    insert(
+        &mut blocklace,
+        make_block(node(1), simple_payload(0, 0x21), HashSet::new()),
+    );
+    insert(
+        &mut blocklace,
+        make_block(node(2), simple_payload(0, 0x22), HashSet::new()),
+    );
+
+    let sk1 = test_signing_key(1);
+    let creator1 = NodeId(test_public_key(&sk1));
+
+    let sk2 = test_signing_key(2);
+    let creator2 = NodeId(test_public_key(&sk2));
+
+    let pool = DeployPool::new(DeployPoolConfig::default());
+
+    let mut proposer1 = build_proposer(
+        creator1.clone(),
+        bond_map.clone(),
+        MockRuntime::permissive(),
+        Secp256k1BlockSigner::new(sk1),
+        RecordingBroadcaster::new(),
+        false,
+    );
+    let mut proposer2 = build_proposer(
+        creator2.clone(),
+        bond_map,
+        MockRuntime::permissive(),
+        Secp256k1BlockSigner::new(sk2),
+        RecordingBroadcaster::new(),
+        false,
+    );
+
+    let b1 = proposer1.propose(&blocklace, &pool).expect("propose 1");
+    let b2 = proposer2.propose(&blocklace, &pool).expect("propose 2");
+
+    // In an idle round, both validators have identical content (same payload and predecessors)
+    assert_eq!(b1.content.payload, b2.content.payload);
+    assert_eq!(b1.content.predecessors, b2.content.predecessors);
+
+    // But because of format v3 creator-binding, their native identities are distinct
+    assert_ne!(b1.identity.creator, b2.identity.creator);
+    assert_ne!(b1.identity.content_hash, b2.identity.content_hash);
+}

@@ -1,4 +1,4 @@
-use cordial_miners_core::crypto::{Sha256Hasher, block_hash_ext};
+use cordial_miners_core::crypto::{Sha256Hasher, block_hash, block_hash_ext};
 use cordial_miners_core::{BlockContent, BlockIdentity, NodeId};
 use std::collections::HashSet;
 
@@ -99,4 +99,37 @@ fn sha256_hash_output_is_32_bytes() {
         predecessors: HashSet::new(),
     };
     assert_eq!(block_hash_ext(&creator, &content, &Sha256Hasher).len(), 32);
+}
+
+#[test]
+fn same_content_different_creators_produce_different_hashes() {
+    let content = BlockContent {
+        payload: vec![1, 2, 3],
+        predecessors: HashSet::new(),
+    };
+    let c1 = NodeId(vec![1]);
+    let c2 = NodeId(vec![2]);
+    assert_ne!(
+        block_hash_ext(&c1, &content, &Sha256Hasher),
+        block_hash_ext(&c2, &content, &Sha256Hasher)
+    );
+    assert_ne!(block_hash(&c1, &content), block_hash(&c2, &content));
+}
+
+#[test]
+fn creator_payload_boundary_separation() {
+    let empty_creator = NodeId(vec![]);
+    let content_with_payload = BlockContent {
+        payload: vec![1, 2, 3, 4],
+        predecessors: HashSet::new(),
+    };
+    let creator_with_bytes = NodeId(vec![1, 2, 3, 4]);
+    let empty_content = BlockContent {
+        payload: vec![],
+        predecessors: HashSet::new(),
+    };
+    assert_ne!(
+        block_hash(&empty_creator, &content_with_payload),
+        block_hash(&creator_with_bytes, &empty_content)
+    );
 }

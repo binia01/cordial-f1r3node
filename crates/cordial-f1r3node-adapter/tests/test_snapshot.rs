@@ -6,8 +6,8 @@ use cordial_miners_core::Block;
 use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::crypto::block_hash;
 use cordial_miners_core::execution::{
-    BlockState, Bond as CmBond, CordialBlockPayload, Deploy, DeploySignatureAlgorithm,
-    ProcessedDeploy, SignedDeploy,
+    BlockState, Bond as CmBond, CordialBlockPayload, Deploy, DeployPoolConfig,
+    DeploySignatureAlgorithm, ProcessedDeploy, SignedDeploy,
 };
 use cordial_miners_core::types::{BlockContent, BlockIdentity, NodeId};
 
@@ -563,4 +563,88 @@ fn undecodable_payload_produces_error() {
     let bonds_map = bonds(&[(1, 100)]);
     let err = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap_err();
     assert!(matches!(err, SnapshotError::PayloadDecodeFailed { .. }));
+}
+
+#[test]
+fn snapshot_parent_closure_resolves_parents_without_ambiguity() {
+    let mut bl = Blocklace::new();
+    let v1 = node(1);
+    let v2 = node(2);
+
+    let genesis = make_block(v1.clone(), simple_payload(0, vec![]), HashSet::new(), 1);
+    bl.insert(genesis.clone(), &MockVerifier).unwrap();
+
+    let mut preds = HashSet::new();
+    preds.insert(genesis.identity.clone());
+    let b1 = make_block(v1.clone(), simple_payload(1, vec![]), preds.clone(), 2);
+    let b2 = make_block(v2.clone(), simple_payload(1, vec![]), preds, 3);
+    bl.insert(b1.clone(), &MockVerifier).unwrap();
+    bl.insert(b2.clone(), &MockVerifier).unwrap();
+
+    assert_ne!(b1.identity.content_hash, b2.identity.content_hash);
+
+    let bonds_map = bonds(&[(1, 100), (2, 100)]);
+    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
+
+    assert_eq!(snap.parents.len(), 2);
+    for parent in &snap.parents {
+        let matching: Vec<_> = [b1.clone(), b2.clone()]
+            .into_iter()
+            .filter(|b| {
+                b.identity.content_hash.to_vec() == parent.block_hash
+                    && b.identity.creator.0 == parent.sender
+            })
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "parent must resolve uniquely to (sender, hash)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn snapshot_tips_are_consistent_with_casper_estimator_and_contains() {
+    use cordial_f1r3node_adapter::casper_adapter::{CordialCasper, CordialCasperAdapter};
+
+    let v1 = node(1);
+    let v2 = node(2);
+    let bonds_map = bonds(&[(1, 100), (2, 100)]);
+
+    let adapter = CordialCasperAdapter::new_with_verifier(
+        bonds_map,
+        cordial_f1r3node_adapter::shard_conf::CasperShardConf::default(),
+        "root",
+        DeployPoolConfig::default(),
+        None,
+        MockVerifier,
+    );
+
+    let genesis = make_block(v1.clone(), simple_payload(0, vec![]), HashSet::new(), 1);
+    let mut preds = HashSet::new();
+    preds.insert(genesis.identity.clone());
+    let b1 = make_block(v1.clone(), simple_payload(1, vec![]), preds.clone(), 2);
+    let b2 = make_block(v2.clone(), simple_payload(1, vec![]), preds, 3);
+    {
+        let mut bl = adapter.blocklace().lock().await;
+        bl.insert(genesis.clone(), &MockVerifier).unwrap();
+        bl.insert(b1.clone(), &MockVerifier).unwrap();
+        bl.insert(b2.clone(), &MockVerifier).unwrap();
+    }
+
+    let snap = adapter.get_snapshot().await.expect("snapshot");
+    let estimator_tips = adapter.estimator().await.expect("estimator");
+
+    // Tips in snapshot match the estimator tips
+    assert_eq!(snap.tips, estimator_tips);
+    assert_eq!(snap.tips.len(), 2);
+
+    // Each snapshot tip returns true from adapter.contains()
+    for tip in &snap.tips {
+        assert!(adapter.contains(tip));
+        assert!(adapter.dag_contains(tip));
+    }
+
+    // Non-existent hash returns false from contains
+    assert!(!adapter.contains(&vec![0xff; 32]));
 }
