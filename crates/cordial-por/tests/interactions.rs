@@ -3,7 +3,7 @@ use cordial_por::{
     CheckpointInteractionEvidence, InteractionEvidence, InteractionKind, PorConfig, PorError,
     RatingSourceCheckpoint, ReputationState, admit_checkpoint_interaction_evidence,
     admit_interaction_evidence, build_rating_from_interaction,
-    score_admitted_checkpoint_interaction, score_admitted_interaction,
+    score_admitted_checkpoint_interaction, score_admitted_interaction, validate_checkpoint_rater,
 };
 
 const FINALIZED_WAVE: u64 = 4;
@@ -74,6 +74,25 @@ fn checkpoint_evidence_rejects_invalid_source_and_stale_state() {
     assert_eq!(
         admit_checkpoint_interaction_evidence(checkpoint_evidence(), &ReputationState::new(3)),
         Err(PorError::InvalidInteractionStateRound)
+    );
+}
+
+#[test]
+fn checkpoint_rater_policy_applies_without_any_recipient_evidence() {
+    let source = checkpoint_evidence().source;
+    assert_eq!(
+        validate_checkpoint_rater(&source, &node(1), &state()),
+        Ok(())
+    );
+    assert_eq!(
+        validate_checkpoint_rater(&source, &node(3), &state()),
+        Err(PorError::UnknownInteractionRater)
+    );
+    let mut ejected = state();
+    ejected.eject_validator(&node(1)).unwrap();
+    assert_eq!(
+        validate_checkpoint_rater(&source, &node(1), &ejected),
+        Err(PorError::EjectedInteractionRater)
     );
 }
 

@@ -1,0 +1,354 @@
+use std::collections::HashSet;
+
+use cordial_f1r3node_adapter::{
+    ordered_output::OrderedFinalizedOutput,
+    por_finality::{FinalizedPrefixCheckpoint, PorFinalityError, finalized_prefix_checkpoint},
+    por_interactions::PorInteractionError,
+    por_rating_collector::{CheckpointBlockProductionRatingCollector, PorRatingCollectorError},
+    por_rating_transport::{PorRatingTransportError, receive_checkpoint_rating_envelope},
+    por_rating_wire::{
+        BlockProductionRatingEnvelopeV1, BlockProductionRatingEnvelopeV2, PorRatingWireError,
+    },
+    por_ratings::{
+        PorRatingError, build_finalized_checkpoint_rating_batch, sign_checkpoint_rating,
+    },
+};
+use cordial_miners_core::{
+    Block, BlockContent, BlockIdentity, Blocklace, NodeId, crypto::CryptoVerifier,
+};
+use cordial_por::{PorConfig, PorError, RatingBatch, RatingRecord, ReputationState};
+use k256::ecdsa::SigningKey;
+
+struct AcceptAll;
+
+impl CryptoVerifier for AcceptAll {
+    type Error = String;
+
+    fn verify_block(
+        &self,
+        _content: &BlockContent,
+        _signature: &[u8],
+        _creator: &NodeId,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+fn key(seed: u8) -> [u8; 32] {
+    [seed; 32]
+}
+
+fn node(seed: u8) -> NodeId {
+    let signing_key = SigningKey::from_slice(&key(seed)).unwrap();
+    NodeId(
+        signing_key
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec(),
+    )
+}
+
+struct Fixture {
+    blocklace: Blocklace,
+    output: OrderedFinalizedOutput,
+    checkpoint: FinalizedPrefixCheckpoint,
+    state: ReputationState,
+    config: PorConfig,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let mut blocklace = Blocklace::new();
+        let mut identities: Vec<BlockIdentity> = Vec::new();
+        for tag in 1..=32u8 {
+            let creator = if tag <= 16 {
+                1
+            } else if tag % 2 == 0 {
+                3
+            } else {
+                2
+            };
+            let mut hash = [0; 32];
+            hash[0] = tag;
+            let block = Block {
+                identity: BlockIdentity {
+                    content_hash: hash,
+                    creator: node(creator),
+                    signature: vec![tag],
+                },
+                content: BlockContent {
+                    payload: vec![tag],
+                    predecessors: identities
+                        .last()
+                        .cloned()
+                        .into_iter()
+                        .collect::<HashSet<_>>(),
+                },
+            };
+            blocklace.insert(block.clone(), &AcceptAll).unwrap();
+            identities.push(block.identity);
+        }
+        let output =
+            OrderedFinalizedOutput::new(identities.clone(), identities.last().cloned(), 3, 32, 32)
+                .with_timestamp(0);
+        let checkpoint = finalized_prefix_checkpoint(&output, 2).unwrap().unwrap();
+        let mut state = ReputationState::new(1);
+        for seed in [1, 2, 3, 9] {
+            state.set_reputation(node(seed), 100);
+        }
+        Self {
+            blocklace,
+            output,
+            checkpoint,
+            state,
+            config: PorConfig::default(),
+        }
+    }
+
+    fn collector(&self) -> CheckpointBlockProductionRatingCollector<'_> {
+        CheckpointBlockProductionRatingCollector::new(
+            &self.blocklace,
+            &self.output,
+            self.checkpoint.clone(),
+            [node(2), node(3), node(9)],
+            &self.state,
+            &self.config,
+        )
+        .unwrap()
+    }
+
+    fn batch(&self, seed: u8) -> RatingBatch {
+        build_finalized_checkpoint_rating_batch(
+            &self.blocklace,
+            &self.output,
+            &self.checkpoint,
+            &node(seed),
+            &self.state,
+            &self.config,
+            &key(seed),
+        )
+        .unwrap()
+    }
+
+    fn resign(&self, mut rating: RatingRecord, seed: u8) -> RatingRecord {
+        rating.signature.clear();
+        sign_checkpoint_rating(
+            rating,
+            &self.checkpoint.rating_source(),
+            &self.config,
+            &key(seed),
+        )
+        .unwrap()
+    }
+}
+
+#[test]
+fn receives_v2_bytes_and_builds_one_canonical_multi_rater_batch() {
+    let fixture = Fixture::new();
+    let mut collector = fixture.collector();
+    let batch_nine = fixture.batch(9);
+    let batch_two = fixture.batch(2);
+
+    for rating in batch_nine.ratings.iter().chain(&batch_two.ratings) {
+        let bytes = BlockProductionRatingEnvelopeV2::new(
+            fixture.checkpoint.rating_source(),
+            rating.clone(),
+        )
+        .unwrap()
+        .encode();
+        receive_checkpoint_rating_envelope(&mut collector, &bytes).unwrap();
+    }
+
+    assert!(collector.is_rater_complete(&node(9)).unwrap());
+    assert!(collector.is_rater_complete(&node(2)).unwrap());
+    assert_eq!(collector.len(), 3);
+    let batch = collector.finish().unwrap();
+    assert_eq!(batch.round, 2);
+    assert!(batch.ratings.windows(2).all(|ratings| {
+        (&ratings[0].recipient, &ratings[0].rater) <= (&ratings[1].recipient, &ratings[1].rater)
+    }));
+}
+
+#[test]
+fn rejects_other_source_and_v1_envelopes_without_mutation() {
+    let fixture = Fixture::new();
+    let rating = fixture.batch(9).ratings.remove(0);
+    let mut collector = fixture.collector();
+    let mut other_source = fixture.checkpoint.rating_source();
+    other_source.finalized_prefix_hash[0] ^= 1;
+    let other = BlockProductionRatingEnvelopeV2::new(other_source, rating.clone()).unwrap();
+    assert_eq!(
+        collector.insert_envelope(other),
+        Err(PorRatingCollectorError::InvalidCheckpointSource)
+    );
+
+    let v1 = BlockProductionRatingEnvelopeV1::new(1, rating)
+        .unwrap()
+        .encode();
+    assert_eq!(
+        receive_checkpoint_rating_envelope(&mut collector, &v1),
+        Err(PorRatingTransportError::Wire(
+            PorRatingWireError::UnsupportedVersion(1)
+        ))
+    );
+    assert!(collector.is_empty());
+}
+
+#[test]
+fn rejects_wrong_reference_score_and_signature_even_when_signed() {
+    let fixture = Fixture::new();
+    let rating = fixture.batch(9).ratings.remove(0);
+    let mut collector = fixture.collector();
+
+    let mut wrong_ref = rating.clone();
+    wrong_ref.interaction_ref.as_mut().unwrap()[0] ^= 1;
+    assert_eq!(
+        collector.insert(fixture.resign(wrong_ref, 9)),
+        Err(PorRatingCollectorError::InteractionReferenceMismatch)
+    );
+    let mut wrong_score = rating.clone();
+    wrong_score.score -= 1;
+    assert_eq!(
+        collector.insert(fixture.resign(wrong_score, 9)),
+        Err(PorRatingCollectorError::ScoreMismatch)
+    );
+    let mut wrong_signature = rating;
+    wrong_signature.signature[0] ^= 1;
+    assert_eq!(
+        collector.insert(wrong_signature),
+        Err(PorRatingCollectorError::Rating(
+            PorRatingError::InvalidSignature
+        ))
+    );
+    assert!(collector.is_empty());
+}
+
+#[test]
+fn rejects_a_known_but_unauthorized_rater() {
+    let fixture = Fixture::new();
+    let rating = fixture.batch(1).ratings.remove(0);
+    let mut collector = fixture.collector();
+    assert_eq!(
+        collector.insert(rating),
+        Err(PorRatingCollectorError::UnauthorizedRater(node(1)))
+    );
+    assert!(collector.is_empty());
+}
+
+#[test]
+fn invalid_batch_is_atomic_and_partial_rater_is_excluded_from_complete_batch() {
+    let fixture = Fixture::new();
+    let mut ratings = fixture.batch(9).ratings;
+    let first = ratings.remove(0);
+    let mut bad_second = ratings.remove(0);
+    bad_second.interaction_ref.as_mut().unwrap()[0] ^= 1;
+    let mut collector = fixture.collector();
+    assert_eq!(
+        collector.insert_batch(RatingBatch {
+            round: 2,
+            ratings: vec![first.clone(), fixture.resign(bad_second, 9)],
+        }),
+        Err(PorRatingCollectorError::InteractionReferenceMismatch)
+    );
+    assert!(collector.is_empty());
+
+    collector.insert(first.clone()).unwrap();
+    assert!(!collector.is_rater_complete(&node(9)).unwrap());
+    assert!(collector.build_complete_batch().unwrap().ratings.is_empty());
+    assert_eq!(collector.build_batch().unwrap().ratings, vec![first]);
+}
+
+#[test]
+fn duplicate_and_conflicting_ratings_keep_the_first_valid_submission() {
+    let fixture = Fixture::new();
+    let rating = fixture.batch(9).ratings.remove(0);
+    let mut collector = fixture.collector();
+    collector.insert(rating.clone()).unwrap();
+    assert_eq!(
+        collector.insert(rating.clone()),
+        Err(PorRatingCollectorError::DuplicateRating)
+    );
+    let mut conflict = rating.clone();
+    conflict.score -= 1;
+    assert_eq!(
+        collector.insert(fixture.resign(conflict, 9)),
+        Err(PorRatingCollectorError::ConflictingRating)
+    );
+    assert_eq!(collector.finish().unwrap().ratings, vec![rating]);
+}
+
+#[test]
+fn constructor_checks_source_and_state_even_for_empty_collector() {
+    let fixture = Fixture::new();
+    let mut wrong_checkpoint = fixture.checkpoint.clone();
+    wrong_checkpoint.prefix_hash[0] ^= 1;
+    assert!(matches!(
+        CheckpointBlockProductionRatingCollector::new(
+            &fixture.blocklace,
+            &fixture.output,
+            wrong_checkpoint,
+            [node(9)],
+            &fixture.state,
+            &fixture.config,
+        ),
+        Err(PorRatingCollectorError::Interaction(
+            PorInteractionError::Checkpoint(PorFinalityError::PrefixCheckpointMismatch)
+        ))
+    ));
+    let stale = ReputationState::new(0);
+    assert!(matches!(
+        CheckpointBlockProductionRatingCollector::new(
+            &fixture.blocklace,
+            &fixture.output,
+            fixture.checkpoint.clone(),
+            [node(9)],
+            &stale,
+            &fixture.config,
+        ),
+        Err(PorRatingCollectorError::InvalidStateRound)
+    ));
+}
+
+#[test]
+fn constructor_rejects_a_window_block_missing_from_the_blocklace() {
+    let fixture = Fixture::new();
+    let mut output = fixture.output.clone();
+    output.blocks[20].content_hash[0] ^= 1;
+    let checkpoint = finalized_prefix_checkpoint(&output, 2).unwrap().unwrap();
+    assert!(matches!(
+        CheckpointBlockProductionRatingCollector::new(
+            &fixture.blocklace,
+            &output,
+            checkpoint,
+            [node(9)],
+            &fixture.state,
+            &fixture.config,
+        ),
+        Err(PorRatingCollectorError::Interaction(
+            PorInteractionError::UnknownFinalizedBlock
+        ))
+    ));
+}
+
+#[test]
+fn completion_rejects_an_ejected_rater_even_without_submissions() {
+    let fixture = Fixture::new();
+    let mut state = fixture.state.clone();
+    state.eject_validator(&node(9)).unwrap();
+    let collector = CheckpointBlockProductionRatingCollector::new(
+        &fixture.blocklace,
+        &fixture.output,
+        fixture.checkpoint.clone(),
+        [node(9)],
+        &state,
+        &fixture.config,
+    )
+    .unwrap();
+    assert_eq!(
+        collector.is_rater_complete(&node(9)),
+        Err(PorRatingCollectorError::Interaction(
+            PorInteractionError::Admission(PorError::EjectedInteractionRater)
+        ))
+    );
+}
