@@ -6,7 +6,7 @@ use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::consensus::{
     CordialEvidencePool, EquivocationEvidence, EvidencePool, select_predecessors,
 };
-use cordial_miners_core::crypto::{CryptoVerifier, hash_content};
+use cordial_miners_core::crypto::{CryptoVerifier, block_hash};
 use cordial_miners_core::execution::{
     Bond, CordialBlockPayload, Deploy, DeployPool, DeployPoolConfig, DeploySignatureAlgorithm,
     ExecutionRequest, ExecutionResult, MockRuntime, ProcessedSystemDeploy, RuntimeError,
@@ -143,7 +143,7 @@ fn make_block(
     };
     Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
+            content_hash: block_hash(&creator, &content),
             creator,
             signature: vec![0xAB; 72],
         },

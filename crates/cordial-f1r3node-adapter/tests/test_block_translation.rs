@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use cordial_miners_core::Block;
-use cordial_miners_core::crypto::hash_content;
+use cordial_miners_core::crypto::block_hash;
 use cordial_miners_core::execution::{
     BlockState, Bond as CmBond, CordialBlockPayload, Deploy as CmDeploy, DeploySignatureAlgorithm,
     ProcessedDeploy as CmProcessed, ProcessedSystemDeploy as CmSystem,
@@ -34,7 +34,7 @@ fn build_block(
     };
     Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
+            content_hash: block_hash(&creator, &content),
             creator,
             signature,
         },
@@ -176,7 +176,7 @@ fn block_to_message_and_back_preserves_payload_and_creator() {
     assert_eq!(original.system_deploys.len(), round.system_deploys.len());
 
     // Recovered content_hash is deterministic from the new content
-    let expected_hash = hash_content(&recovered.content);
+    let expected_hash = block_hash(&recovered.identity.creator, &recovered.content);
     assert_eq!(recovered.identity.content_hash, expected_hash);
 }
 
@@ -311,10 +311,11 @@ fn invalid_payload_bytes_fails_translation() {
         payload: vec![0xff, 0x00, 0xab], // not a valid CordialBlockPayload
         predecessors: HashSet::new(),
     };
+    let creator = node(1);
     let block = Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
-            creator: node(1),
+            content_hash: block_hash(&creator, &content),
+            creator,
             signature: vec![],
         },
         content,

@@ -6,7 +6,7 @@ use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::consensus::{
     CordialEquivocationEvidence, EvidencePool, select_predecessors, select_predecessors_strict,
 };
-use cordial_miners_core::crypto::{SignatureScheme, hash_content};
+use cordial_miners_core::crypto::{SignatureScheme, block_hash};
 use cordial_miners_core::execution::{
     BlockState, Bond, CordialBlockPayload, DeployPool, DeployPoolConfig, ExecutionRequest,
     ExecutionResult, RuntimeError, RuntimeManager, SystemDeployRequest, compute_deploys_in_scope,
@@ -234,7 +234,7 @@ impl BlockSigner for Secp256k1BlockSigner {
     ) -> Result<BlockIdentity, String> {
         use cordial_miners_core::crypto::Secp256k1Scheme;
 
-        let content_hash = hash_content(content);
+        let content_hash = block_hash(creator, content);
         let signature = Secp256k1Scheme.sign(&content_hash, &self.private_key)?;
         Ok(BlockIdentity {
             content_hash,

@@ -3,7 +3,7 @@ use cordial_miners_core::consensus::{
     InvalidBlock, ValidationConfig, ValidationResult, validate_block, validated_insert,
 };
 use cordial_miners_core::crypto::CryptoVerifier;
-use cordial_miners_core::crypto::{hash_content, sign};
+use cordial_miners_core::crypto::{block_hash, sign};
 use cordial_miners_core::{Block, BlockContent, BlockIdentity, NodeId};
 use ed25519_dalek::SigningKey as EdSigningKey;
 use rand::rngs::OsRng;
@@ -68,7 +68,7 @@ fn genesis_signed(private_key: &[u8], creator: &NodeId, tag: u8) -> Block {
         payload: vec![tag],
         predecessors: HashSet::new(),
     };
-    let content_hash = hash_content(&content);
+    let content_hash = block_hash(creator, &content);
     let signature = sign(&content_hash, private_key);
     Block {
         identity: BlockIdentity {
@@ -87,7 +87,7 @@ fn child_signed(private_key: &[u8], creator: &NodeId, tag: u8, parents: &[&Block
         payload: vec![tag],
         predecessors: preds,
     };
-    let content_hash = hash_content(&content);
+    let content_hash = block_hash(creator, &content);
     let signature = sign(&content_hash, private_key);
     Block {
         identity: BlockIdentity {
@@ -375,11 +375,12 @@ fn correct_content_hash_passes() {
         payload: vec![42],
         predecessors: HashSet::new(),
     };
-    let content_hash = hash_content(&content);
+    let creator = node(1);
+    let content_hash = block_hash(&creator, &content);
     let block = Block {
         identity: BlockIdentity {
             content_hash,
-            creator: node(1),
+            creator,
             signature: vec![],
         },
         content,

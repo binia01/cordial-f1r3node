@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use cordial_f1r3node_adapter::block_translation::{block_to_message, message_to_block};
 use cordial_miners_core::Block;
-use cordial_miners_core::crypto::hash_content;
+use cordial_miners_core::crypto::block_hash;
 use cordial_miners_core::execution::{
     BlockState, Bond as CmBond, CordialBlockPayload, Deploy as CmDeploy, DeploySignatureAlgorithm,
     ProcessedDeploy as CmProcessed, ProcessedSystemDeploy as CmSystem,
@@ -77,10 +77,13 @@ fn build_test_block(num_deploys: usize) -> Block {
         predecessors: HashSet::new(),
     };
 
+    let creator = node(1);
+    let content_hash = block_hash(&creator, &content);
+
     Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
-            creator: node(1),
+            content_hash,
+            creator,
             signature: vec![0xFF; 64],
         },
         content,

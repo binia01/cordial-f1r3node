@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use cordial_miners_core::Block;
 use cordial_miners_core::blocklace::Blocklace;
-use cordial_miners_core::crypto::hash_content;
+use cordial_miners_core::crypto::block_hash;
 use cordial_miners_core::execution::{
     BlockState, Bond as CmBond, CordialBlockPayload, Deploy, DeploySignatureAlgorithm,
     ProcessedDeploy, SignedDeploy,
@@ -50,7 +50,7 @@ fn make_block(
     };
     Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
+            content_hash: block_hash(&creator, &content),
             creator,
             signature: vec![sig_tag; 64],
         },
@@ -549,10 +549,11 @@ fn undecodable_payload_produces_error() {
         payload: vec![0xff, 0xff, 0xff], // not a valid CordialBlockPayload
         predecessors: HashSet::new(),
     };
+    let creator = node(1);
     let block = Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
-            creator: node(1),
+            content_hash: block_hash(&creator, &content),
+            creator,
             signature: vec![0x00; 64],
         },
         content,

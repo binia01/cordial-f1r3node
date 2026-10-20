@@ -92,7 +92,7 @@ runtime order remain outside this feature; see [Slashing Integration](./16-slash
 
 1. Build `CordialBlockPayload` from `ExecutionResult` (pre/post state, deploys, bonds).
 2. Serialize into `BlockContent.payload` via bincode.
-3. `content_hash = hash_content(content)` (Blake2b-256, f1r3node-aligned).
+3. `content_hash = block_hash(creator, content)` (Blake2b-256, f1r3node-aligned).
 4. Sign with Secp256k1 DER over the content hash.
 
 Verification on receive uses [`F1r3flyCryptoAdapter`](./14-crypto-adapter.md) implementing [`CryptoVerifier`](../../crates/cordial-miners-core/src/crypto.rs).

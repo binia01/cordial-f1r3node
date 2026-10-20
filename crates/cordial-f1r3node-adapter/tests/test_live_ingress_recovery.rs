@@ -25,7 +25,7 @@ use cordial_f1r3space_adapter::lmdb_store::{
     BLOCK_HASH_FORMAT_VERSION, BLOCK_HASH_FORMAT_VERSION_KEY,
 };
 use cordial_miners_core::Block;
-use cordial_miners_core::crypto::hash_content;
+use cordial_miners_core::crypto::block_hash;
 use cordial_miners_core::types::{BlockContent, BlockIdentity, NodeId};
 use tempfile::tempdir;
 
@@ -69,7 +69,7 @@ fn make_block(creator: &NodeId, state_tag: u8, predecessors: &[BlockIdentity]) -
 
     Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&content),
+            content_hash: block_hash(creator, &content),
             creator: creator.clone(),
             signature: vec![state_tag; 64],
         },

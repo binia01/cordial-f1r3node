@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use cordial_miners_core::block::Block;
-use cordial_miners_core::crypto::hash_content;
+use cordial_miners_core::crypto::block_hash;
 use cordial_miners_core::execution::{
     Bond as CmBond, CordialBlockPayload, Deploy as CmDeploy,
     DeploySignatureAlgorithm as CmDeploySignatureAlgorithm, ProcessedDeploy as CmProcessedDeploy,
@@ -510,12 +510,13 @@ pub fn message_to_block(msg: &BlockMessage) -> Result<Block, TranslationError> {
     // The block's content_hash is recomputed so the blocklace structure
     // stays internally consistent. f1r3node's `block_hash` is advisory and
     // discarded — the hash we compute is over the translated content.
-    let content_hash = hash_content(&content);
+    let creator = NodeId(msg.sender.clone());
+    let content_hash = block_hash(&creator, &content);
 
     Ok(Block {
         identity: BlockIdentity {
             content_hash,
-            creator: NodeId(msg.sender.clone()),
+            creator,
             signature: msg.sig.clone(),
         },
         content,
