@@ -9,7 +9,9 @@
 pub mod cutoff;
 pub mod quorum;
 
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
+
+use cordial_miners_core::execution::PorEquivocationAuthorization;
 
 use cordial_miners_core::{Blocklace, NodeId};
 use cordial_por::{PorConfig, RatingBatch, ReputationPenaltyEvents, ReputationState};
@@ -41,6 +43,7 @@ pub enum PorRatingRoundStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PorRatingRoundError {
     Rating(PorRatingError),
+    Penalty(cordial_por::PorError),
     Collector(PorRatingCollectorError),
     Transport(PorRatingTransportError),
     Quorum(PorRatingQuorumError),
@@ -65,6 +68,7 @@ impl fmt::Display for PorRatingRoundError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rating(error) => error.fmt(f),
+            Self::Penalty(error) => error.fmt(f),
             Self::Collector(error) => error.fmt(f),
             Self::Transport(error) => error.fmt(f),
             Self::Quorum(error) => error.fmt(f),
@@ -104,6 +108,7 @@ impl std::error::Error for PorRatingRoundError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Rating(error) => Some(error),
+            Self::Penalty(error) => Some(error),
             Self::Collector(error) => Some(error),
             Self::Transport(error) => Some(error),
             Self::Quorum(error) => Some(error),
@@ -167,6 +172,8 @@ pub struct CompletedPorRatingRound {
     batch: RatingBatch,
     close_reason: PorRatingRoundCloseReason,
     penalties: Option<ReputationPenaltyEvents>,
+    finalized_authorizations: BTreeSet<PorEquivocationAuthorization>,
+    admitted_authorizations: BTreeSet<PorEquivocationAuthorization>,
 }
 
 impl CompletedPorRatingRound {
@@ -174,8 +181,34 @@ impl CompletedPorRatingRound {
         self.penalties.as_ref()
     }
 
-    pub(super) fn set_authorized_penalties(&mut self, events: ReputationPenaltyEvents) {
+    pub(super) fn set_authorized_penalties(
+        &mut self,
+        events: ReputationPenaltyEvents,
+        admitted: BTreeSet<PorEquivocationAuthorization>,
+    ) {
         self.penalties = Some(events);
+        self.admitted_authorizations = admitted;
+    }
+
+    /// Every transition, including the no-penalty path, must match the complete
+    /// set captured from consensus when this round closed. Missing proofs must
+    /// be fetched before proceeding; attestations cannot waive this requirement.
+    pub(super) fn validate_complete_authorizations(
+        &self,
+        shard_id: &[u8],
+    ) -> Result<(), cordial_por::PorError> {
+        let expected: BTreeSet<_> = self
+            .finalized_authorizations
+            .iter()
+            .filter(|carrier| carrier.shard_id == shard_id)
+            .cloned()
+            .collect();
+        if expected != self.admitted_authorizations {
+            return Err(cordial_por::PorError::InvalidPenaltyEvents(
+                "admitted proofs do not match the complete finalized authorization set".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn opened(&self) -> FinalizedRatingRound {
@@ -273,6 +306,13 @@ impl<'a> PorRatingRoundCoordinator<'a> {
             batch,
             close_reason,
             penalties: None,
+            finalized_authorizations: super::evidence::finalized_authorizations(
+                self.blocklace,
+                self.output,
+                self.opened,
+            )
+            .map_err(PorRatingRoundError::Penalty)?,
+            admitted_authorizations: BTreeSet::new(),
         })
     }
 

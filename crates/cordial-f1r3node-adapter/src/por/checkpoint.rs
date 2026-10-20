@@ -389,6 +389,8 @@ impl<'a> PorCheckpointCollector<'a> {
     }
 
     fn audit(&self, block: &ReputationBlock) -> Result<(), PorError> {
+        self.completed
+            .validate_complete_authorizations(self.shard_id)?;
         let previous = ReputationVector {
             round: self.state.round(),
             values: self.state.reputation_list().entries.clone(),

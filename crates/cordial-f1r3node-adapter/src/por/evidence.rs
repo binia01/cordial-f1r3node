@@ -8,7 +8,7 @@
 //! Hosts retain raw proofs and complete ancestry so receivers can repeat
 //! verification. Authority is never decoded from peer bytes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cordial_miners_core::{
     Blocklace, NodeId,
@@ -17,6 +17,7 @@ use cordial_miners_core::{
         verify_equivocation_evidence, wave_of_round,
     },
     crypto,
+    execution::{CordialBlockPayload, PorEquivocationAuthorization},
 };
 use cordial_por::{
     EquivocationAuthorizationContext, EquivocationAuthorizationPolicy, EquivocationPenalty,
@@ -98,7 +99,15 @@ impl EquivocationAuthorizationPolicy for FinalizedEquivocationAuthorization<'_> 
                 .blocklace
                 .get(reference)
                 .ok_or_else(|| invalid("finalized authorization block is unavailable"))?;
-            if block.content.payload != payload {
+            let authorizations =
+                CordialBlockPayload::por_authorizations_from_bytes(&block.content.payload)
+                    .map_err(PorError::InvalidPenaltyEvents)?;
+            if !authorizations.iter().any(|authorization| {
+                authorization.shard_id == context.shard_id
+                    && authorization.source_finalized_wave == context.source_finalized_wave
+                    && authorization.round == context.round
+                    && authorization.message == payload
+            }) {
                 continue;
             }
             let block_round = depth(self.blocklace, &block.identity)
@@ -130,6 +139,36 @@ impl EquivocationAuthorizationPolicy for FinalizedEquivocationAuthorization<'_> 
     }
 }
 
+/// Snapshot every carrier in this trusted finalized source wave. No caller-
+/// supplied proof list participates in selecting the required messages.
+pub(super) fn finalized_authorizations(
+    blocklace: &Blocklace,
+    output: &OrderedFinalizedOutput,
+    opened: FinalizedRatingRound,
+) -> Result<BTreeSet<PorEquivocationAuthorization>, PorError> {
+    let mut messages = BTreeSet::new();
+    for reference in &output.blocks {
+        let block = blocklace.get(reference).ok_or_else(|| {
+            PorError::InvalidPenaltyEvents("finalized block is unavailable".into())
+        })?;
+        let carriers = CordialBlockPayload::por_authorizations_from_bytes(&block.content.payload)
+            .map_err(PorError::InvalidPenaltyEvents)?;
+        if carriers.is_empty() {
+            continue;
+        }
+        let round = depth(blocklace, &block.identity).ok_or_else(|| {
+            PorError::InvalidPenaltyEvents("authorization ancestry is unavailable".into())
+        })?;
+        if wave_of_round(round, output.wavelength) == Some(opened.finalized_wave) {
+            messages.extend(carriers.into_iter().filter(|carrier| {
+                carrier.source_finalized_wave == opened.finalized_wave
+                    && carrier.round == opened.rating_round
+            }));
+        }
+    }
+    Ok(messages)
+}
+
 impl CompletedPorRatingRound {
     /// Verify raw retained evidence and require finalized protocol authorization.
     /// Admission is atomic. One immutable event set drives local construction,
@@ -153,21 +192,37 @@ impl CompletedPorRatingRound {
             source_finalized_wave: self.opened().finalized_wave,
             round: self.batch().round,
         };
-        let equivocations = raw
-            .iter()
-            .map(|claim| {
-                let proof = verify_equivocation_evidence(claim, blocklace)
-                    .map_err(|error| PorError::InvalidPenaltyEvents(error.to_string()))?;
-                EquivocationPenalty::authorize(&proof, context.clone(), &policy)
-            })
-            .collect::<Result<Vec<_>, PorError>>()?;
+        let mut selected = BTreeMap::new();
+        let mut admitted = BTreeSet::new();
+        for claim in raw {
+            let proof = verify_equivocation_evidence(claim, blocklace)
+                .map_err(|error| PorError::InvalidPenaltyEvents(error.to_string()))?;
+            let message = equivocation_authorization_payload(&context, &proof)?;
+            let event = EquivocationPenalty::authorize(&proof, context.clone(), &policy)?;
+            admitted.insert(PorEquivocationAuthorization {
+                shard_id: context.shard_id.clone(),
+                source_finalized_wave: context.source_finalized_wave,
+                round: context.round,
+                message: message.clone(),
+            });
+            selected.insert(message, event);
+        }
+        // Verify every finalized message, but penalize an offender only once.
+        // If several proofs name the same offender, choose the lexicographically
+        // first canonical message, independent of arrival/proof-list order.
+        let mut by_offender = BTreeMap::new();
+        for event in selected.into_values() {
+            by_offender.entry(event.offender.clone()).or_insert(event);
+        }
+        let equivocations = by_offender.into_values().collect();
         let events = ReputationPenaltyEvents {
             round: self.batch().round,
             equivocations,
             inactivity: Vec::new(),
         };
         penalty_events_commitment(events.round, Some(&events))?;
-        self.set_authorized_penalties(events);
+        self.set_authorized_penalties(events, admitted);
+        self.validate_complete_authorizations(shard_id)?;
         Ok(self)
     }
 }

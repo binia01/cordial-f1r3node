@@ -50,6 +50,7 @@ pub(super) fn stage_completed_reputation_round(
     config: &PorConfig,
     shard_id: &[u8],
 ) -> Result<(ReputationState, AppliedPorReputationRound), PorError> {
+    completed.validate_complete_authorizations(shard_id)?;
     let previous = ReputationVector {
         round: state.round(),
         values: state.reputation_list().entries.clone(),
@@ -99,6 +100,7 @@ fn stage_reputation_block(
     shard_id: &[u8],
     block: ReputationBlock,
 ) -> Result<(ReputationState, AppliedPorReputationRound), PorError> {
+    completed.validate_complete_authorizations(shard_id)?;
     let batch = completed.batch();
     let mut staged = state.clone();
     staged.apply_reputation_block_with_penalties(
