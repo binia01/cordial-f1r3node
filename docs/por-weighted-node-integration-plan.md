@@ -221,9 +221,13 @@ envelope and batch encoder. The v2 envelope decoder checks structure.
 Checkpoint-window extraction now checks the finalized prefix, selects
 block-production references only from the 16-block source window, and admits
 participants against the preceding PoR state before signing a local batch.
-The live rating collector and exchange still use v1 wave ratings. Remote v2
-evidence admission, exchange, and durable lifecycle integration remain pending
-before the shadow runner can commit checkpoint-driven rounds.
+An independent v2 collector now checks remote envelope bytes against that
+source, Cordial's supplied authorized-rater set, signatures, exact evidence,
+and deterministic scores. It inserts batches atomically and excludes partial
+raters from a complete-batch snapshot. The live rating exchange and shadow
+runner still use the v1 wave collector. Durable v2 exchange, deterministic
+closure, and lifecycle integration remain pending before the shadow runner
+can commit checkpoint-driven rounds.
 
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
