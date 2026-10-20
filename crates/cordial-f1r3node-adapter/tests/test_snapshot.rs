@@ -566,7 +566,63 @@ fn undecodable_payload_produces_error() {
 }
 
 #[test]
-fn snapshot_parent_closure_resolves_parents_without_ambiguity() {
+fn same_content_parents_round_trip_through_a_host_child_message() {
+    use cordial_f1r3node_adapter::block_translation::{block_to_message, message_to_block};
+
+    let mut bl = Blocklace::new();
+    let v1 = node(1);
+    let v2 = node(2);
+
+    let genesis = make_block(v1.clone(), simple_payload(0, vec![]), HashSet::new(), 1);
+    bl.insert(genesis.clone(), &MockVerifier).unwrap();
+
+    let mut preds = HashSet::new();
+    preds.insert(genesis.identity.clone());
+    let b1 = make_block(v1.clone(), simple_payload(1, vec![]), preds.clone(), 2);
+    let b2 = make_block(v2.clone(), simple_payload(1, vec![]), preds, 3);
+    bl.insert(b1.clone(), &MockVerifier).unwrap();
+    bl.insert(b2.clone(), &MockVerifier).unwrap();
+
+    assert_ne!(b1.identity.content_hash, b2.identity.content_hash);
+
+    let bonds_map = bonds(&[(1, 100), (2, 100)]);
+    let snap = build_snapshot(&bl, &bonds_map, default_shard_conf(), "root").unwrap();
+
+    let mut msg = block_to_message(&b1, "root").expect("block_to_message");
+    msg.header.parents_hash_list = snap.parents.iter().map(|p| p.block_hash.clone()).collect();
+    msg.justifications = snap.justifications.iter().cloned().collect();
+    msg.sender = v1.0.clone();
+    msg.body.state.block_number = 2;
+
+    let child = message_to_block(&msg).expect("translate");
+
+    let matches_pred = |id: &BlockIdentity, target: &BlockIdentity| {
+        id.content_hash == target.content_hash && id.creator == target.creator
+    };
+    assert!(
+        child
+            .content
+            .predecessors
+            .iter()
+            .any(|p| matches_pred(p, &b1.identity)),
+        "child predecessors must contain b1"
+    );
+    assert!(
+        child
+            .content
+            .predecessors
+            .iter()
+            .any(|p| matches_pred(p, &b2.identity)),
+        "child predecessors must contain b2"
+    );
+
+    bl.insert(child.clone(), &MockVerifier)
+        .expect("insert child block");
+    assert!(bl.dom().contains(&child.identity));
+}
+
+#[test]
+fn snapshot_references_are_closed_over_dag_set() {
     let mut bl = Blocklace::new();
     let v1 = node(1);
     let v2 = node(2);
@@ -599,6 +655,42 @@ fn snapshot_parent_closure_resolves_parents_without_ambiguity() {
             matching.len(),
             1,
             "parent must resolve uniquely to (sender, hash)"
+        );
+    }
+
+    // Every reference in the snapshot is in dag_set:
+    for parent in &snap.parents {
+        assert!(snap.dag.dag_set.contains(&parent.block_hash));
+        for ph in &parent.header.parents_hash_list {
+            assert!(snap.dag.dag_set.contains(ph));
+        }
+        for j in &parent.justifications {
+            assert!(snap.dag.dag_set.contains(&j.latest_block_hash));
+        }
+    }
+    for j in &snap.justifications {
+        assert!(snap.dag.dag_set.contains(&j.latest_block_hash));
+    }
+    for (k, children) in &snap.dag.child_map {
+        assert!(snap.dag.dag_set.contains(k));
+        for child_hash in children {
+            assert!(snap.dag.dag_set.contains(child_hash));
+        }
+    }
+    for latest_hash in snap.dag.latest_messages_map.values() {
+        assert!(snap.dag.dag_set.contains(latest_hash));
+    }
+    for tip in &snap.tips {
+        assert!(snap.dag.dag_set.contains(tip));
+    }
+    if !snap.lca.is_empty() {
+        assert!(snap.dag.dag_set.contains(&snap.lca));
+    }
+    if !snap.dag.last_finalized_block_hash.is_empty() {
+        assert!(
+            snap.dag
+                .dag_set
+                .contains(&snap.dag.last_finalized_block_hash)
         );
     }
 }
@@ -637,12 +729,15 @@ async fn snapshot_tips_are_consistent_with_casper_estimator_and_contains() {
 
     // Tips in snapshot match the estimator tips
     assert_eq!(snap.tips, estimator_tips);
+    let snap_tip_set: HashSet<_> = snap.tips.iter().cloned().collect();
+    let est_tip_set: HashSet<_> = estimator_tips.iter().cloned().collect();
+    assert_eq!(snap_tip_set, est_tip_set);
     assert_eq!(snap.tips.len(), 2);
 
-    // Each snapshot tip returns true from adapter.contains()
-    for tip in &snap.tips {
-        assert!(adapter.contains(tip));
-        assert!(adapter.dag_contains(tip));
+    // For every hash in the snapshot's dag_set, both adapter.contains and dag_contains are true
+    for h in &snap.dag.dag_set {
+        assert!(adapter.contains(h));
+        assert!(adapter.dag_contains(h));
     }
 
     // Non-existent hash returns false from contains
