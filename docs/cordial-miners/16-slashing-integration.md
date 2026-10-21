@@ -143,7 +143,8 @@ serialization and execution details.
 
 ## Test Coverage
 
-The focused tests inspect adapter requests, not real host punishment or replay:
+The focused tests cover adapter preparation and PoR state transitions, without
+claiming host punishment or host-runtime replay:
 
 - `tests/test_slashing.rs`: rejection of unverified host metadata on the byte,
   envelope, and tiered APIs, empty evidence, and invalid ratios.
@@ -154,11 +155,23 @@ The focused tests inspect adapter requests, not real host punishment or replay:
   and mock runtime, and production rejection before execution or broadcast.
 - `tests/test_proposer.rs`: existing proposal and execution-request regressions,
   including a real core `CordialEvidencePool` feeding `EvidencePoolSource`.
+- `tests/test_slashing_lifecycle.rs`: signed conflicting blocks pass through
+  core detection, adapter preparation with a test formatter, and a test
+  coordinator into real PoR block construction, audit, state application, and
+  weight exports. Covers one-of-four isolated slashing, three-of-four full
+  slashing, permanent exclusion, persistence, fresh-key state registration,
+  signed rating rounds, deterministic replay, and atomic rejection of forged
+  penalty results or missing excluded entries even with recomputed commitments.
+  Fresh-key registration assumes an external lifecycle supplies its starting
+  reputation; it does not authorize a transfer, consume the old retained balance,
+  or automatically admit the new key into Cordial's authorized validator set.
+  The coordinator supplies agreed penalty events and does not implement host
+  evidence finalization, authorization, or runtime punishment.
 
 Run from the repository root:
 
 ```bash
-cargo +nightly test --locked -j 1 -p cordial-f1r3node-adapter --test test_slashing --test test_tiered_slashing --test test_proposer
+cargo +nightly test --locked -j 1 -p cordial-f1r3node-adapter --test test_slashing --test test_tiered_slashing --test test_slashing_lifecycle --test test_proposer
 ```
 
 A single build job limits memory use when linking native host dependencies.
