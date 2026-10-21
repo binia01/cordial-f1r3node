@@ -298,6 +298,7 @@ fn validate_config(config: &ShadowConfig) -> Result<()> {
 }
 
 /// Run until stopped. Transport errors retry; invalid evidence and prefix drift fail closed.
+#[allow(clippy::collapsible_if)]
 pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
     validate_config(&config)?;
     let bonds = load_bonds(&config.bonds_file)?;
@@ -655,6 +656,8 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                                     if status.observed_finalized_wave == Some(expected_wave) {
                                         runtime.ingress().validate_por_weights(&candidate_state)?;
                                         let before_commit = status.clone();
+                                        // Wave mode retains the legacy single-observer commit path.
+                                        #[allow(deprecated)]
                                         let committed =
                                             runtime.commit_completed_round(&completed)?;
                                         match committed.activation {

@@ -16,8 +16,7 @@ use crate::{
     clamp::clamp_reputation_transition,
     commitments::{
         checkpoint_rating_batch_commitment, config_commitment, penalty_events_commitment,
-        rating_batch_commitment,
-        reputation_block_hash,
+        rating_batch_commitment, reputation_block_hash,
     },
     config::PorConfig,
     error::PorError,

@@ -6,8 +6,8 @@ use cordial_miners_core::{
 use crate::{
     commitments::{
         checkpoint_rating_batch_commitment, config_commitment, penalty_events_commitment,
-        rating_batch_commitment,
-        reputation_block_hash, reputation_list_commitment, validate_reputation_entries,
+        rating_batch_commitment, reputation_block_hash, reputation_list_commitment,
+        validate_reputation_entries,
     },
     config::PorConfig,
     error::PorError,

@@ -257,7 +257,7 @@ impl DurablePorState {
         Ok(&self.state)
     }
 
-    /// Source cursor committed in the latest v2 reputation block, if any.
+    /// Source cursor committed in the latest v3 reputation block, if any.
     pub fn committed_checkpoint_source(
         &self,
     ) -> Result<Option<RatingSourceCheckpoint>, DurablePorStateError> {
@@ -421,7 +421,7 @@ impl DurablePorState {
 
     /// Audit and durably commit one complete checkpoint rating round.
     ///
-    /// The snapshot's v2 reputation block is the source cursor. Replaying a
+    /// The snapshot's v3 reputation block is the source cursor. Replaying a
     /// completed source after restart fails the consecutive-round audit.
     pub fn apply_completed_checkpoint_round(
         &mut self,

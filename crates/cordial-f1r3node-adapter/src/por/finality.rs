@@ -265,7 +265,7 @@ pub fn finalized_output_for_wave(
         )
         .map_err(PorFinalityError::Ordering)?
     };
-    if !latest.blocks.starts_with(&blocks) || !blocks.contains(&leader) {
+    if !latest.blocks.starts_with(&blocks) || !blocks.contains(&leader.consensus_identity()) {
         return Err(PorFinalityError::HistoricalPrefixMismatch { wave });
     }
 

@@ -52,6 +52,7 @@ pub fn stage_local_checkpoint_rating_batch(
 /// Each call rebuilds the candidate from durable local bytes and the shared
 /// exchange. A partial peer prefix leaves the round open; malformed or
 /// conflicting evidence fails closed. The returned value is still uncommitted.
+#[allow(clippy::too_many_arguments)]
 pub fn close_checkpoint_rating_exchange_if_complete(
     blocklace: &Blocklace,
     output: &OrderedFinalizedOutput,

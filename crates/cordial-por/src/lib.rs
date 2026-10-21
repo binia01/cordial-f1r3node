@@ -70,8 +70,8 @@ pub use block::{
     POR_CHECKPOINT_REPUTATION_BLOCK_WIRE_VERSION, POR_REPUTATION_BLOCK_MAGIC,
     POR_REPUTATION_BLOCK_WIRE_VERSION, REPUTATION_BLOCK_VERSION, ReputationBlockContext,
     build_checkpoint_reputation_block, build_reputation_block,
-    build_reputation_block_with_penalties, decode_reputation_block,
-    encode_reputation_block, validate_reputation_block,
+    build_reputation_block_with_penalties, decode_reputation_block, encode_reputation_block,
+    validate_reputation_block,
 };
 pub use types::{
     EquivocationPenalty, InactivityPenalty, NormalizedRatingEntry, NormalizedRatingMatrix,

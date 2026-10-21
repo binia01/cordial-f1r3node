@@ -188,10 +188,10 @@ pub struct ReputationBlockHeader {
     /// Shard whose finalized activity produced this reputation update.
     pub shard_id: Vec<u8>,
 
-    /// Finalized Cordial source wave for v1; reserved as zero in v2.
+    /// Finalized Cordial source wave for wave blocks (v2); zero in checkpoint blocks (v3).
     pub source_finalized_wave: u64,
 
-    /// Finalized-prefix source identity for v2; absent in v1.
+    /// Finalized-prefix source identity for checkpoint blocks (v3); absent in wave blocks (v2).
     pub source_checkpoint: Option<RatingSourceCheckpoint>,
 
     pub round: ReputationRound,

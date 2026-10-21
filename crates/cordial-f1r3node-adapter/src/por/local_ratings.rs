@@ -90,6 +90,7 @@ pub fn stage_local_rating_batch(
 /// Every local and peer envelope is checked against the same finalized
 /// evidence before completeness is reported. The durable outbox is the source
 /// for retries after a restart; a partial publication can be safely retried.
+#[allow(clippy::too_many_arguments)]
 pub fn observe_rating_exchange(
     blocklace: &Blocklace,
     output: &OrderedFinalizedOutput,
@@ -147,6 +148,7 @@ pub fn observe_rating_exchange(
 /// subsets. This gate requires the full deterministic batch and checks that
 /// the coordinator's local signing result matches the durable outbox exactly.
 /// The returned round is in memory; the caller has not committed PoR state.
+#[allow(clippy::too_many_arguments)]
 pub fn close_rating_exchange_if_complete(
     blocklace: &Blocklace,
     output: &OrderedFinalizedOutput,

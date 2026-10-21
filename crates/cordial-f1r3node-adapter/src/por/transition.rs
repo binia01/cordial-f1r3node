@@ -75,7 +75,7 @@ pub(super) fn stage_completed_reputation_round(
 
 /// Replay and audit a complete checkpoint round without changing live state.
 ///
-/// The resulting v2 reputation block stores the finalized-prefix source, so
+/// The resulting v3 reputation block stores the finalized-prefix source, so
 /// the durable snapshot and history also retain the committed source cursor.
 pub(super) fn stage_completed_checkpoint_round(
     completed: &CompletedCheckpointRatingRound,
