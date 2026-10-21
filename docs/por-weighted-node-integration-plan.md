@@ -242,10 +242,15 @@ The returned completed round can now be replayed into a v2 reputation block,
 audited against its checkpoint source, and committed through the existing
 snapshot-first and immutable-history storage path. The retained v2 block's
 source checkpoint is the committed cursor; recovery reads it from the
-snapshot, and a repeated round fails the consecutive-round audit. This does
-not activate new Cordial weights. The live shadow runner still uses the v1
-wave path; safe v2 activation and runner wiring remain pending before
-checkpoint-driven rounds affect live weights.
+snapshot, and a repeated round fails the consecutive-round audit. The runtime
+now accepts a complete checkpoint round only after it rechecks that source
+against its current finalized prefix, audits the candidate state, and confirms
+that the candidate weight projection preserves published Cordial finality.
+It then durably commits the round before activating the weights. A prior
+committed round awaiting activation blocks another checkpoint commit. This
+handoff has a focused live-ingress and restart test, but the live shadow runner
+still uses the v1 wave path. Runner wiring and a four-node v2 smoke remain
+pending before checkpoint-driven rounds affect live observers.
 
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
