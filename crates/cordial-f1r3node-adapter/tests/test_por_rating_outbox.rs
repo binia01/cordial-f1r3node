@@ -4,14 +4,15 @@ use std::{
 };
 
 use cordial_f1r3node_adapter::{
-    por::transport::outbox::RatingOutbox, por_rating_transport::encode_rating_batch,
-    por_ratings::rating_signing_hash,
+    por::transport::outbox::RatingOutbox,
+    por_rating_transport::{encode_checkpoint_rating_batch, encode_rating_batch},
+    por_ratings::{checkpoint_rating_signing_hash, rating_signing_hash},
 };
 use cordial_miners_core::{
     NodeId,
     crypto::{Secp256k1Scheme, SignatureScheme},
 };
-use cordial_por::{RatingBatch, RatingRecord};
+use cordial_por::{RatingBatch, RatingRecord, RatingSourceCheckpoint};
 use k256::ecdsa::SigningKey;
 
 fn node(seed: u8) -> NodeId {
@@ -38,6 +39,35 @@ fn batch(score: u64) -> RatingBatch {
         .unwrap();
     RatingBatch {
         round: 1,
+        ratings: vec![rating],
+    }
+}
+
+fn source(hash: u8) -> RatingSourceCheckpoint {
+    RatingSourceCheckpoint {
+        round: 1,
+        finalized_prefix_len: 16,
+        finalized_prefix_hash: [hash; 32],
+    }
+}
+
+fn checkpoint_batch(source: RatingSourceCheckpoint, score: u64) -> RatingBatch {
+    let mut rating = RatingRecord {
+        round: source.round,
+        rater: node(1),
+        recipient: node(2),
+        score,
+        signature: Vec::new(),
+        interaction_ref: Some(vec![7; 32]),
+    };
+    rating.signature = Secp256k1Scheme
+        .sign(
+            &checkpoint_rating_signing_hash(&rating, &source).unwrap(),
+            &[1; 32],
+        )
+        .unwrap();
+    RatingBatch {
+        round: source.round,
         ratings: vec![rating],
     }
 }
@@ -132,4 +162,78 @@ fn concurrent_conflicting_writers_cannot_replace_the_first_batch() {
         stored == encode_rating_batch(0, &batch(50)).unwrap()
             || stored == encode_rating_batch(0, &batch(51)).unwrap()
     );
+}
+
+#[test]
+fn checkpoint_batch_recovers_exact_source_and_keeps_v1_separate() {
+    let directory = tempfile::tempdir().unwrap();
+    let outbox = RatingOutbox::open(directory.path()).unwrap();
+    let first = source(4);
+    let signed = checkpoint_batch(first, 50);
+    outbox.persist_local_batch(0, &node(1), &batch(50)).unwrap();
+    outbox
+        .persist_checkpoint_batch(first, &node(1), &signed)
+        .unwrap();
+    outbox
+        .persist_checkpoint_batch(first, &node(1), &signed)
+        .unwrap();
+    drop(outbox);
+
+    let recovered = RatingOutbox::open(directory.path()).unwrap();
+    assert_eq!(
+        recovered.load_checkpoint_batch(first, &node(1)).unwrap(),
+        Some(encode_checkpoint_rating_batch(first, &signed).unwrap())
+    );
+    assert!(
+        recovered
+            .load_checkpoint_batch(source(5), &node(1))
+            .is_err()
+    );
+    assert!(
+        recovered
+            .persist_checkpoint_batch(source(5), &node(1), &checkpoint_batch(source(5), 50))
+            .is_err()
+    );
+    assert!(
+        recovered
+            .persist_checkpoint_batch(first, &node(1), &checkpoint_batch(first, 51))
+            .is_err()
+    );
+    assert_eq!(
+        recovered.load(0, &node(1)).unwrap(),
+        Some(encode_rating_batch(0, &batch(50)).unwrap())
+    );
+}
+
+#[test]
+fn checkpoint_empty_batch_and_corruption_survive_restart_safely() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = source(4);
+    let outbox = RatingOutbox::open(directory.path()).unwrap();
+    outbox
+        .persist_checkpoint_batch(
+            first,
+            &node(1),
+            &RatingBatch {
+                round: 1,
+                ratings: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        RatingOutbox::open(directory.path())
+            .unwrap()
+            .load_checkpoint_batch(first, &node(1))
+            .unwrap(),
+        Some(Vec::new())
+    );
+    assert!(outbox.load_checkpoint_batch(source(5), &node(1)).is_err());
+    let path = fs::read_dir(directory.path().join("por/rating-outbox/checkpoint-v2"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::write(path, b"truncated").unwrap();
+    assert!(outbox.load_checkpoint_batch(first, &node(1)).is_err());
 }
