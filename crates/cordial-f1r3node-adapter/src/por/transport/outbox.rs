@@ -1,6 +1,6 @@
 //! Durable local staging for signed rating envelopes before peer delivery.
 //!
-//! A batch is written as one atomically replaced file. Repeating the same
+//! A batch is written as one immutable, atomically published file. Repeating the same
 //! batch is idempotent; a different batch for the same wave and rater fails
 //! closed so retry cannot silently change already staged ratings.
 
@@ -13,12 +13,16 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use cordial_miners_core::NodeId;
-use cordial_por::RatingBatch;
+use cordial_por::{RatingBatch, RatingSourceCheckpoint};
 
-use super::{encode_rating_batch, wire::BlockProductionRatingEnvelopeV1};
-use crate::por::ratings::verify_rating_signature;
+use super::{
+    encode_checkpoint_rating_batch, encode_rating_batch,
+    wire::{BlockProductionRatingEnvelopeV1, BlockProductionRatingEnvelopeV2},
+};
+use crate::por::ratings::{verify_checkpoint_rating_signature, verify_rating_signature};
 
 const MAGIC: &[u8] = b"cordial-por-rating-outbox-v1";
+const CHECKPOINT_MAGIC: &[u8] = b"cordial-por-rating-outbox-v2";
 const MAX_OUTBOX_BYTES: usize = 8 * 1024 * 1024;
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
@@ -51,47 +55,51 @@ impl RatingOutbox {
         let bytes = encode_file(finalized_wave, rater, &envelopes)?;
         decode_file(&bytes, finalized_wave, rater)?;
         let path = self.batch_path(finalized_wave, rater);
+        persist_immutable(&path, &bytes, &self.directory)
+    }
 
-        match read_bounded(&path)? {
-            Some(existing) => {
-                ensure!(existing == bytes, "conflicting PoR rating outbox batch");
-                return Ok(());
-            }
-            None => {}
-        }
-
-        let (temporary, mut file) = loop {
-            let nonce = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
-            let temporary = path.with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => break (temporary, file),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| format!("creating {}", temporary.display()));
-                }
-            }
-        };
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        let linked = fs::hard_link(&temporary, &path);
-        fs::remove_file(&temporary)?;
-        match linked {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing = read_bounded(&path)?.context("rating outbox batch disappeared")?;
-                ensure!(existing == bytes, "conflicting PoR rating outbox batch");
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("publishing {}", path.display()));
-            }
-        }
+    /// Stage a checkpoint-bound batch, including an empty batch, before delivery.
+    pub fn persist_checkpoint_batch(
+        &self,
+        source: RatingSourceCheckpoint,
+        rater: &NodeId,
+        batch: &RatingBatch,
+    ) -> Result<()> {
+        ensure!(
+            batch.ratings.iter().all(|rating| &rating.rater == rater),
+            "PoR checkpoint outbox batch contains another rater's rating"
+        );
+        let envelopes = encode_checkpoint_rating_batch(source, batch)?;
+        let bytes = encode_checkpoint_file(source, rater, &envelopes)?;
+        decode_checkpoint_file(&bytes, source, rater)?;
+        let directory = self.directory.join("checkpoint-v2");
+        fs::create_dir_all(&directory)?;
         File::open(&self.directory)?.sync_all()?;
-        Ok(())
+        persist_immutable(
+            &self.checkpoint_batch_path(source.round, rater),
+            &bytes,
+            &directory,
+        )
+    }
+
+    /// Restore only a batch signed for the exact requested checkpoint source.
+    pub fn load_checkpoint_batch(
+        &self,
+        source: RatingSourceCheckpoint,
+        rater: &NodeId,
+    ) -> Result<Option<Vec<Vec<u8>>>> {
+        source.validate()?;
+        let path = self.checkpoint_batch_path(source.round, rater);
+        let Some(bytes) = read_bounded(&path)? else {
+            return Ok(None);
+        };
+        Ok(Some(decode_checkpoint_file(&bytes, source, rater)?))
+    }
+
+    fn checkpoint_batch_path(&self, round: u64, rater: &NodeId) -> PathBuf {
+        self.directory
+            .join("checkpoint-v2")
+            .join(format!("{round:020}-{}.bin", hex::encode(&rater.0)))
     }
 
     /// Restore staged envelopes. Wire shape, wave, rater, and signatures are checked.
@@ -110,6 +118,43 @@ impl RatingOutbox {
             hex::encode(&rater.0)
         ))
     }
+}
+
+fn persist_immutable(path: &Path, bytes: &[u8], directory: &Path) -> Result<()> {
+    if let Some(existing) = read_bounded(path)? {
+        ensure!(existing == bytes, "conflicting PoR rating outbox batch");
+        return Ok(());
+    }
+    let (temporary, mut file) = loop {
+        let nonce = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+        let temporary = path.with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", temporary.display()));
+            }
+        }
+    };
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    let linked = fs::hard_link(&temporary, path);
+    fs::remove_file(&temporary)?;
+    match linked {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = read_bounded(path)?.context("rating outbox batch disappeared")?;
+            ensure!(existing == bytes, "conflicting PoR rating outbox batch");
+        }
+        Err(error) => return Err(error).with_context(|| format!("publishing {}", path.display())),
+    }
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -197,6 +242,97 @@ fn decode_file(bytes: &[u8], expected_wave: u64, expected_rater: &NodeId) -> Res
         envelopes.push(envelope);
     }
     ensure!(cursor.is_empty(), "PoR rating outbox has trailing bytes");
+    Ok(envelopes)
+}
+
+fn encode_checkpoint_file(
+    source: RatingSourceCheckpoint,
+    rater: &NodeId,
+    envelopes: &[Vec<u8>],
+) -> Result<Vec<u8>> {
+    source.validate()?;
+    ensure!(
+        matches!(rater.0.len(), 33 | 65),
+        "invalid PoR checkpoint outbox rater key"
+    );
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(CHECKPOINT_MAGIC);
+    bytes.extend_from_slice(&source.round.to_be_bytes());
+    bytes.extend_from_slice(&source.finalized_prefix_len.to_be_bytes());
+    bytes.extend_from_slice(&source.finalized_prefix_hash);
+    bytes.extend_from_slice(&(rater.0.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(&rater.0);
+    bytes.extend_from_slice(&u32::try_from(envelopes.len())?.to_be_bytes());
+    for envelope in envelopes {
+        bytes.extend_from_slice(&u32::try_from(envelope.len())?.to_be_bytes());
+        bytes.extend_from_slice(envelope);
+        ensure!(
+            bytes.len() <= MAX_OUTBOX_BYTES,
+            "PoR checkpoint outbox batch is too large"
+        );
+    }
+    Ok(bytes)
+}
+
+fn decode_checkpoint_file(
+    bytes: &[u8],
+    expected_source: RatingSourceCheckpoint,
+    expected_rater: &NodeId,
+) -> Result<Vec<Vec<u8>>> {
+    expected_source.validate()?;
+    ensure!(
+        bytes.len() <= MAX_OUTBOX_BYTES,
+        "PoR checkpoint outbox batch is too large"
+    );
+    let mut cursor = bytes;
+    ensure!(
+        take(&mut cursor, CHECKPOINT_MAGIC.len())? == CHECKPOINT_MAGIC,
+        "invalid PoR checkpoint outbox format"
+    );
+    let source = RatingSourceCheckpoint {
+        round: u64::from_be_bytes(take(&mut cursor, 8)?.try_into()?),
+        finalized_prefix_len: u64::from_be_bytes(take(&mut cursor, 8)?.try_into()?),
+        finalized_prefix_hash: take(&mut cursor, 32)?.try_into()?,
+    };
+    ensure!(
+        source == expected_source,
+        "PoR checkpoint outbox source mismatch"
+    );
+    let rater_len = u16::from_be_bytes(take(&mut cursor, 2)?.try_into()?) as usize;
+    ensure!(
+        take(&mut cursor, rater_len)? == expected_rater.0,
+        "PoR checkpoint outbox rater mismatch"
+    );
+    let count = u32::from_be_bytes(take(&mut cursor, 4)?.try_into()?) as usize;
+    ensure!(
+        count <= cursor.len() / 4,
+        "invalid PoR checkpoint outbox envelope count"
+    );
+    let mut envelopes = Vec::with_capacity(count);
+    let mut recipients = std::collections::HashSet::new();
+    for _ in 0..count {
+        let length = u32::from_be_bytes(take(&mut cursor, 4)?.try_into()?) as usize;
+        let envelope = take(&mut cursor, length)?.to_vec();
+        let decoded = BlockProductionRatingEnvelopeV2::decode(&envelope)?;
+        ensure!(
+            decoded.source() == source,
+            "PoR checkpoint outbox envelope source mismatch"
+        );
+        ensure!(
+            decoded.rating().rater == *expected_rater,
+            "PoR checkpoint outbox envelope rater mismatch"
+        );
+        ensure!(
+            recipients.insert(decoded.rating().recipient.clone()),
+            "duplicate PoR checkpoint outbox recipient"
+        );
+        verify_checkpoint_rating_signature(decoded.rating(), &source)?;
+        envelopes.push(envelope);
+    }
+    ensure!(
+        cursor.is_empty(),
+        "PoR checkpoint outbox has trailing bytes"
+    );
     Ok(envelopes)
 }
 

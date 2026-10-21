@@ -15,15 +15,19 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use cordial_miners_core::NodeId;
-use cordial_por::MAX_REPUTATION_BLOCK_SHARD_ID_LEN;
+use cordial_por::{MAX_REPUTATION_BLOCK_SHARD_ID_LEN, RatingSourceCheckpoint};
 
 use super::{
     RatingEnvelopeBroadcaster,
-    wire::{BlockProductionRatingEnvelopeV1, MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN},
+    wire::{
+        BlockProductionRatingEnvelopeV1, BlockProductionRatingEnvelopeV2,
+        MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN, MAX_CHECKPOINT_RATING_ENVELOPE_LEN,
+    },
 };
-use crate::por::ratings::verify_rating_signature;
+use crate::por::ratings::{verify_checkpoint_rating_signature, verify_rating_signature};
 
 const MAX_WAVE_ENVELOPES: usize = 8192;
+const CHECKPOINT_SOURCE_MAGIC: &[u8] = b"cordial-por-exchange-source-v2";
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 /// A shared, shard-scoped directory containing immutable rating envelopes.
@@ -50,6 +54,93 @@ impl FileRatingExchange {
             finalized_wave,
             rater,
         }
+    }
+
+    /// Publisher for one exact checkpoint source and rater.
+    pub fn checkpoint_broadcaster(
+        &self,
+        source: RatingSourceCheckpoint,
+        rater: NodeId,
+    ) -> Result<FileCheckpointRatingBroadcaster> {
+        source.validate()?;
+        Ok(FileCheckpointRatingBroadcaster {
+            directory: self.directory.clone(),
+            source,
+            rater,
+        })
+    }
+
+    /// Read peer v2 ratings only when the round's durable source marker matches.
+    pub fn read_checkpoint_peer_envelopes(
+        &self,
+        source: RatingSourceCheckpoint,
+        local_rater: &NodeId,
+        authorized: &HashSet<NodeId>,
+    ) -> Result<Vec<Vec<u8>>> {
+        source.validate()?;
+        ensure!(
+            authorized.contains(local_rater),
+            "local PoR exchange rater is not authorized"
+        );
+        let round_directory = checkpoint_round_directory(&self.directory, source.round);
+        let raters = match fs::read_dir(&round_directory) {
+            Ok(raters) => raters,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error).context("reading PoR checkpoint exchange round"),
+        };
+        ensure!(
+            read_source_marker(&round_directory)?.as_ref() == Some(&source),
+            "PoR checkpoint exchange source mismatch or missing marker"
+        );
+        let mut received = Vec::new();
+        for rater_entry in raters {
+            let rater_entry = rater_entry?;
+            let name = rater_entry.file_name();
+            if name == "source.bin" || name.to_string_lossy().starts_with(".tmp-") {
+                continue;
+            }
+            ensure!(
+                rater_entry.file_type()?.is_dir(),
+                "invalid PoR checkpoint exchange rater entry"
+            );
+            let rater = node_from_name(&rater_entry.file_name())?;
+            ensure!(
+                authorized.contains(&rater),
+                "unauthorized PoR checkpoint exchange rater"
+            );
+            if &rater == local_rater {
+                continue;
+            }
+            for envelope_entry in fs::read_dir(rater_entry.path())? {
+                let envelope_entry = envelope_entry?;
+                let name = envelope_entry.file_name();
+                if name.to_string_lossy().starts_with(".tmp-") {
+                    continue;
+                }
+                ensure!(
+                    envelope_entry.file_type()?.is_file(),
+                    "invalid PoR checkpoint exchange envelope entry"
+                );
+                let recipient = recipient_from_name(&name)?;
+                ensure!(
+                    authorized.contains(&recipient),
+                    "unauthorized PoR checkpoint exchange recipient"
+                );
+                ensure!(
+                    received.len() < MAX_WAVE_ENVELOPES,
+                    "too many PoR checkpoint exchange envelopes"
+                );
+                let bytes = read_optional_bounded(
+                    &envelope_entry.path(),
+                    MAX_CHECKPOINT_RATING_ENVELOPE_LEN,
+                )?
+                .context("PoR checkpoint exchange envelope disappeared")?;
+                validate_checkpoint_envelope(&bytes, source, &rater, &recipient)?;
+                received.push((rater.clone(), recipient, bytes));
+            }
+        }
+        received.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        Ok(received.into_iter().map(|(_, _, bytes)| bytes).collect())
     }
 
     /// Read signed envelopes from authorized peers in canonical key order.
@@ -182,6 +273,143 @@ impl RatingEnvelopeBroadcaster for FileRatingBroadcaster {
     }
 }
 
+pub struct FileCheckpointRatingBroadcaster {
+    directory: PathBuf,
+    source: RatingSourceCheckpoint,
+    rater: NodeId,
+}
+
+impl FileCheckpointRatingBroadcaster {
+    pub fn publish(&self, encoded: &[u8]) -> Result<()> {
+        let decoded = BlockProductionRatingEnvelopeV2::decode(encoded)?;
+        let recipient = &decoded.rating().recipient;
+        validate_checkpoint_envelope(encoded, self.source, &self.rater, recipient)?;
+        let namespace = self.directory.join("checkpoint-v2");
+        let round_directory = checkpoint_round_directory(&self.directory, self.source.round);
+        fs::create_dir_all(&round_directory)?;
+        File::open(&self.directory)?.sync_all()?;
+        File::open(&namespace)?.sync_all()?;
+        publish_immutable(
+            &round_directory.join("source.bin"),
+            &source_marker(self.source),
+            128,
+        )?;
+        let rater_directory = round_directory.join(hex::encode(&self.rater.0));
+        fs::create_dir_all(&rater_directory)?;
+        File::open(&round_directory)?.sync_all()?;
+        let path = rater_directory.join(format!("{}.bin", hex::encode(&recipient.0)));
+        publish_immutable(&path, encoded, MAX_CHECKPOINT_RATING_ENVELOPE_LEN)
+    }
+}
+
+impl RatingEnvelopeBroadcaster for FileCheckpointRatingBroadcaster {
+    fn broadcast_rating_envelope(&self, envelope: &[u8]) -> Result<(), String> {
+        self.publish(envelope).map_err(|error| error.to_string())
+    }
+}
+
+fn checkpoint_round_directory(directory: &Path, round: u64) -> PathBuf {
+    directory.join("checkpoint-v2").join(format!("{round:020}"))
+}
+
+fn source_marker(source: RatingSourceCheckpoint) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(CHECKPOINT_SOURCE_MAGIC.len() + 48);
+    bytes.extend_from_slice(CHECKPOINT_SOURCE_MAGIC);
+    bytes.extend_from_slice(&source.round.to_be_bytes());
+    bytes.extend_from_slice(&source.finalized_prefix_len.to_be_bytes());
+    bytes.extend_from_slice(&source.finalized_prefix_hash);
+    bytes
+}
+
+fn read_source_marker(directory: &Path) -> Result<Option<RatingSourceCheckpoint>> {
+    let Some(bytes) = read_optional_bounded(&directory.join("source.bin"), 128)? else {
+        return Ok(None);
+    };
+    ensure!(
+        bytes.len() == CHECKPOINT_SOURCE_MAGIC.len() + 48
+            && bytes.starts_with(CHECKPOINT_SOURCE_MAGIC),
+        "invalid PoR checkpoint exchange source marker"
+    );
+    let offset = CHECKPOINT_SOURCE_MAGIC.len();
+    let source = RatingSourceCheckpoint {
+        round: u64::from_be_bytes(bytes[offset..offset + 8].try_into()?),
+        finalized_prefix_len: u64::from_be_bytes(bytes[offset + 8..offset + 16].try_into()?),
+        finalized_prefix_hash: bytes[offset + 16..offset + 48].try_into()?,
+    };
+    source.validate()?;
+    Ok(Some(source))
+}
+
+fn validate_checkpoint_envelope(
+    encoded: &[u8],
+    source: RatingSourceCheckpoint,
+    rater: &NodeId,
+    recipient: &NodeId,
+) -> Result<()> {
+    let decoded = BlockProductionRatingEnvelopeV2::decode(encoded)?;
+    ensure!(
+        decoded.source() == source,
+        "PoR checkpoint exchange source mismatch"
+    );
+    ensure!(
+        decoded.rating().rater == *rater,
+        "PoR checkpoint exchange rater mismatch"
+    );
+    ensure!(
+        decoded.rating().recipient == *recipient,
+        "PoR checkpoint exchange recipient mismatch"
+    );
+    verify_checkpoint_rating_signature(decoded.rating(), &source)?;
+    Ok(())
+}
+
+fn publish_immutable(path: &Path, bytes: &[u8], max_bytes: usize) -> Result<()> {
+    if let Some(existing) = read_optional_bounded(path, max_bytes)? {
+        ensure!(
+            existing == bytes,
+            "conflicting PoR checkpoint exchange file"
+        );
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .context("PoR checkpoint exchange path has no parent")?;
+    let (temporary, mut file) = loop {
+        let nonce = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".tmp-{}-{nonce}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).context("creating PoR checkpoint exchange temporary file");
+            }
+        }
+    };
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    let linked = fs::hard_link(&temporary, path);
+    fs::remove_file(&temporary)?;
+    match linked {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = read_optional_bounded(path, max_bytes)?
+                .context("PoR checkpoint exchange file disappeared")?;
+            ensure!(
+                existing == bytes,
+                "conflicting PoR checkpoint exchange file"
+            );
+        }
+        Err(error) => return Err(error).context("publishing PoR checkpoint exchange file"),
+    }
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 fn validate_envelope(encoded: &[u8], wave: u64, rater: &NodeId, recipient: &NodeId) -> Result<()> {
     let decoded = BlockProductionRatingEnvelopeV1::decode(encoded)?;
     ensure!(
@@ -201,6 +429,10 @@ fn validate_envelope(encoded: &[u8], wave: u64, rater: &NodeId, recipient: &Node
 }
 
 fn read_optional_envelope(path: &Path) -> Result<Option<Vec<u8>>> {
+    read_optional_bounded(path, MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN)
+}
+
+fn read_optional_bounded(path: &Path, maximum: usize) -> Result<Option<Vec<u8>>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -215,12 +447,8 @@ fn read_optional_envelope(path: &Path) -> Result<Option<Vec<u8>>> {
         Err(error) => return Err(error).context("opening PoR exchange envelope"),
     };
     let mut bytes = Vec::new();
-    file.take(MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= MAX_BLOCK_PRODUCTION_RATING_ENVELOPE_LEN,
-        "PoR exchange envelope is too large"
-    );
+    file.take(maximum as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= maximum, "PoR exchange envelope is too large");
     Ok(Some(bytes))
 }
 
