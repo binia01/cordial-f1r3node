@@ -3,8 +3,8 @@
 //! Construction restores the durable reputation state and the previously
 //! activated projection, recomputes the Cordial finalized view under those
 //! weights. A newer committed projection may wait for the host to replay its
-//! source finalized wave before activation. Completed local or attested rounds
-//! commit state first and immediately attempt weight activation.
+//! source finalized wave or checkpoint before activation. Completed rounds
+//! commit state first and then attempt weight activation.
 
 use std::path::Path;
 
@@ -20,7 +20,9 @@ use crate::{
 use super::{
     activation::PorWeightActivationOutcome,
     checkpoint::AttestedPorCheckpoint,
-    finality::{PorFinalityError, validate_finalized_prefix_checkpoint},
+    finality::{
+        PorFinalityError, finalized_prefix_checkpoint, validate_finalized_prefix_checkpoint,
+    },
     lifecycle::{CompletedPorRatingRound, checkpoint::CompletedCheckpointRatingRound},
     persistence::{DurablePorState, DurablePorStateError},
     transition::{AppliedPorReputationRound, stage_completed_checkpoint_round},
@@ -44,8 +46,11 @@ pub enum PorRuntimeError {
     #[error("cannot restore or activate durable PoR state: {0}")]
     Durable(#[from] DurablePorStateError),
 
-    #[error("completed PoR checkpoint is not in the current finalized prefix: {0}")]
+    #[error("PoR checkpoint source does not match the current finalized prefix: {0}")]
     CheckpointSource(#[from] PorFinalityError),
+
+    #[error("committed PoR checkpoint round {round} is not yet in the finalized prefix")]
+    CommittedCheckpointUnavailable { round: u64 },
 
     #[error("cannot audit completed PoR checkpoint: {0}")]
     CheckpointTransition(#[source] PorError),
@@ -112,14 +117,21 @@ impl<A> PorRuntime<A> {
 
         let mut state = DurablePorState::open(data_dir, initial_state)?;
         let restored_activation = state.restore_activated_weights(&mut ingress)?;
-        ingress
+        let output = ingress
             .latest_finalized_ordered_output(wavelength)
             .map_err(PorRuntimeError::FinalizedOutput)?;
+        let checkpoint_ready = Self::committed_checkpoint_ready(&state, &output)?;
         let startup_activation = match (
             state.has_unactivated_committed_round()?,
             restored_activation,
         ) {
             (false, Some(restored)) => restored,
+            (true, Some(restored)) if !checkpoint_ready => restored,
+            (true, None) if !checkpoint_ready => {
+                return Err(PorRuntimeError::CommittedCheckpointUnavailable {
+                    round: state.state()?.round(),
+                });
+            }
             (true, Some(restored)) => match state.activate_weights(&mut ingress) {
                 Ok(activated) => activated,
                 Err(DurablePorStateError::Activation(
@@ -175,9 +187,16 @@ impl<A> PorRuntime<A> {
 
     /// Recompute and publish Cordial's latest finalized view.
     pub fn publish_finalized_output(&mut self) -> Result<OrderedFinalizedOutput, PorRuntimeError> {
-        self.ingress
+        let output = self
+            .ingress
             .latest_finalized_ordered_output(self.wavelength)
-            .map_err(PorRuntimeError::FinalizedOutput)
+            .map_err(PorRuntimeError::FinalizedOutput)?;
+        if !Self::committed_checkpoint_ready(&self.state, &output)? {
+            return Err(PorRuntimeError::CommittedCheckpointUnavailable {
+                round: self.state.state()?.round(),
+            });
+        }
+        Ok(output)
     }
 
     /// Commit a completed local rating round and immediately activate its weights.
@@ -291,11 +310,30 @@ impl<A> PorRuntime<A> {
         self.commit_attested_checkpoint(attested, completed)
     }
 
-    /// Retry the latest committed projection after a transient activation failure.
+    /// Retry the latest committed projection after its source is replayed.
     pub fn retry_weight_activation(
         &mut self,
-    ) -> Result<PorWeightActivationOutcome, DurablePorStateError> {
-        self.state.activate_weights(&mut self.ingress)
+    ) -> Result<PorWeightActivationOutcome, PorRuntimeError> {
+        self.publish_finalized_output()?;
+        Ok(self.state.activate_weights(&mut self.ingress)?)
+    }
+
+    fn committed_checkpoint_ready(
+        state: &DurablePorState,
+        output: &OrderedFinalizedOutput,
+    ) -> Result<bool, PorRuntimeError> {
+        let Some(source) = state.committed_checkpoint_source()? else {
+            return Ok(true);
+        };
+        let Some(checkpoint) = finalized_prefix_checkpoint(output, source.round)? else {
+            return Ok(false);
+        };
+        if checkpoint.rating_source() != source {
+            return Err(PorRuntimeError::CheckpointSource(
+                PorFinalityError::PrefixCheckpointMismatch,
+            ));
+        }
+        Ok(true)
     }
 
     /// Consume the owner after shutdown.

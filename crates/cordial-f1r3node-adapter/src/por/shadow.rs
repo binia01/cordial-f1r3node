@@ -15,7 +15,9 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use casper::rust::util::bonds_parser::BondsParser;
 use cordial_miners_core::{Block, NodeId, types::BlockIdentity};
-use cordial_por::{PorConfig, ReputationState, authorized_validator_weights};
+use cordial_por::{
+    CHECKPOINT_REPUTATION_BLOCK_VERSION, PorConfig, ReputationState, authorized_validator_weights,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -29,6 +31,9 @@ use crate::{
 
 use super::{
     activation::PorWeightActivationRecord,
+    checkpoint_ratings::{
+        close_checkpoint_rating_exchange_if_complete, stage_local_checkpoint_rating_batch,
+    },
     finality::{
         finalized_output_for_wave, finalized_prefix_checkpoint, finalized_wave_from_output,
     },
@@ -37,8 +42,8 @@ use super::{
         stage_local_rating_batch,
     },
     rating_key::load_bonded_rating_key,
-    runtime::PorRuntime,
-    transition::apply_completed_reputation_round,
+    runtime::{PorRuntime, PorRuntimeError},
+    transition::{apply_completed_reputation_round, stage_completed_checkpoint_round},
     transport::{file_exchange::FileRatingExchange, outbox::RatingOutbox},
 };
 
@@ -61,6 +66,7 @@ pub struct ShadowConfig {
     pub stage_local_ratings: bool,
     pub rating_exchange_dir: Option<PathBuf>,
     pub commit_complete_ratings: bool,
+    pub checkpoint_ratings: bool,
     pub data_dir: PathBuf,
     pub shard_id: String,
     pub height_batch_size: i64,
@@ -284,6 +290,10 @@ fn validate_config(config: &ShadowConfig) -> Result<()> {
         !config.commit_complete_ratings || config.rating_exchange_dir.is_some(),
         "committing complete PoR ratings requires a rating exchange directory"
     );
+    ensure!(
+        !config.checkpoint_ratings || config.rating_exchange_dir.is_some(),
+        "checkpoint ratings require a rating exchange directory and a validator key"
+    );
     Ok(())
 }
 
@@ -332,6 +342,13 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
         config.shard_id.as_bytes(),
         CORDIAL_WAVELENGTH,
     )?;
+    if let Some(block) = runtime.state().state()?.latest_block() {
+        let is_checkpoint = block.header.version == CHECKPOINT_REPUTATION_BLOCK_VERSION;
+        ensure!(
+            is_checkpoint == config.checkpoint_ratings || !config.stage_local_ratings,
+            "rating mode conflicts with the committed PoR history; use the matching mode or a fresh data directory"
+        );
+    }
     let path = status_path(&config.data_dir);
     let previous = read_status(&path)?;
     if let Some(previous) = &previous {
@@ -343,6 +360,8 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
     let mut last_logged_exchange_progress: Option<RatingExchangeProgress> = None;
     let mut last_logged_candidate_checkpoint: Option<[u8; 32]> = None;
     let mut last_logged_deferred_wave: Option<u64> = None;
+    let mut last_logged_checkpoint_round: Option<u64> = None;
+    let mut last_logged_deferred_checkpoint: Option<[u8; 32]> = None;
 
     loop {
         if client.is_none() {
@@ -432,7 +451,113 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
         if let Some(published) = read_status(&path)? {
             published.validate_recovered(&status)?;
         }
-        if let (Some(key), Some(outbox)) = (&rating_key, &rating_outbox) {
+        if config.checkpoint_ratings {
+            let key = rating_key
+                .as_ref()
+                .context("checkpoint rating key disappeared")?;
+            let outbox = rating_outbox
+                .as_ref()
+                .context("checkpoint rating outbox disappeared")?;
+            let exchange = rating_exchange
+                .as_ref()
+                .context("checkpoint rating exchange disappeared")?;
+            let state = runtime.state().state()?;
+            let next_round = state.round().checked_add(1).context("PoR round overflow")?;
+            if let Some(checkpoint) = finalized_prefix_checkpoint(&output, next_round)? {
+                let rating_count = stage_local_checkpoint_rating_batch(
+                    runtime.ingress().blocklace(),
+                    &output,
+                    &checkpoint,
+                    state,
+                    runtime.config(),
+                    key,
+                    outbox,
+                )?;
+                if last_logged_checkpoint_round != Some(next_round) {
+                    tracing::info!(
+                        por_round = next_round,
+                        finalized_prefix_len = checkpoint.finalized_prefix_len,
+                        rating_count,
+                        "staged local checkpoint PoR ratings"
+                    );
+                    last_logged_checkpoint_round = Some(next_round);
+                }
+                if let Some(completed) = close_checkpoint_rating_exchange_if_complete(
+                    runtime.ingress().blocklace(),
+                    &output,
+                    &checkpoint,
+                    state,
+                    runtime.config(),
+                    key,
+                    &authorized_raters,
+                    outbox,
+                    exchange,
+                )? {
+                    let (candidate_state, _) = stage_completed_checkpoint_round(
+                        &completed,
+                        state,
+                        runtime.config(),
+                        runtime.shard_id(),
+                    )?;
+                    let mut validators: Vec<_> =
+                        runtime.ingress().bonds().keys().cloned().collect();
+                    validators.sort();
+                    let weights = authorized_validator_weights(&candidate_state, &validators)?;
+                    let candidate = PorWeightActivationRecord::from_state_and_weights(
+                        &candidate_state,
+                        &weights,
+                    )?;
+                    let candidate_hash = candidate
+                        .checkpoint_hash()
+                        .context("complete checkpoint PoR candidate has no block hash")?;
+                    if last_logged_candidate_checkpoint != Some(candidate_hash) {
+                        tracing::info!(
+                            candidate_por_round = next_round,
+                            source_prefix_len = checkpoint.finalized_prefix_len,
+                            source_prefix_hash = %hex::encode(checkpoint.prefix_hash),
+                            candidate_checkpoint = %hex::encode(candidate_hash),
+                            candidate_weight_commitment = %hex::encode(candidate.weights_commitment()),
+                            "derived complete checkpoint PoR candidate"
+                        );
+                        last_logged_candidate_checkpoint = Some(candidate_hash);
+                    }
+                    if config.commit_complete_ratings {
+                        match runtime.commit_completed_checkpoint_round(&completed) {
+                            Ok(committed) => {
+                                let activation = committed.activation.with_context(|| {
+                                    format!("PoR checkpoint round {next_round} committed but activation is pending")
+                                })?;
+                                tracing::info!(
+                                    committed_por_round = next_round,
+                                    ?activation,
+                                    "committed and activated checkpoint PoR round"
+                                );
+                                let before_commit = status.clone();
+                                output = runtime.publish_finalized_output()?;
+                                status = ShadowStatus::from_runtime(
+                                    &runtime,
+                                    &output,
+                                    configured_rating_rater.as_deref(),
+                                    head,
+                                )?;
+                                before_commit.validate_recovered(&status)?;
+                            }
+                            Err(PorRuntimeError::CheckpointActivation(error)) => {
+                                if last_logged_deferred_checkpoint != Some(candidate_hash) {
+                                    tracing::warn!(
+                                        por_round = next_round,
+                                        %error,
+                                        "checkpoint PoR commit waits for a safe Cordial activation boundary"
+                                    );
+                                    last_logged_deferred_checkpoint = Some(candidate_hash);
+                                }
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
+            }
+        } else if let (Some(key), Some(outbox)) = (&rating_key, &rating_outbox) {
             let state = runtime.state().state()?;
             let expected_wave = state.round();
             // This wave is replayed under the currently active weights. After
@@ -731,6 +856,7 @@ mod tests {
             stage_local_ratings: false,
             rating_exchange_dir: None,
             commit_complete_ratings: false,
+            checkpoint_ratings: false,
             data_dir: "data".into(),
             shard_id: "root".into(),
             height_batch_size: 64,
@@ -749,5 +875,10 @@ mod tests {
         config.rating_exchange_dir = None;
         config.commit_complete_ratings = true;
         assert!(validate_config(&config).is_err());
+        config.commit_complete_ratings = false;
+        config.checkpoint_ratings = true;
+        assert!(validate_config(&config).is_err());
+        config.rating_exchange_dir = Some("exchange".into());
+        assert!(validate_config(&config).is_ok());
     }
 }
