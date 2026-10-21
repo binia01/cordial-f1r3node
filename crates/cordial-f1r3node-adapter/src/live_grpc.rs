@@ -360,6 +360,26 @@ pub fn trusted_block_from_light_block_info_with_options(
     })
 }
 
+/// Replace predecessor creator hints with creators observed on the referenced
+/// blocks themselves. A justification can name the validator that points to
+/// genesis even though genesis has an empty sender; that hint cannot identify
+/// genesis in the blocklace.
+pub fn reconcile_trusted_predecessor_creators(
+    block: &mut Block,
+    known_creators: &HashMap<[u8; 32], NodeId>,
+) {
+    block.content.predecessors = std::mem::take(&mut block.content.predecessors)
+        .into_iter()
+        .map(|mut predecessor| {
+            if let Some(creator) = known_creators.get(&predecessor.content_hash) {
+                predecessor.creator = creator.clone();
+                predecessor.signature.clear();
+            }
+            predecessor
+        })
+        .collect();
+}
+
 pub fn light_block_info_to_block_message(
     info: &LightBlockInfo,
 ) -> Result<BlockMessage, LiveGrpcError> {
