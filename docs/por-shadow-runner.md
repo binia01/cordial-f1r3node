@@ -91,6 +91,37 @@ f1r3node still uses its own consensus weights. A live four-observer activation
 and restart smoke remains to be run. An exchange conflict or invalid peer
 rating stops the runner for inspection.
 
+## Checkpoint rating PoC
+
+For a fresh cluster and fresh observer data directories, add
+`--checkpoint-ratings` to each keyed observer. This selects v2 ratings bound
+to consecutive 16-block checkpoints in Cordial's finalized prefix. It
+requires `--validator-rating-key-file`, `--stage-local-ratings`, and a shared
+`--rating-exchange-dir`. The v2 outbox and exchange use separate namespaces
+from the older wave format. Do not reuse a data directory with a committed
+wave-format PoR round.
+
+Each observer stages its own signed checkpoint batch and closes the round only
+when every authorized rater's expected ratings are complete. With
+`--commit-complete-ratings`, the runner rechecks the source checkpoint against
+its current finalized prefix, audits the v2 transition, and commits only if
+the projected weights preserve already published Cordial finality. It then
+activates those weights in its local ingress and updates `shadow-status.json`.
+If the projection would rewrite the published leader or ordered prefix, the
+runner logs a deferred candidate and keeps the current active round. On
+restart, it waits for the complete committed source checkpoint before
+activating a pending round and rejects a conflicting replayed prefix.
+
+For a four-observer convergence and restart check, use the isolated Compose
+project in [Parallel keyed PoR smoke](#parallel-keyed-por-smoke). Its command
+passes `--checkpoint-ratings`, starts the observers before the validators,
+and waits for at least one committed checkpoint round.
+
+The script compares the active round, checkpoint hash, exact weights,
+commitment, and finalized prefix across all four observers, then restarts an
+observer and a validator. This is an observer convergence check; it does not
+show that the running f1r3node nodes consume PoR weights.
+
 ## Live smoke procedure
 
 Start the four-node cluster using `docker/four-node-cluster.yml`, then run
@@ -193,7 +224,8 @@ python3 docker/scripts/verify-four-node-por-shadow.py \
   --binary target/release/live_por_shadow \
   --rating-keys-dir "$HOME/por-keys" \
   --rating-exchange-dir "$smoke_root/exchange" \
-  --commit-complete-ratings --min-por-round 1 \
+  --checkpoint-ratings --commit-complete-ratings \
+  --min-finalized-blocks 16 --min-por-round 1 \
   --grpc-ports 61001 62001 63001 64001 \
   --compose-override docker/four-node-por-smoke-override.yml \
   --compose-project por-keyed-smoke --timeout-seconds 900
@@ -222,15 +254,14 @@ checkpoint, weight commitment, weight map, and finalized prefix; it then
 checks observer and validator restarts. Logs and durable PoR data remain under
 `$smoke_root`.
 
-**Observed blocker on 2026-10-14:** four keyed observers launched before a
-fresh cluster, then all exited with `no final leader can be replayed for wave
-0` after a later wave finalized. The node's height-0 genesis block has an
-empty sender, so it cannot be the validator elected as Cordial's wave-0
-leader. The current PoR protocol requires wave `k` to produce rating round
-`k+1` with consecutive reputation rounds; it has no representation for a
-wave without a final leader. No observer committed round 1 in this run. A
-deterministic skipped-wave rule must be designed and audited before this smoke
-can pass. Do not treat a timeout or a genesis-only status as PoR convergence.
+**Legacy wave-path blocker observed on 2026-10-14:** four keyed observers
+launched before a fresh cluster, then all exited because no final leader could
+be replayed for wave 0 after a later wave finalized. The node's height-0
+genesis block has an empty sender. The legacy format mapped wave `k` to PoR
+round `k+1`, so no observer committed round 1 in that run. The checkpoint
+mode above selects its source from the finalized block prefix instead;
+its four-node result has not yet been measured. Do not treat a timeout or a
+genesis-only status as PoR convergence.
 
 ### Isolated fresh-cluster reproduction
 

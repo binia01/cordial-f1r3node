@@ -248,9 +248,13 @@ against its current finalized prefix, audits the candidate state, and confirms
 that the candidate weight projection preserves published Cordial finality.
 It then durably commits the round before activating the weights. A prior
 committed round awaiting activation blocks another checkpoint commit. This
-handoff has a focused live-ingress and restart test, but the live shadow runner
-still uses the v1 wave path. Runner wiring and a four-node v2 smoke remain
-pending before checkpoint-driven rounds affect live observers.
+handoff has a focused live-ingress and restart test. The live shadow runner now
+has an opt-in `--checkpoint-ratings` mode that stages, exchanges, closes,
+commits, and activates v2 checkpoint rounds in its local Cordial ingress. It
+uses the full source checkpoint on startup and activation retry, so a partial
+replay cannot activate a pending round and a conflicting replayed prefix fails
+closed. The four-node v2 smoke remains pending; node-side enforcement still
+requires the integration work in slice 3.
 
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
