@@ -7,6 +7,7 @@ use cordial_f1r3node_adapter::{
         PorInteractionError, admit_checkpoint_block_production_interactions,
         extract_checkpoint_block_production_evidence,
     },
+    por_rating_collector::CheckpointBlockProductionRatingCollector,
     por_ratings::{build_finalized_checkpoint_rating_batch, verify_checkpoint_rating_signature},
 };
 use cordial_miners_core::{
@@ -44,7 +45,7 @@ fn node(seed: u8) -> NodeId {
     )
 }
 
-fn fixture() -> (Blocklace, OrderedFinalizedOutput) {
+fn fixture_with_unsigned_genesis(unsigned_genesis: bool) -> (Blocklace, OrderedFinalizedOutput) {
     let mut blocklace = Blocklace::new();
     let mut blocks: Vec<BlockIdentity> = Vec::new();
     for tag in 1..=32u8 {
@@ -60,8 +61,16 @@ fn fixture() -> (Blocklace, OrderedFinalizedOutput) {
         let block = Block {
             identity: BlockIdentity {
                 content_hash: hash,
-                creator: node(creator),
-                signature: vec![tag],
+                creator: if unsigned_genesis && tag == 1 {
+                    NodeId(Vec::new())
+                } else {
+                    node(creator)
+                },
+                signature: if unsigned_genesis && tag == 1 {
+                    Vec::new()
+                } else {
+                    vec![tag]
+                },
             },
             content: BlockContent {
                 payload: vec![tag],
@@ -76,12 +85,57 @@ fn fixture() -> (Blocklace, OrderedFinalizedOutput) {
     (blocklace, output)
 }
 
+fn fixture() -> (Blocklace, OrderedFinalizedOutput) {
+    fixture_with_unsigned_genesis(false)
+}
+
 fn state(round: u64) -> ReputationState {
     let mut state = ReputationState::new(round);
     for seed in [1, 2, 3, 9] {
         state.set_reputation(node(seed), 100);
     }
     state
+}
+
+#[test]
+fn first_checkpoint_skips_unsigned_genesis_and_closes_a_complete_validator_batch() {
+    let (blocklace, output) = fixture_with_unsigned_genesis(true);
+    let checkpoint = finalized_prefix_checkpoint(&output, 1).unwrap().unwrap();
+    let mut state = ReputationState::new(0);
+    for seed in [1, 2, 9] {
+        state.set_reputation(node(seed), 100);
+    }
+    let config = PorConfig::default();
+
+    let batch = build_finalized_checkpoint_rating_batch(
+        &blocklace,
+        &output,
+        &checkpoint,
+        &node(9),
+        &state,
+        &config,
+        &key(9),
+    )
+    .unwrap();
+    assert_eq!(batch.ratings.len(), 2);
+    assert!(
+        batch
+            .ratings
+            .iter()
+            .all(|rating| !rating.recipient.0.is_empty())
+    );
+
+    let mut collector = CheckpointBlockProductionRatingCollector::new(
+        &blocklace,
+        &output,
+        checkpoint,
+        [node(9)],
+        &state,
+        &config,
+    )
+    .unwrap();
+    collector.insert_batch(batch).unwrap();
+    assert!(collector.is_rater_complete(&node(9)).unwrap());
 }
 
 #[test]
