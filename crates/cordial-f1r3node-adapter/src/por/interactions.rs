@@ -143,6 +143,8 @@ pub fn validate_finalized_checkpoint_window(
 }
 
 /// Extract and admit checkpoint-window production evidence as one operation.
+/// Finalized blocks from genesis, system senders, or ejected producers do not
+/// become PoR rating recipients unless they are active in the preceding state.
 pub fn admit_checkpoint_block_production_interactions(
     blocklace: &Blocklace,
     output: &OrderedFinalizedOutput,
@@ -152,6 +154,7 @@ pub fn admit_checkpoint_block_production_interactions(
 ) -> Result<Vec<AdmittedCheckpointInteraction>, PorInteractionError> {
     extract_checkpoint_block_production_evidence(blocklace, output, checkpoint, rater)?
         .into_iter()
+        .filter(|evidence| is_active_recipient(state, &evidence.recipient))
         .map(|evidence| {
             admit_checkpoint_interaction_evidence(evidence, state)
                 .map_err(PorInteractionError::Admission)
@@ -267,20 +270,18 @@ pub fn admit_finalized_block_production_interactions(
 ) -> Result<Vec<AdmittedInteraction>, PorInteractionError> {
     extract_block_production_evidence(blocklace, output, opened, rater)?
         .into_iter()
-        .filter(|evidence| {
-            // Ejected or non-member recipients produce no admissible rating in
-            // this round. Filtering here rather than propagating the admission
-            // error keeps the honest rater's batch for all remaining valid
-            // recipients intact.
-            let is_member = state
-                .reputation_list()
-                .entries
-                .binary_search_by(|entry| entry.node_id.cmp(&evidence.recipient))
-                .is_ok();
-            is_member && !state.is_ejected(&evidence.recipient)
-        })
+        .filter(|evidence| is_active_recipient(state, &evidence.recipient))
         .map(|evidence| {
             admit_interaction_evidence(evidence, state).map_err(PorInteractionError::Admission)
         })
         .collect()
+}
+
+fn is_active_recipient(state: &ReputationState, recipient: &NodeId) -> bool {
+    state
+        .reputation_list()
+        .entries
+        .binary_search_by(|entry| entry.node_id.cmp(recipient))
+        .is_ok()
+        && !state.is_ejected(recipient)
 }
