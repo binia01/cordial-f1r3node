@@ -6,6 +6,7 @@
 //! complete-rater weight, while `close_at_finalized_wave` supplies a finality-
 //! driven fallback.
 
+pub mod checkpoint;
 pub mod cutoff;
 pub mod quorum;
 

@@ -41,6 +41,7 @@ pub enum PorRatingCollectorError {
     InvalidStateRound,
     InvalidFinalizedWave,
     InvalidCheckpointSource,
+    NoAuthorizedRaters,
     UnauthorizedRater(NodeId),
     InvalidRatingRound,
     InvalidBatchRound,
@@ -71,6 +72,9 @@ impl fmt::Display for PorRatingCollectorError {
                     f,
                     "rating envelope does not belong to the collector's source checkpoint"
                 )
+            }
+            Self::NoAuthorizedRaters => {
+                write!(f, "checkpoint rating round has no authorized raters")
             }
             Self::UnauthorizedRater(rater) => {
                 write!(f, "rating rater {rater:?} is not an authorized validator")
@@ -208,6 +212,20 @@ impl<'a> CheckpointBlockProductionRatingCollector<'a> {
             .filter(|rating| &rating.rater == rater)
             .count();
         Ok(collected == expected)
+    }
+
+    /// A checkpoint closes only after every authorized rater's deterministic
+    /// evidence-backed batch is complete. Zero expected ratings are complete.
+    pub fn all_authorized_raters_complete(&self) -> Result<bool, PorRatingCollectorError> {
+        if self.authorized_raters.is_empty() {
+            return Err(PorRatingCollectorError::NoAuthorizedRaters);
+        }
+        for rater in &self.authorized_raters {
+            if !self.is_rater_complete(rater)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn insert(&mut self, rating: RatingRecord) -> Result<(), PorRatingCollectorError> {

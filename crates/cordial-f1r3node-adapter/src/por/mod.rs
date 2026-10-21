@@ -6,6 +6,7 @@
 
 pub mod activation;
 pub mod checkpoint;
+pub mod checkpoint_ratings;
 pub mod collector;
 pub mod finality;
 pub mod history;
@@ -30,6 +31,9 @@ pub use checkpoint::{
     PorCheckpointConflictEvidence, PorCheckpointError, PorCheckpointObservation,
     PorCheckpointPolicy, PorCheckpointProgress,
 };
+pub use checkpoint_ratings::{
+    close_checkpoint_rating_exchange_if_complete, stage_local_checkpoint_rating_batch,
+};
 pub use collector::{
     BlockProductionRatingCollector, CheckpointBlockProductionRatingCollector,
     PorRatingCollectorError,
@@ -49,6 +53,7 @@ pub use interactions::{
     extract_checkpoint_block_production_evidence, validate_finalized_checkpoint_window,
     validate_finalized_rating_round,
 };
+pub use lifecycle::checkpoint::CompletedCheckpointRatingRound;
 pub use lifecycle::cutoff::{
     DEFAULT_RATING_CUTOFF_WAVE_LAG, PorRatingCutoffError, PorRatingRoundCutoffPolicy,
 };
