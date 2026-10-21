@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    fs,
 };
 
 use cordial_f1r3node_adapter::{
@@ -11,6 +12,10 @@ use cordial_f1r3node_adapter::{
         CompletedPorRatingRound, DurablePorStateError, PorFinalityTracker,
         PorRatingRoundCoordinator, PorRatingRoundCutoffPolicy, PorRuntime, PorRuntimeError,
         PorWeightActivationOutcome, RatingEnvelopeBroadcaster,
+        close_checkpoint_rating_exchange_if_complete, finalized_prefix_checkpoint,
+        rating_key::load_bonded_rating_key,
+        stage_local_checkpoint_rating_batch,
+        transport::{file_exchange::FileRatingExchange, outbox::RatingOutbox},
     },
     shard_conf::CasperShardConf,
     shared_ordered_output::ReadOrderedOutput,
@@ -653,6 +658,110 @@ fn completed_round_is_automatically_activated_after_commit() {
 }
 
 #[allow(deprecated)]
+#[test]
+fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
+    let directory = tempdir().unwrap();
+    let validator = node(1);
+    let mut initial = ReputationState::new(0);
+    initial.set_reputation(validator.clone(), 100);
+    let ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator.clone(), 100)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut runtime = PorRuntime::open(
+        directory.path(),
+        initial.clone(),
+        ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+    let mut blocks = Vec::new();
+    for tag in 1..=32 {
+        let predecessor = blocks.last().map(|block: &Block| &block.identity);
+        let next = block(tag, 1, predecessor);
+        runtime
+            .ingress_mut()
+            .ingest_trusted_block(next.clone())
+            .unwrap();
+        blocks.push(next);
+    }
+    let output = runtime.publish_finalized_output().unwrap();
+    let checkpoint = finalized_prefix_checkpoint(&output, 1).unwrap().unwrap();
+    let key_path = directory.path().join("validator.key");
+    fs::write(&key_path, hex::encode([1; 32])).unwrap();
+    let key = load_bonded_rating_key(&key_path, runtime.ingress().bonds()).unwrap();
+    let outbox = RatingOutbox::open(directory.path()).unwrap();
+    let exchange = FileRatingExchange::open(&directory.path().join("exchange"), SHARD_ID).unwrap();
+    stage_local_checkpoint_rating_batch(
+        runtime.ingress().blocklace(),
+        &output,
+        &checkpoint,
+        runtime.state().state().unwrap(),
+        runtime.config(),
+        &key,
+        &outbox,
+    )
+    .unwrap();
+    let completed = close_checkpoint_rating_exchange_if_complete(
+        runtime.ingress().blocklace(),
+        &output,
+        &checkpoint,
+        runtime.state().state().unwrap(),
+        runtime.config(),
+        &key,
+        &HashSet::from([validator.clone()]),
+        &outbox,
+        &exchange,
+    )
+    .unwrap()
+    .unwrap();
+    let committed = runtime
+        .commit_completed_checkpoint_round(&completed)
+        .unwrap();
+    assert_eq!(
+        committed.activation.unwrap(),
+        PorWeightActivationOutcome::Activated
+    );
+    assert_eq!(
+        runtime.state().committed_checkpoint_source().unwrap(),
+        Some(completed.source())
+    );
+    assert_eq!(runtime.state().state().unwrap().round(), 1);
+    drop(runtime);
+
+    let mut restarted_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator.clone(), 7)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    for block in blocks {
+        restarted_ingress.ingest_trusted_block(block).unwrap();
+    }
+    let restarted = PorRuntime::open(
+        directory.path(),
+        initial,
+        restarted_ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+    assert_eq!(
+        restarted.state().committed_checkpoint_source().unwrap(),
+        Some(completed.source())
+    );
+    assert_eq!(restarted.state().state().unwrap().round(), 1);
+    assert_eq!(
+        restarted.ingress().bonds(),
+        &HashMap::from([(validator, 100)])
+    );
+}
+
 #[test]
 fn committed_round_with_pending_activation_can_be_retried() {
     let directory = tempdir().unwrap();

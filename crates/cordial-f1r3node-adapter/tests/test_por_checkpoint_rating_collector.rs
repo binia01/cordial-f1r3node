@@ -4,6 +4,7 @@ use std::{
 };
 
 use cordial_f1r3node_adapter::{
+    live_ingress::LiveIngress,
     ordered_output::OrderedFinalizedOutput,
     por::{
         checkpoint_ratings::{
@@ -12,6 +13,7 @@ use cordial_f1r3node_adapter::{
         lifecycle::PorRatingRoundCloseReason,
         persistence::DurablePorState,
         rating_key::load_bonded_rating_key,
+        runtime::{PorRuntime, PorRuntimeError},
         transport::{file_exchange::FileRatingExchange, outbox::RatingOutbox},
     },
     por_finality::{FinalizedPrefixCheckpoint, PorFinalityError, finalized_prefix_checkpoint},
@@ -24,6 +26,8 @@ use cordial_f1r3node_adapter::{
     por_ratings::{
         PorRatingError, build_finalized_checkpoint_rating_batch, sign_checkpoint_rating,
     },
+    shard_conf::CasperShardConf,
+    snapshot::CORDIAL_WAVELENGTH,
 };
 use cordial_miners_core::{
     Block, BlockContent, BlockIdentity, Blocklace, NodeId, crypto::CryptoVerifier,
@@ -548,6 +552,40 @@ fn first_checkpoint_commit_recovers_source_and_rejects_replay() {
     )
     .unwrap()
     .unwrap();
+
+    let runtime_root = directory.path().join("unfinalized-runtime");
+    let ingress = LiveIngress::with_consensus_view(
+        (),
+        HashMap::from([
+            (node(1), 100),
+            (node(2), 100),
+            (node(3), 100),
+            (node(9), 100),
+        ]),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut unfinalized_runtime = PorRuntime::open(
+        &runtime_root,
+        fixture.state.clone(),
+        ingress,
+        fixture.config.clone(),
+        b"root",
+        CORDIAL_WAVELENGTH,
+    )
+    .unwrap();
+    assert!(matches!(
+        unfinalized_runtime.commit_completed_checkpoint_round(&completed),
+        Err(PorRuntimeError::CheckpointSource(_))
+    ));
+    assert_eq!(unfinalized_runtime.state().state().unwrap().round(), 0);
+    assert_eq!(
+        unfinalized_runtime
+            .state()
+            .committed_checkpoint_source()
+            .unwrap(),
+        None
+    );
 
     let state_root = directory.path().join("state");
     let mut durable = DurablePorState::open(&state_root, fixture.state.clone()).unwrap();
