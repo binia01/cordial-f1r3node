@@ -101,6 +101,13 @@ requires `--validator-rating-key-file`, `--stage-local-ratings`, and a shared
 from the older wave format. Do not reuse a data directory with a committed
 wave-format PoR round.
 
+Checkpoint ratings retain their v2 signing and exchange format. The committed
+checkpoint reputation block, its wire envelope, and the durable snapshot use
+v3, which includes the finalized-prefix source and penalty commitment. Data
+directories containing checkpoint v2 blocks from before the `dev` rebase
+require an explicit migration; start the current four-observer smoke with fresh
+observer directories. There is no automatic conversion of those histories.
+
 Each observer stages its own signed checkpoint batch and closes the round only
 when every authorized rater's expected ratings are complete. With
 `--commit-complete-ratings`, the runner rechecks the source checkpoint against

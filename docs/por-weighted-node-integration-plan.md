@@ -238,9 +238,9 @@ caller-supplied Cordial authorization set has passed all expected
 checkpoint-window ratings through the v2 collector. A
 rater with no expected ratings is complete without an envelope. Missing or
 partial expected ratings keep the round open; there is no wall-clock cutoff.
-The returned completed round can now be replayed into a v2 reputation block,
+The returned completed round can now be replayed into a v3 reputation block,
 audited against its checkpoint source, and committed through the existing
-snapshot-first and immutable-history storage path. The retained v2 block's
+snapshot-first and immutable-history storage path. The retained v3 block's
 source checkpoint is the committed cursor; recovery reads it from the
 snapshot, and a repeated round fails the consecutive-round audit. The runtime
 now accepts a complete checkpoint round only after it rechecks that source
@@ -250,7 +250,8 @@ It then durably commits the round before activating the weights. A prior
 committed round awaiting activation blocks another checkpoint commit. This
 handoff has a focused live-ingress and restart test. The live shadow runner now
 has an opt-in `--checkpoint-ratings` mode that stages, exchanges, closes,
-commits, and activates v2 checkpoint rounds in its local Cordial ingress. It
+commits, and activates checkpoint rounds using v2 ratings and v3 blocks in its
+local Cordial ingress. It
 uses the full source checkpoint on startup and activation retry, so a partial
 replay cannot activate a pending round and a conflicting replayed prefix fails
 closed. The four-node v2 smoke remains pending; node-side enforcement still
