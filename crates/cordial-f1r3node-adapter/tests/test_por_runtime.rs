@@ -9,7 +9,7 @@ use cordial_f1r3node_adapter::{
     live_ingress::{LiveIngress, PorWeightActivationError},
     ordered_output::OrderedFinalizedOutput,
     por::{
-        CompletedPorRatingRound, DurablePorStateError, PorFinalityTracker,
+        CompletedPorRatingRound, DurablePorState, DurablePorStateError, PorFinalityTracker,
         PorRatingRoundCoordinator, PorRatingRoundCutoffPolicy, PorRuntime, PorRuntimeError,
         PorWeightActivationOutcome, RatingEnvelopeBroadcaster,
         close_checkpoint_rating_exchange_if_complete, finalized_prefix_checkpoint,
@@ -719,6 +719,101 @@ fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
     )
     .unwrap()
     .unwrap();
+
+    let pending_root = directory.path().join("pending");
+    let mut pending = DurablePorState::open(&pending_root, initial.clone()).unwrap();
+    let mut genesis_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator.clone(), 100)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    pending.activate_weights(&mut genesis_ingress).unwrap();
+    pending
+        .apply_completed_checkpoint_round(&completed, &PorConfig::default(), SHARD_ID)
+        .unwrap();
+    drop(pending);
+    let pending_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator.clone(), 7)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut pending_runtime = PorRuntime::open(
+        &pending_root,
+        initial.clone(),
+        pending_ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+    assert_eq!(
+        pending_runtime.startup_activation(),
+        PorWeightActivationOutcome::Restored
+    );
+    assert!(
+        pending_runtime
+            .state()
+            .has_unactivated_committed_round()
+            .unwrap()
+    );
+    assert!(matches!(
+        pending_runtime.retry_weight_activation(),
+        Err(PorRuntimeError::CommittedCheckpointUnavailable { round: 1 })
+    ));
+    for block in &blocks[..10] {
+        pending_runtime
+            .ingress_mut()
+            .ingest_trusted_block(block.clone())
+            .unwrap();
+    }
+    assert!(matches!(
+        pending_runtime.publish_finalized_output(),
+        Err(PorRuntimeError::CommittedCheckpointUnavailable { round: 1 })
+    ));
+    for block in &blocks[10..] {
+        pending_runtime
+            .ingress_mut()
+            .ingest_trusted_block(block.clone())
+            .unwrap();
+    }
+    assert_eq!(
+        pending_runtime.retry_weight_activation().unwrap(),
+        PorWeightActivationOutcome::Activated
+    );
+    assert!(
+        !pending_runtime
+            .state()
+            .has_unactivated_committed_round()
+            .unwrap()
+    );
+    drop(pending_runtime);
+
+    let mut wrong_ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        HashMap::from([(validator.clone(), 100)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut wrong_predecessor = None;
+    for tag in 101..=132 {
+        let next = block(tag, 1, wrong_predecessor.as_ref());
+        wrong_ingress.ingest_trusted_block(next.clone()).unwrap();
+        wrong_predecessor = Some(next.identity);
+    }
+    assert!(matches!(
+        PorRuntime::open(
+            &pending_root,
+            initial.clone(),
+            wrong_ingress,
+            PorConfig::default(),
+            SHARD_ID,
+            WAVELENGTH,
+        ),
+        Err(PorRuntimeError::CheckpointSource(_))
+    ));
+
     let committed = runtime
         .commit_completed_checkpoint_round(&completed)
         .unwrap();
@@ -733,16 +828,13 @@ fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
     assert_eq!(runtime.state().state().unwrap().round(), 1);
     drop(runtime);
 
-    let mut restarted_ingress = LiveIngress::with_consensus_view(
+    let restarted_ingress = LiveIngress::with_consensus_view(
         AcceptingAdapter,
         HashMap::from([(validator.clone(), 7)]),
         CasperShardConf::default(),
         "root",
     );
-    for block in blocks {
-        restarted_ingress.ingest_trusted_block(block).unwrap();
-    }
-    let restarted = PorRuntime::open(
+    let mut restarted = PorRuntime::open(
         directory.path(),
         initial,
         restarted_ingress,
@@ -751,6 +843,14 @@ fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
         WAVELENGTH,
     )
     .unwrap();
+    assert!(matches!(
+        restarted.publish_finalized_output(),
+        Err(PorRuntimeError::CommittedCheckpointUnavailable { round: 1 })
+    ));
+    for block in blocks {
+        restarted.ingress_mut().ingest_trusted_block(block).unwrap();
+    }
+    restarted.publish_finalized_output().unwrap();
     assert_eq!(
         restarted.state().committed_checkpoint_source().unwrap(),
         Some(completed.source())

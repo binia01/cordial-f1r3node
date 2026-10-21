@@ -107,6 +107,8 @@ def main():
     parser.add_argument("--rating-keys-dir", type=Path, help="validator-1.key through validator-4.key")
     parser.add_argument("--rating-exchange-dir", type=Path)
     parser.add_argument("--commit-complete-ratings", action="store_true")
+    parser.add_argument("--checkpoint-ratings", action="store_true",
+                        help="use v2 finalized-prefix checkpoint rounds in all observers")
     parser.add_argument("--compose-override", type=Path)
     parser.add_argument("--compose-project")
     parser.add_argument("--skip-node-restart", action="store_true", help="only check runner recovery")
@@ -119,6 +121,8 @@ def main():
         parser.error("--commit-complete-ratings requires --rating-keys-dir")
     if args.rating_exchange_dir is not None and args.rating_keys_dir is None:
         parser.error("--rating-exchange-dir requires --rating-keys-dir")
+    if args.checkpoint_ratings and args.rating_keys_dir is None:
+        parser.error("--checkpoint-ratings requires --rating-keys-dir")
     binary = args.binary.resolve()
     bonds_file = args.bonds_file.resolve()
     root = args.data_root.resolve()
@@ -152,6 +156,8 @@ def main():
                         "--stage-local-ratings", "--rating-exchange-dir", str(exchange_dir)]
         if args.commit_complete_ratings:
             command.append("--commit-complete-ratings")
+        if args.checkpoint_ratings:
+            command.append("--checkpoint-ratings")
         runners[node] = subprocess.Popen(
             command,
             stdout=log, stderr=subprocess.STDOUT,
