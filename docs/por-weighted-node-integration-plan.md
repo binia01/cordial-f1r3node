@@ -231,9 +231,16 @@ file exchange uses a separate `checkpoint-v2` namespace and an immutable
 round source marker; readers reject a missing or conflicting marker, invalid
 peer signatures, and unauthorized identities. Its partial envelope set still
 requires the evidence-backed collector to establish complete batches. The
-live rating exchange and shadow runner still use the v1 wave collector.
-Deterministic closure and lifecycle integration remain pending before the
-shadow runner can commit checkpoint-driven rounds.
+checkpoint exchange now has a PoC closure path: the local signed batch is
+staged before delivery, rechecked against finalized evidence on recovery,
+and published to peers. A candidate closes only when every rater in the
+caller-supplied Cordial authorization set has passed all expected
+checkpoint-window ratings through the v2 collector. A
+rater with no expected ratings is complete without an envelope. Missing or
+partial expected ratings keep the round open; there is no wall-clock cutoff.
+The returned completed round is still in memory. The live shadow runner still
+uses the v1 wave path; durable v2 reputation transition, safe activation, and
+runner wiring remain pending before checkpoint-driven rounds affect weights.
 
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
