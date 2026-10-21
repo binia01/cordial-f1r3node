@@ -1,7 +1,17 @@
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+};
 
 use cordial_f1r3node_adapter::{
     ordered_output::OrderedFinalizedOutput,
+    por::{
+        checkpoint_ratings::{
+            close_checkpoint_rating_exchange_if_complete, stage_local_checkpoint_rating_batch,
+        },
+        rating_key::load_bonded_rating_key,
+        transport::{file_exchange::FileRatingExchange, outbox::RatingOutbox},
+    },
     por_finality::{FinalizedPrefixCheckpoint, PorFinalityError, finalized_prefix_checkpoint},
     por_interactions::PorInteractionError,
     por_rating_collector::{CheckpointBlockProductionRatingCollector, PorRatingCollectorError},
@@ -350,5 +360,127 @@ fn completion_rejects_an_ejected_rater_even_without_submissions() {
         Err(PorRatingCollectorError::Interaction(
             PorInteractionError::Admission(PorError::EjectedInteractionRater)
         ))
+    );
+}
+
+#[test]
+fn checkpoint_exchange_closes_only_after_complete_peer_batches_and_recovers() {
+    let fixture = Fixture::new();
+    let directory = tempfile::tempdir().unwrap();
+    let exchange = FileRatingExchange::open(&directory.path().join("exchange"), b"root").unwrap();
+    let authorized = HashSet::from([node(2), node(3), node(9)]);
+    let key_path_two = directory.path().join("key-two");
+    let key_path_nine = directory.path().join("key-nine");
+    fs::write(&key_path_two, hex::encode(key(2))).unwrap();
+    fs::write(&key_path_nine, hex::encode(key(9))).unwrap();
+    let key_two = load_bonded_rating_key(&key_path_two, &HashMap::from([(node(2), 100)])).unwrap();
+    let key_nine =
+        load_bonded_rating_key(&key_path_nine, &HashMap::from([(node(9), 100)])).unwrap();
+    let data_two = directory.path().join("node-two");
+    let data_nine = directory.path().join("node-nine");
+    let outbox_two = RatingOutbox::open(&data_two).unwrap();
+    let outbox_nine = RatingOutbox::open(&data_nine).unwrap();
+    let source = fixture.checkpoint.rating_source();
+    stage_local_checkpoint_rating_batch(
+        &fixture.blocklace,
+        &fixture.output,
+        &fixture.checkpoint,
+        &fixture.state,
+        &fixture.config,
+        &key_two,
+        &outbox_two,
+    )
+    .unwrap();
+    stage_local_checkpoint_rating_batch(
+        &fixture.blocklace,
+        &fixture.output,
+        &fixture.checkpoint,
+        &fixture.state,
+        &fixture.config,
+        &key_nine,
+        &outbox_nine,
+    )
+    .unwrap();
+
+    let close_two = |outbox: &RatingOutbox, exchange: &FileRatingExchange| {
+        close_checkpoint_rating_exchange_if_complete(
+            &fixture.blocklace,
+            &fixture.output,
+            &fixture.checkpoint,
+            &fixture.state,
+            &fixture.config,
+            &key_two,
+            &authorized,
+            outbox,
+            exchange,
+        )
+        .unwrap()
+    };
+    assert!(close_two(&outbox_two, &exchange).is_none());
+
+    let batch_nine = fixture.batch(9);
+    assert!(batch_nine.ratings.len() > 1);
+    let peer_nine = exchange.checkpoint_broadcaster(source, node(9)).unwrap();
+    let first = BlockProductionRatingEnvelopeV2::new(source, batch_nine.ratings[0].clone())
+        .unwrap()
+        .encode();
+    peer_nine.publish(&first).unwrap();
+    assert!(close_two(&outbox_two, &exchange).is_none());
+
+    for rating in &fixture.batch(3).ratings {
+        exchange
+            .checkpoint_broadcaster(source, node(3))
+            .unwrap()
+            .publish(
+                &BlockProductionRatingEnvelopeV2::new(source, rating.clone())
+                    .unwrap()
+                    .encode(),
+            )
+            .unwrap();
+    }
+    let closed_nine = close_checkpoint_rating_exchange_if_complete(
+        &fixture.blocklace,
+        &fixture.output,
+        &fixture.checkpoint,
+        &fixture.state,
+        &fixture.config,
+        &key_nine,
+        &authorized,
+        &outbox_nine,
+        &exchange,
+    )
+    .unwrap()
+    .unwrap();
+    let closed_two = close_two(&outbox_two, &exchange).unwrap();
+    assert_eq!(closed_two, closed_nine);
+    assert_eq!(closed_two.source(), source);
+    assert_eq!(closed_two.batch().round, source.round);
+
+    drop(outbox_two);
+    drop(exchange);
+    let recovered_outbox = RatingOutbox::open(&data_two).unwrap();
+    let recovered_exchange =
+        FileRatingExchange::open(&directory.path().join("exchange"), b"root").unwrap();
+    assert_eq!(
+        close_two(&recovered_outbox, &recovered_exchange),
+        Some(closed_two)
+    );
+}
+
+#[test]
+fn checkpoint_closure_rejects_an_empty_authorization_set() {
+    let fixture = Fixture::new();
+    let collector = CheckpointBlockProductionRatingCollector::new(
+        &fixture.blocklace,
+        &fixture.output,
+        fixture.checkpoint.clone(),
+        [],
+        &fixture.state,
+        &fixture.config,
+    )
+    .unwrap();
+    assert_eq!(
+        collector.all_authorized_raters_complete(),
+        Err(PorRatingCollectorError::NoAuthorizedRaters)
     );
 }
