@@ -644,6 +644,7 @@ fn completed_round_is_automatically_activated_after_commit() {
     let output = runtime.publish_finalized_output().unwrap();
     assert!(output.anchor.is_some());
 
+    #[allow(deprecated)]
     let committed = runtime.commit_completed_round(&completed).unwrap();
 
     assert_eq!(
@@ -883,6 +884,7 @@ fn committed_round_with_pending_activation_can_be_retried() {
     )
     .unwrap();
 
+    #[allow(deprecated)]
     let committed = runtime.commit_completed_round(&completed).unwrap();
 
     assert!(committed.activation_pending());

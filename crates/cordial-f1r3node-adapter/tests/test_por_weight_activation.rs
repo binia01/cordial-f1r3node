@@ -377,7 +377,11 @@ fn weight_activation_preserves_the_published_final_leader() {
         .iter()
         .enumerate()
         .map(|(index, seed)| {
-            block_with_predecessors(12 + index as u8, *seed, &[leader.identity.clone()])
+            block_with_predecessors(
+                12 + index as u8,
+                *seed,
+                std::slice::from_ref(&leader.identity),
+            )
         })
         .collect();
     let frontier: Vec<_> = round_one
@@ -396,7 +400,7 @@ fn weight_activation_preserves_the_published_final_leader() {
         ingress.ingest_trusted_block(block.clone()).unwrap();
     }
     let published = ingress.latest_finalized_ordered_output(WAVELENGTH).unwrap();
-    assert_eq!(published.anchor.as_ref(), Some(&leader.identity));
+    assert_eq!(published.anchor, Some(leader.identity.consensus_identity()));
 
     let mut state = ReputationState::new(0);
     for (index, seed) in seeds.iter().enumerate() {

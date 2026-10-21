@@ -76,7 +76,7 @@ fn block_with_predecessors(tag: u8, creator: u8, predecessors: &[BlockIdentity])
 #[test]
 fn later_final_leader_replays_and_stages_the_expected_wave() {
     let directory = tempfile::tempdir().unwrap();
-    let mut seeds = vec![1, 2, 3, 4];
+    let mut seeds = [1, 2, 3, 4];
     seeds.sort_by_key(|seed| node(*seed));
     let bonds: HashMap<_, _> = seeds.iter().map(|seed| (node(*seed), 1)).collect();
     let key_path = directory.path().join("validator.key");

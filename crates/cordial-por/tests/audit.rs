@@ -1,12 +1,11 @@
 use cordial_miners_core::NodeId;
 use cordial_por::{
     CHECKPOINT_REPUTATION_BLOCK_VERSION, CheckpointReputationBlockContext, MissingEntryPolicy,
-    PorConfig, PorError, RatingRecord,
-    RatingSourceCheckpoint, ReputationBlock, ReputationBlockContext, ReputationEntry,
-    ReputationList, ReputationVector, build_checkpoint_reputation_block, build_rating_batch,
-    build_reputation_block, clamp_reputation_value, replay_reputation_transition,
-    reputation_list_commitment, verify_checkpoint_reputation_transition,
-    verify_reputation_transition,
+    PorConfig, PorError, REPUTATION_BLOCK_VERSION, RatingRecord, RatingSourceCheckpoint,
+    ReputationBlock, ReputationBlockContext, ReputationEntry, ReputationList, ReputationVector,
+    build_checkpoint_reputation_block, build_rating_batch, build_reputation_block,
+    clamp_reputation_value, replay_reputation_transition, reputation_list_commitment,
+    verify_checkpoint_reputation_transition, verify_reputation_transition,
 };
 
 const ROUND: u64 = 7;
@@ -194,7 +193,9 @@ fn checkpoint_audit_replays_the_transition_independent_of_rating_arrival_order()
             checkpoint_context(None),
             &config(),
         ),
-        Err(PorError::UnsupportedReputationBlockAuditVersion(1))
+        Err(PorError::UnsupportedReputationBlockAuditVersion(
+            REPUTATION_BLOCK_VERSION
+        ))
     );
 }
 

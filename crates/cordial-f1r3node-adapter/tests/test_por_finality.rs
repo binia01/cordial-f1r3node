@@ -371,8 +371,14 @@ fn replays_an_earlier_wave_only_when_its_ordering_is_a_finalized_prefix() {
     let replayed = finalized_output_for_wave(&blocklace, &latest, &bonds, 0)
         .unwrap()
         .unwrap();
-    assert_eq!(replayed.anchor, Some(chain[0].identity.clone()));
-    assert_eq!(replayed.blocks, vec![chain[0].identity.clone()]);
+    assert_eq!(
+        replayed.anchor,
+        Some(chain[0].identity.consensus_identity())
+    );
+    assert_eq!(
+        replayed.blocks,
+        vec![chain[0].identity.consensus_identity()]
+    );
     assert_eq!(
         finalized_output_for_wave(&blocklace, &latest, &bonds, 1).unwrap(),
         Some(latest.clone())
