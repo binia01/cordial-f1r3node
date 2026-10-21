@@ -354,8 +354,11 @@ zero-total result is rejected. PoR therefore changes values, never membership.
    rewrite the published finalized prefix; and
 5. atomically replaces weights and clears the ordering cache.
 
-This preserves the one-round delay: interactions finalized in wave `k` produce
-PoR round `k + 1`, whose weights can affect only subsequent Cordial decisions.
+This enforces source-wave and published-prefix safety for the current
+single-table ingress. It can leave a valid new PoR projection pending when that
+table would change an earlier final leader. Future-only activation needs a
+durable effective-wave boundary and epoch-aware ordering; the current path
+does not yet supply either.
 
 `DurablePorState::activate_weights` owns the commit-to-activation handoff. It
 derives the desired record from the latest committed state and the identities

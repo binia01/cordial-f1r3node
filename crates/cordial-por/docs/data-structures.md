@@ -521,8 +521,9 @@ rejected.
 rejects non-genesis state without an audited checkpoint, requires the
 checkpoint's source wave to be covered by the published finalized output,
 prospectively verifies that the new values preserve the exported finalized prefix, replaces only the values, and clears the weighted ordering
-cache. Ratings from wave `k` therefore influence only subsequent Cordial
-decisions.
+cache. This check can leave a valid projection pending when the new table
+would change an earlier final leader. A future-only weight epoch is still
+needed to activate such a projection without recomputing old waves.
 
 ### Durable Activation Record
 
@@ -551,6 +552,11 @@ therefore binds the exact Cordial-supplied membership projection without making
 membership a PoR decision. The outer checksum is domain-separated with
 `"cordial-por:weight-activation-record:v2"`; malformed, non-canonical,
 oversized, unsupported, and corrupt records fail startup.
+
+Version 2 records do not contain an effective wave or a sealed output prefix.
+They restore the current single-table activation path; they cannot establish a
+shared future-only cutover between observers. The planned epoch record must
+bind those fields before live epoch activation is enabled.
 
 `DurablePorState::activate_weights` enforces this ordering:
 

@@ -265,6 +265,50 @@ conflicting checkpoint identities, delayed rating completion, and a source
 that reveals an earlier checkpoint late. Observer convergence remains a
 separate gate from actual f1r3node weight enforcement.
 
+## Future-only weight epochs
+
+The current `LiveIngress::apply_por_weights` checks a candidate by recomputing
+weighted finality and the entire tau prefix with one new bond table. A valid
+PoR result can therefore remain pending forever if that table would select a
+different leader in a wave that was already finalized. The four-node checkpoint
+smoke exposed this as `WouldRewriteFinalizedLeader`. Relaxing that check while
+continuing to recompute old waves would rewrite published output.
+
+The next implementation needs a **consensus weight epoch** separate from the
+blocklace pruning checkpoint. The pruning checkpoint changes DAG traversal and
+would hide old finalized blocks that PoR still needs as replayable evidence.
+An epoch instead seals an ordered prefix and its final leader while retaining
+the full blocklace:
+
+1. Derive the effective wave from the source checkpoint and a network-wide,
+   immutable activation policy. Bind the resulting wave, source checkpoint,
+   PoR round, authorized validator set, exact projected weights, sealed leader,
+   and sealed-prefix commitment in a durable activation record. Local receipt
+   time or the observer's current head must not choose the effective wave.
+2. Before accepting the record, verify that the sealed prefix was finalized
+   under the previous epoch, the source checkpoint is within that prefix, and
+   no previously published output extends into the proposed new epoch. A late
+   or conflicting record fails closed; it cannot move the cutover forward
+   locally to make the check pass.
+3. For waves before the effective wave, replay the previous epoch's weights and
+   final leader chain. For eligible waves at or after it, use the new weights
+   for weighted finality and tau recursion. Emit the sealed prefix verbatim,
+   then append only newly approved blocks in deterministic topological order.
+   Keep the epoch boundary independent of `Blocklace::checkpoint` and keep
+   previous epoch data available for PoR evidence replay.
+4. Persist the epoch record before exposing new output or weights. On restart,
+   verify its commitments, rebuild the same sealed prefix and weighted suffix,
+   and reject a mirror that cannot reproduce the recorded boundary. A later
+   PoR round creates another epoch using the same rules.
+
+The implementation gate is an unequal-weight fixture in which applying the new
+table to the whole DAG changes an old leader, yet epoch-aware ordering leaves
+the old prefix byte-for-byte identical and changes a subsequent leader or
+ordering result. Then run four observers with the same effective wave and
+commitment, compare their complete finalized prefixes, and repeat after
+restart. A separate node-side test must show f1r3node consuming those epoch
+weights; observer agreement alone does not establish enforcement.
+
 ## Safety and proof requirements
 
 - Take validator identities from f1r3node's authorized bonds. Reject an
