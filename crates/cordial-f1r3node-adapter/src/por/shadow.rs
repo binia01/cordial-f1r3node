@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     grpc_ingest::BlocklaceAdapter,
-    live_grpc::{LiveGrpcBlockClient, trusted_block_from_light_block_info_with_options},
+    live_grpc::{
+        LiveGrpcBlockClient, reconcile_trusted_predecessor_creators,
+        trusted_block_from_light_block_info_with_options,
+    },
     live_ingress::LiveIngress,
     ordered_output::OrderedFinalizedOutput,
     shard_conf::CasperShardConf,
@@ -356,6 +359,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
         previous.validate_configured_rater(configured_rating_rater.as_deref())?;
     }
     let mut scanned_height: Option<i64> = None;
+    let mut known_creators: HashMap<[u8; 32], NodeId> = HashMap::new();
     let mut client: Option<LiveGrpcBlockClient> = None;
     let mut last_logged_rating_wave: Option<u64> = None;
     let mut last_logged_exchange_progress: Option<RatingExchangeProgress> = None;
@@ -411,13 +415,28 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                 }
             };
             let block_count = blocks.len();
+            let mut translated = Vec::with_capacity(block_count);
             for info in blocks {
                 let block = trusted_block_from_light_block_info_with_options(&info, true)
                     .with_context(|| format!("invalid live block {}", info.block_hash))?;
+                if let Some(known) = known_creators.get(&block.identity.content_hash) {
+                    ensure!(
+                        known == &block.identity.creator,
+                        "live block hash {} changed creator",
+                        info.block_hash
+                    );
+                } else {
+                    known_creators
+                        .insert(block.identity.content_hash, block.identity.creator.clone());
+                }
+                translated.push((info.block_hash, block));
+            }
+            for (block_hash, mut block) in translated {
+                reconcile_trusted_predecessor_creators(&mut block, &known_creators);
                 runtime
                     .ingress_mut()
                     .ingest_trusted_block(block)
-                    .with_context(|| format!("cannot mirror block {}", info.block_hash))?;
+                    .with_context(|| format!("cannot mirror block {block_hash}"))?;
             }
             scanned_height = Some(end);
             tracing::info!(start, end, block_count, "PoR shadow replayed height batch");
