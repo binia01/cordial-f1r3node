@@ -20,9 +20,10 @@ use crate::{
 use super::{
     activation::PorWeightActivationOutcome,
     checkpoint::AttestedPorCheckpoint,
-    lifecycle::CompletedPorRatingRound,
+    finality::{PorFinalityError, validate_finalized_prefix_checkpoint},
+    lifecycle::{CompletedPorRatingRound, checkpoint::CompletedCheckpointRatingRound},
     persistence::{DurablePorState, DurablePorStateError},
-    transition::AppliedPorReputationRound,
+    transition::{AppliedPorReputationRound, stage_completed_checkpoint_round},
 };
 
 /// Startup or finalized-output failures at the combined PoR runtime boundary.
@@ -42,6 +43,18 @@ pub enum PorRuntimeError {
 
     #[error("cannot restore or activate durable PoR state: {0}")]
     Durable(#[from] DurablePorStateError),
+
+    #[error("completed PoR checkpoint is not in the current finalized prefix: {0}")]
+    CheckpointSource(#[from] PorFinalityError),
+
+    #[error("cannot audit completed PoR checkpoint: {0}")]
+    CheckpointTransition(#[source] PorError),
+
+    #[error("completed PoR checkpoint cannot safely activate: {0}")]
+    CheckpointActivation(#[source] PorWeightActivationError),
+
+    #[error("a prior committed PoR round still awaits activation")]
+    PendingActivation,
 }
 
 /// A reputation round that is durably committed, together with its activation result.
@@ -195,6 +208,42 @@ impl<A> PorRuntime<A> {
         let applied = self
             .state
             .apply_completed_round(completed, &self.config, &self.shard_id)?;
+        let activation = self.state.activate_weights(&mut self.ingress);
+        Ok(CommittedPorRound {
+            applied,
+            activation,
+        })
+    }
+
+    /// Verify the source and prospective weights before committing a v2 round.
+    ///
+    /// The full finalized-prefix identity is checked against the current
+    /// Cordial output. A completed exchange cannot commit if its source has
+    /// changed or if the projected weights would rewrite published finality.
+    /// Storage commits before activation; a later activation failure remains
+    /// visible in the returned `CommittedPorRound` for recovery.
+    pub fn commit_completed_checkpoint_round(
+        &mut self,
+        completed: &CompletedCheckpointRatingRound,
+    ) -> Result<CommittedPorRound, PorRuntimeError> {
+        if self.state.has_unactivated_committed_round()? {
+            return Err(PorRuntimeError::PendingActivation);
+        }
+        let output = self.publish_finalized_output()?;
+        validate_finalized_prefix_checkpoint(&output, completed.checkpoint())?;
+        let (candidate, _) = stage_completed_checkpoint_round(
+            completed,
+            self.state.state()?,
+            &self.config,
+            &self.shard_id,
+        )
+        .map_err(PorRuntimeError::CheckpointTransition)?;
+        self.ingress
+            .validate_por_weights(&candidate)
+            .map_err(PorRuntimeError::CheckpointActivation)?;
+        let applied =
+            self.state
+                .apply_completed_checkpoint_round(completed, &self.config, &self.shard_id)?;
         let activation = self.state.activate_weights(&mut self.ingress);
         Ok(CommittedPorRound {
             applied,
