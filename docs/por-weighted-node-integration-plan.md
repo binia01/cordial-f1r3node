@@ -238,9 +238,14 @@ caller-supplied Cordial authorization set has passed all expected
 checkpoint-window ratings through the v2 collector. A
 rater with no expected ratings is complete without an envelope. Missing or
 partial expected ratings keep the round open; there is no wall-clock cutoff.
-The returned completed round is still in memory. The live shadow runner still
-uses the v1 wave path; durable v2 reputation transition, safe activation, and
-runner wiring remain pending before checkpoint-driven rounds affect weights.
+The returned completed round can now be replayed into a v2 reputation block,
+audited against its checkpoint source, and committed through the existing
+snapshot-first and immutable-history storage path. The retained v2 block's
+source checkpoint is the committed cursor; recovery reads it from the
+snapshot, and a repeated round fails the consecutive-round audit. This does
+not activate new Cordial weights. The live shadow runner still uses the v1
+wave path; safe v2 activation and runner wiring remain pending before
+checkpoint-driven rounds affect live weights.
 
 The acceptance test is a fresh four-node run in which wave 0 has no final
 leader, all observers commit the same first non-genesis round from the same
