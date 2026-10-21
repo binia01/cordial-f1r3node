@@ -9,6 +9,8 @@ use cordial_f1r3node_adapter::{
         checkpoint_ratings::{
             close_checkpoint_rating_exchange_if_complete, stage_local_checkpoint_rating_batch,
         },
+        lifecycle::PorRatingRoundCloseReason,
+        persistence::DurablePorState,
         rating_key::load_bonded_rating_key,
         transport::{file_exchange::FileRatingExchange, outbox::RatingOutbox},
     },
@@ -26,7 +28,10 @@ use cordial_f1r3node_adapter::{
 use cordial_miners_core::{
     Block, BlockContent, BlockIdentity, Blocklace, NodeId, crypto::CryptoVerifier,
 };
-use cordial_por::{PorConfig, PorError, RatingBatch, RatingRecord, ReputationState};
+use cordial_por::{
+    CHECKPOINT_REPUTATION_BLOCK_VERSION, PorConfig, PorError, RatingBatch, RatingRecord,
+    ReputationState, reputation_block_hash,
+};
 use k256::ecdsa::SigningKey;
 
 struct AcceptAll;
@@ -114,6 +119,18 @@ impl Fixture {
             state,
             config: PorConfig::default(),
         }
+    }
+
+    fn first_checkpoint() -> Self {
+        let mut fixture = Self::new();
+        fixture.checkpoint = finalized_prefix_checkpoint(&fixture.output, 1)
+            .unwrap()
+            .unwrap();
+        fixture.state = ReputationState::new(0);
+        for seed in [1, 2, 3, 9] {
+            fixture.state.set_reputation(node(seed), 100);
+        }
+        fixture
     }
 
     fn collector(&self) -> CheckpointBlockProductionRatingCollector<'_> {
@@ -482,5 +499,104 @@ fn checkpoint_closure_rejects_an_empty_authorization_set() {
     assert_eq!(
         collector.all_authorized_raters_complete(),
         Err(PorRatingCollectorError::NoAuthorizedRaters)
+    );
+}
+
+#[test]
+fn first_checkpoint_commit_recovers_source_and_rejects_replay() {
+    let fixture = Fixture::first_checkpoint();
+    let directory = tempfile::tempdir().unwrap();
+    let key_path = directory.path().join("key-two");
+    fs::write(&key_path, hex::encode(key(2))).unwrap();
+    let local_key = load_bonded_rating_key(&key_path, &HashMap::from([(node(2), 100)])).unwrap();
+    let outbox = RatingOutbox::open(&directory.path().join("node-two")).unwrap();
+    let exchange = FileRatingExchange::open(&directory.path().join("exchange"), b"root").unwrap();
+    let authorized = HashSet::from([node(1), node(2), node(3), node(9)]);
+    let source = fixture.checkpoint.rating_source();
+    stage_local_checkpoint_rating_batch(
+        &fixture.blocklace,
+        &fixture.output,
+        &fixture.checkpoint,
+        &fixture.state,
+        &fixture.config,
+        &local_key,
+        &outbox,
+    )
+    .unwrap();
+    for seed in [1, 3, 9] {
+        let publisher = exchange.checkpoint_broadcaster(source, node(seed)).unwrap();
+        for rating in fixture.batch(seed).ratings {
+            publisher
+                .publish(
+                    &BlockProductionRatingEnvelopeV2::new(source, rating)
+                        .unwrap()
+                        .encode(),
+                )
+                .unwrap();
+        }
+    }
+    let completed = close_checkpoint_rating_exchange_if_complete(
+        &fixture.blocklace,
+        &fixture.output,
+        &fixture.checkpoint,
+        &fixture.state,
+        &fixture.config,
+        &local_key,
+        &authorized,
+        &outbox,
+        &exchange,
+    )
+    .unwrap()
+    .unwrap();
+
+    let state_root = directory.path().join("state");
+    let mut durable = DurablePorState::open(&state_root, fixture.state.clone()).unwrap();
+    assert_eq!(durable.committed_checkpoint_source().unwrap(), None);
+    assert!(
+        durable
+            .apply_completed_checkpoint_round(&completed, &fixture.config, b"")
+            .is_err()
+    );
+    assert_eq!(durable.state().unwrap().round(), 0);
+    assert!(durable.history().is_empty().unwrap());
+    let applied = durable
+        .apply_completed_checkpoint_round(&completed, &fixture.config, b"root")
+        .unwrap();
+    assert_eq!(
+        applied.close_reason,
+        PorRatingRoundCloseReason::AllAuthorizedRaters
+    );
+    assert_eq!(
+        applied.block.header.version,
+        CHECKPOINT_REPUTATION_BLOCK_VERSION
+    );
+    assert_eq!(applied.block.header.source_checkpoint, Some(source));
+    assert_eq!(durable.state().unwrap().round(), 1);
+    assert_eq!(durable.committed_checkpoint_source().unwrap(), Some(source));
+    assert_eq!(
+        durable.history().latest().unwrap(),
+        Some(applied.block.clone())
+    );
+    let committed_hash = reputation_block_hash(&applied.block).unwrap();
+    drop(durable);
+
+    let mut recovered = DurablePorState::open(&state_root, ReputationState::new(99)).unwrap();
+    assert_eq!(
+        recovered.committed_checkpoint_source().unwrap(),
+        Some(source)
+    );
+    assert_eq!(recovered.history().len().unwrap(), 1);
+    assert_eq!(
+        reputation_block_hash(recovered.state().unwrap().latest_block().unwrap()).unwrap(),
+        committed_hash
+    );
+    assert!(
+        recovered
+            .apply_completed_checkpoint_round(&completed, &fixture.config, b"root")
+            .is_err()
+    );
+    assert_eq!(
+        recovered.committed_checkpoint_source().unwrap(),
+        Some(source)
     );
 }
