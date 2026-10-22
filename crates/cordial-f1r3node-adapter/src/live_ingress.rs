@@ -11,7 +11,9 @@ use std::collections::HashMap;
 
 use cordial_miners_core::Block;
 use cordial_miners_core::blocklace::Blocklace;
-use cordial_miners_core::consensus::{OrderingCache, depth, wave_of_round};
+use cordial_miners_core::consensus::{
+    OrderingCache, depth, wave_of_round, weighted_final_leader_for_wave,
+};
 use cordial_miners_core::crypto::CryptoVerifier;
 use cordial_miners_core::types::BlockIdentity;
 use cordial_miners_core::types::{BlockContent, NodeId};
@@ -22,6 +24,7 @@ use crate::block_translation::BlockMessage;
 use crate::deploy_trace::DeployTracer;
 use crate::grpc_ingest::{BlocklaceAdapter, GrpcBlockMapper, NativeBlockIdentityIndex};
 use crate::ordered_output::OrderedFinalizedOutput;
+use crate::por::finality::finalized_prefix_checkpoint;
 use crate::repository::{BlocklaceRepository, RSpaceBlocklaceRepository, RepoError};
 use crate::shard_conf::CasperShardConf;
 use crate::shared_ordered_output::{ReadOrderedOutput, SharedOrderedOutput};
@@ -78,11 +81,14 @@ pub enum PorWeightActivationError {
     Projection(PorError),
     MissingReputationCheckpoint { round: u64 },
     MissingFinalizedOutput { source_wave: u64 },
+    FinalizedCheckpointUnavailable { round: u64 },
+    FinalizedCheckpointMismatch { round: u64 },
     InvalidWavelength,
     UnknownFinalizedAnchor,
     FinalizedWaveBehind { required: u64, available: u64 },
     ActivatedValidatorSetMismatch { configured: usize, recorded: usize },
     WouldRewriteFinalizedOutput,
+    WouldRewriteFinalizedLeader,
 }
 
 impl std::fmt::Display for PorWeightActivationError {
@@ -95,6 +101,14 @@ impl std::fmt::Display for PorWeightActivationError {
             Self::MissingFinalizedOutput { source_wave } => write!(
                 f,
                 "PoR weights require finalized Cordial source wave {source_wave}, but no ordered output is published"
+            ),
+            Self::FinalizedCheckpointUnavailable { round } => write!(
+                f,
+                "PoR weights require finalized Cordial checkpoint round {round}, but its prefix is not yet published"
+            ),
+            Self::FinalizedCheckpointMismatch { round } => write!(
+                f,
+                "PoR checkpoint round {round} does not match the published Cordial finalized prefix"
             ),
             Self::InvalidWavelength => write!(f, "Cordial ordered output has zero wavelength"),
             Self::UnknownFinalizedAnchor => {
@@ -113,6 +127,10 @@ impl std::fmt::Display for PorWeightActivationError {
             Self::WouldRewriteFinalizedOutput => write!(
                 f,
                 "PoR weight activation would rewrite the published Cordial finalized prefix"
+            ),
+            Self::WouldRewriteFinalizedLeader => write!(
+                f,
+                "PoR weight activation would change the published Cordial final leader"
             ),
             Self::ActivatedValidatorSetMismatch {
                 configured,
@@ -527,14 +545,36 @@ impl<A> LiveIngress<A> {
     ///
     /// Validator identities come from `self.bonds`; PoR cannot add or remove
     /// membership. For non-genesis reputation state, activation also proves
-    /// that Cordial has already published the source finalized wave. A
+    /// that Cordial has already published the source wave or checkpoint. A
     /// prospective weighted-order calculation must preserve the published
-    /// finalized prefix, so a weight change cannot rewrite prior finality.
+    /// finalized prefix and final leader, so a weight change cannot rewrite
+    /// prior finality.
     /// Projection and safety checks finish before the live weights change.
     pub fn apply_por_weights(
         &mut self,
         state: &ReputationState,
     ) -> Result<(), PorWeightActivationError> {
+        let next_weights = self.checked_por_weights(state)?;
+        self.bonds = next_weights;
+        self.ordering_cache = OrderingCache::default();
+        Ok(())
+    }
+
+    /// Check a prospective PoR projection without changing the live weights.
+    ///
+    /// A host can call this before durably committing the reputation state to
+    /// reject a known unsafe activation while its previous round is intact.
+    pub fn validate_por_weights(
+        &self,
+        state: &ReputationState,
+    ) -> Result<(), PorWeightActivationError> {
+        self.checked_por_weights(state).map(|_| ())
+    }
+
+    fn checked_por_weights(
+        &self,
+        state: &ReputationState,
+    ) -> Result<HashMap<NodeId, u64>, PorWeightActivationError> {
         let mut authorized_validators: Vec<_> = self.bonds.keys().cloned().collect();
         authorized_validators.sort();
         let next_weights = authorized_validator_weights(state, &authorized_validators)?;
@@ -558,19 +598,59 @@ impl<A> LiveIngress<A> {
                 .anchor
                 .as_ref()
                 .ok_or(PorWeightActivationError::MissingFinalizedOutput { source_wave })?;
-            let anchor_round = depth(self.blocklace(), anchor)
-                .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
-            let available = wave_of_round(anchor_round, output.wavelength)
-                .ok_or(PorWeightActivationError::InvalidWavelength)?;
-            if available < source_wave {
-                return Err(PorWeightActivationError::FinalizedWaveBehind {
-                    required: source_wave,
-                    available,
-                });
+            if let Some(source) = checkpoint.header.source_checkpoint {
+                let local = finalized_prefix_checkpoint(output, source.round).map_err(|_| {
+                    PorWeightActivationError::FinalizedCheckpointMismatch {
+                        round: source.round,
+                    }
+                })?;
+                let Some(local) = local else {
+                    return Err(PorWeightActivationError::FinalizedCheckpointUnavailable {
+                        round: source.round,
+                    });
+                };
+                if local.rating_source() != source {
+                    return Err(PorWeightActivationError::FinalizedCheckpointMismatch {
+                        round: source.round,
+                    });
+                }
+            } else {
+                let anchor_round = depth(self.blocklace(), anchor)
+                    .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
+                let available = wave_of_round(anchor_round, output.wavelength)
+                    .ok_or(PorWeightActivationError::InvalidWavelength)?;
+                if available < source_wave {
+                    return Err(PorWeightActivationError::FinalizedWaveBehind {
+                        required: source_wave,
+                        available,
+                    });
+                }
             }
         }
 
         if let Some(previous) = self.shared_ordered_output.latest() {
+            if let Some(previous_leader) = &previous.anchor
+                && next_weights.len() > 1
+            {
+                let leader_round = depth(self.blocklace(), previous_leader)
+                    .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
+                let wave = wave_of_round(leader_round, previous.wavelength)
+                    .ok_or(PorWeightActivationError::InvalidWavelength)?;
+                let prospective_leader = weighted_final_leader_for_wave(
+                    self.blocklace(),
+                    wave,
+                    previous.wavelength,
+                    &next_weights,
+                    |selected_wave| {
+                        let index =
+                            usize::try_from(selected_wave).ok()? % authorized_validators.len();
+                        Some(authorized_validators[index].clone())
+                    },
+                );
+                if prospective_leader.as_ref() != Some(previous_leader) {
+                    return Err(PorWeightActivationError::WouldRewriteFinalizedLeader);
+                }
+            }
             let mut prospective_cache = OrderingCache::default();
             let (prospective, _) = ordered_block_identities_with_cache(
                 self.blocklace(),
@@ -586,9 +666,7 @@ impl<A> LiveIngress<A> {
             }
         }
 
-        self.bonds = next_weights;
-        self.ordering_cache = OrderingCache::default();
-        Ok(())
+        Ok(next_weights)
     }
 
     /// Replace the bonded validator set used for finality and ordering views.

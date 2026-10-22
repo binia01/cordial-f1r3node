@@ -6,6 +6,7 @@
 //! complete-rater weight, while `close_at_finalized_wave` supplies a finality-
 //! driven fallback.
 
+pub mod checkpoint;
 pub mod cutoff;
 pub mod quorum;
 
@@ -146,6 +147,7 @@ impl From<PorRatingCutoffError> for PorRatingRoundError {
 /// Deterministic trigger that closed a PoR rating round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PorRatingRoundCloseReason {
+    AllAuthorizedRaters,
     Quorum {
         completed_weight: u128,
         required_weight: u128,

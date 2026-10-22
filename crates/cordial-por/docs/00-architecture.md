@@ -349,7 +349,8 @@ zero-total result is rejected. PoR therefore changes values, never membership.
 1. derives authorized identities from the current Cordial bonds map;
 2. builds the complete projected map before mutation;
 3. rejects non-genesis PoR state without an audited checkpoint and verifies
-   that checkpoint's source wave is covered by published Cordial finality;
+   that its source wave, or its v3 finalized-prefix checkpoint, matches
+   published Cordial finality;
 4. prospectively recomputes weighted ordering and rejects an update that would
    rewrite the published finalized prefix; and
 5. atomically replaces weights and clears the ordering cache.
