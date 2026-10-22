@@ -24,6 +24,7 @@ use crate::block_translation::BlockMessage;
 use crate::deploy_trace::DeployTracer;
 use crate::grpc_ingest::{BlocklaceAdapter, GrpcBlockMapper, NativeBlockIdentityIndex};
 use crate::ordered_output::OrderedFinalizedOutput;
+use crate::por::finality::finalized_prefix_checkpoint;
 use crate::repository::{BlocklaceRepository, RSpaceBlocklaceRepository, RepoError};
 use crate::shard_conf::CasperShardConf;
 use crate::shared_ordered_output::{ReadOrderedOutput, SharedOrderedOutput};
@@ -80,6 +81,8 @@ pub enum PorWeightActivationError {
     Projection(PorError),
     MissingReputationCheckpoint { round: u64 },
     MissingFinalizedOutput { source_wave: u64 },
+    FinalizedCheckpointUnavailable { round: u64 },
+    FinalizedCheckpointMismatch { round: u64 },
     InvalidWavelength,
     UnknownFinalizedAnchor,
     FinalizedWaveBehind { required: u64, available: u64 },
@@ -98,6 +101,14 @@ impl std::fmt::Display for PorWeightActivationError {
             Self::MissingFinalizedOutput { source_wave } => write!(
                 f,
                 "PoR weights require finalized Cordial source wave {source_wave}, but no ordered output is published"
+            ),
+            Self::FinalizedCheckpointUnavailable { round } => write!(
+                f,
+                "PoR weights require finalized Cordial checkpoint round {round}, but its prefix is not yet published"
+            ),
+            Self::FinalizedCheckpointMismatch { round } => write!(
+                f,
+                "PoR checkpoint round {round} does not match the published Cordial finalized prefix"
             ),
             Self::InvalidWavelength => write!(f, "Cordial ordered output has zero wavelength"),
             Self::UnknownFinalizedAnchor => {
@@ -534,7 +545,7 @@ impl<A> LiveIngress<A> {
     ///
     /// Validator identities come from `self.bonds`; PoR cannot add or remove
     /// membership. For non-genesis reputation state, activation also proves
-    /// that Cordial has already published the source finalized wave. A
+    /// that Cordial has already published the source wave or checkpoint. A
     /// prospective weighted-order calculation must preserve the published
     /// finalized prefix and final leader, so a weight change cannot rewrite
     /// prior finality.
@@ -587,15 +598,33 @@ impl<A> LiveIngress<A> {
                 .anchor
                 .as_ref()
                 .ok_or(PorWeightActivationError::MissingFinalizedOutput { source_wave })?;
-            let anchor_round = depth(self.blocklace(), anchor)
-                .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
-            let available = wave_of_round(anchor_round, output.wavelength)
-                .ok_or(PorWeightActivationError::InvalidWavelength)?;
-            if available < source_wave {
-                return Err(PorWeightActivationError::FinalizedWaveBehind {
-                    required: source_wave,
-                    available,
-                });
+            if let Some(source) = checkpoint.header.source_checkpoint {
+                let local = finalized_prefix_checkpoint(output, source.round).map_err(|_| {
+                    PorWeightActivationError::FinalizedCheckpointMismatch {
+                        round: source.round,
+                    }
+                })?;
+                let Some(local) = local else {
+                    return Err(PorWeightActivationError::FinalizedCheckpointUnavailable {
+                        round: source.round,
+                    });
+                };
+                if local.rating_source() != source {
+                    return Err(PorWeightActivationError::FinalizedCheckpointMismatch {
+                        round: source.round,
+                    });
+                }
+            } else {
+                let anchor_round = depth(self.blocklace(), anchor)
+                    .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
+                let available = wave_of_round(anchor_round, output.wavelength)
+                    .ok_or(PorWeightActivationError::InvalidWavelength)?;
+                if available < source_wave {
+                    return Err(PorWeightActivationError::FinalizedWaveBehind {
+                        required: source_wave,
+                        available,
+                    });
+                }
             }
         }
 

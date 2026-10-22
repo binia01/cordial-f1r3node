@@ -363,6 +363,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
     let mut last_logged_deferred_wave: Option<u64> = None;
     let mut last_logged_checkpoint_round: Option<u64> = None;
     let mut last_logged_deferred_checkpoint: Option<[u8; 32]> = None;
+    let mut last_logged_waiting_checkpoint: Option<u64> = None;
 
     loop {
         if client.is_none() {
@@ -430,7 +431,19 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
             tokio::time::sleep(config.poll_interval).await;
             continue;
         }
-        let mut output = runtime.publish_finalized_output()?;
+        let mut output = match runtime.publish_finalized_output() {
+            Ok(output) => output,
+            Err(PorRuntimeError::CommittedCheckpointUnavailable { round }) => {
+                if last_logged_waiting_checkpoint != Some(round) {
+                    tracing::info!(round, "waiting for committed PoR checkpoint replay");
+                    last_logged_waiting_checkpoint = Some(round);
+                }
+                tokio::time::sleep(config.poll_interval).await;
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        last_logged_waiting_checkpoint = None;
         if runtime.state().has_unactivated_committed_round()? {
             let activation = runtime.retry_weight_activation()?;
             tracing::info!(
