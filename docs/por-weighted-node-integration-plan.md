@@ -302,12 +302,16 @@ the full blocklace:
    PoR round creates another epoch using the same rules.
 
 The core epoch ordering primitive and an adapter-side read-only preview are
-implemented. The preview accepts projected weights and an explicit effective
-wave, checks authorized membership and the currently published old-weight
-boundary, then computes the prospective suffix without changing live weights
-or output. It does not choose an effective wave, persist an epoch record, or
-activate PoR weights. Those steps must be complete before an observer reports
-the new round as active.
+implemented. A checkpoint epoch policy now derives the effective wave from the
+checkpoint terminal block's wave plus an explicitly configured positive delay.
+Its result is the same when observers have different later heads, provided
+they replay the same source prefix. The adapter verifies that source before
+previewing the projected suffix. It waits for the finalized boundary wave
+immediately before the cutover and rejects a cutover into a published wave.
+The delay must be shared by all participants and bound to the future durable
+epoch record; there is no implicit default. The preview does not persist an
+epoch record or activate PoR weights. Those steps must be complete before an
+observer reports the new round as active.
 
 The implementation gate is an unequal-weight fixture in which applying the new
 table to the whole DAG changes an old leader, yet epoch-aware ordering leaves
