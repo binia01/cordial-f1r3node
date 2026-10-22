@@ -62,6 +62,7 @@ import time
 
 directory = Path(sys.argv[sys.argv.index('--data-dir') + 1]) / 'por'
 directory.mkdir(parents=True, exist_ok=True)
+(directory / 'args.json').write_text(json.dumps(sys.argv[1:]))
 status = {
     'schema_version': 1, 'shadow_mode': True, 'active_por_round': 0,
     'weight_commitment': 'commitment', 'weights': {'validator': 200000000},
@@ -102,6 +103,7 @@ while True:
                 ["python3", str(SCRIPT), "--data-root", str(root / "candidate-data"),
                  "--binary", str(fake_runner), "--timeout-seconds", "8",
                  "--rating-keys-dir", str(keys), "--checkpoint-ratings",
+                 "--commit-complete-ratings", "--checkpoint-epoch-delay-waves", "12",
                  "--min-candidate-round", "1", "--skip-node-restart"],
                 env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}"},
                 capture_output=True, text=True, timeout=15,
@@ -109,6 +111,8 @@ while True:
             self.assertEqual(candidate.returncode, 0, candidate.stderr)
             self.assertIn("complete candidate round 1", candidate.stdout)
             self.assertEqual(candidate.stdout.count("PASS:"), 3)
+            forwarded = (root / "candidate-data" / VERIFY.NODES[0] / "por" / "args.json").read_text()
+            self.assertIn('"--checkpoint-epoch-delay-waves", "12"', forwarded)
 
 
 if __name__ == "__main__":

@@ -4,8 +4,8 @@ use cordial_f1r3node_adapter::{
     grpc_ingest::BlocklaceAdapter,
     live_ingress::LiveIngress,
     por::{
-        PorWeightEpochPolicy, PorWeightEpochRecord, PorWeightEpochRecordError, PorWeightEpochStore,
-        finalized_prefix_checkpoint,
+        PorRuntime, PorWeightEpochPolicy, PorWeightEpochRecord, PorWeightEpochRecordError,
+        PorWeightEpochStore, finalized_prefix_checkpoint,
     },
     shard_conf::CasperShardConf,
 };
@@ -13,6 +13,7 @@ use cordial_miners_core::{
     Block, BlockContent, BlockIdentity, NodeId,
     consensus::{depth, wave_of_round},
 };
+use cordial_por::{PorConfig, ReputationState};
 use tempfile::tempdir;
 
 struct AcceptBlocks;
@@ -140,6 +141,35 @@ fn prepared_epoch_survives_store_reopen_and_replays_sealed_prefix() {
             "authorized validator set changed"
         ))
     ));
+}
+
+#[test]
+fn runtime_discards_epoch_proposal_when_reputation_state_never_committed() {
+    let directory = tempdir().unwrap();
+    let (_, record, _) = fixture();
+    let store = PorWeightEpochStore::open(directory.path()).unwrap();
+    store.persist(&record).unwrap();
+    let validator = NodeId(vec![1]);
+    let mut initial = ReputationState::new(0);
+    initial.set_reputation(validator.clone(), 100);
+    let ingress = LiveIngress::with_consensus_view(
+        AcceptBlocks,
+        HashMap::from([(validator, 10)]),
+        CasperShardConf::default(),
+        "root",
+    );
+    let runtime = PorRuntime::open(
+        directory.path(),
+        initial,
+        ingress,
+        PorConfig::default(),
+        b"root",
+        3,
+    )
+    .unwrap();
+    assert_eq!(runtime.state().state().unwrap().round(), 0);
+    assert!(runtime.active_future_epoch().is_none());
+    assert!(store.restore().unwrap().is_none());
 }
 
 #[test]
