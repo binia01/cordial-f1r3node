@@ -86,6 +86,16 @@ pub struct ShadowSourceCheckpoint {
     pub terminal_block_hash: String,
 }
 
+/// A complete, replay-audited PoR result before local weight activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShadowCandidate {
+    pub por_round: u64,
+    pub source: ShadowSourceCheckpoint,
+    pub checkpoint_hash: String,
+    pub weight_commitment: String,
+    pub weights: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowStatus {
     pub schema_version: u16,
@@ -100,6 +110,9 @@ pub struct ShadowStatus {
     /// Deterministic next source window, reported for inspection only.
     #[serde(default)]
     pub next_por_source_checkpoint: Option<ShadowSourceCheckpoint>,
+    /// Complete checkpoint result, reported even when activation is deferred.
+    #[serde(default)]
+    pub candidate: Option<ShadowCandidate>,
     pub weight_commitment: String,
     pub weights: BTreeMap<String, u64>,
     pub finalized_anchor: Option<String>,
@@ -149,6 +162,7 @@ impl ShadowStatus {
             active_por_round: record.reputation_round(),
             active_por_checkpoint: record.checkpoint_hash().map(hex::encode),
             next_por_source_checkpoint,
+            candidate: None,
             weight_commitment: hex::encode(record.weights_commitment()),
             weights,
             finalized_anchor: output.anchor_hash().map(hex::encode),
@@ -203,6 +217,14 @@ impl ShadowStatus {
                 ensure!(
                     recovered.active_por_checkpoint.as_ref() == Some(checkpoint),
                     "recovered PoR checkpoint differs from the previous publication"
+                );
+            }
+            if let (Some(previous), Some(current)) = (&self.candidate, &recovered.candidate)
+                && previous.por_round == current.por_round
+            {
+                ensure!(
+                    previous == current,
+                    "recovered PoR checkpoint candidate differs from the previous publication"
                 );
             }
         }
@@ -530,6 +552,23 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                     let candidate_hash = candidate
                         .checkpoint_hash()
                         .context("complete checkpoint PoR candidate has no block hash")?;
+                    let candidate_status = ShadowCandidate {
+                        por_round: next_round,
+                        source: ShadowSourceCheckpoint {
+                            por_round: checkpoint.por_round,
+                            finalized_prefix_len: checkpoint.finalized_prefix_len,
+                            prefix_hash: hex::encode(checkpoint.prefix_hash),
+                            terminal_block_hash: hex::encode(
+                                checkpoint.terminal_block.content_hash,
+                            ),
+                        },
+                        checkpoint_hash: hex::encode(candidate_hash),
+                        weight_commitment: hex::encode(candidate.weights_commitment()),
+                        weights: weights
+                            .iter()
+                            .map(|(node, weight)| (hex::encode(&node.0), *weight))
+                            .collect(),
+                    };
                     if last_logged_candidate_checkpoint != Some(candidate_hash) {
                         tracing::info!(
                             candidate_por_round = next_round,
@@ -575,6 +614,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                             Err(error) => return Err(error.into()),
                         }
                     }
+                    status.candidate = Some(candidate_status);
                 }
             }
         } else if let (Some(key), Some(outbox)) = (&rating_key, &rating_outbox) {
@@ -713,6 +753,16 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                 }
             }
         }
+        // The complete candidate is derived above, after the initial replay
+        // checks. Check it against the prior publication before writing it.
+        if status.candidate.is_some() {
+            if let Some(previous) = &previous {
+                previous.validate_recovered(&status)?;
+            }
+            if let Some(published) = read_status(&path)? {
+                published.validate_recovered(&status)?;
+            }
+        }
         write_status(&path, &status)?;
         println!("{}", serde_json::to_string(&status)?);
         tokio::time::sleep(config.poll_interval).await;
@@ -731,6 +781,7 @@ mod tests {
             active_por_round: 0,
             active_por_checkpoint: None,
             next_por_source_checkpoint: None,
+            candidate: None,
             weight_commitment: "abc".into(),
             weights: BTreeMap::from([("key".into(), 1)]),
             finalized_anchor: hashes.last().map(|hash| hash.to_string()),
@@ -750,6 +801,29 @@ mod tests {
         let mut drifted = status(&["a", "b"]);
         drifted.weights.insert("key".into(), 2);
         assert!(old.validate_recovered(&drifted).is_err());
+    }
+
+    #[test]
+    fn recovered_complete_checkpoint_candidate_cannot_change() {
+        let mut old = status(&["a", "b"]);
+        old.candidate = Some(ShadowCandidate {
+            por_round: 1,
+            source: ShadowSourceCheckpoint {
+                por_round: 1,
+                finalized_prefix_len: 16,
+                prefix_hash: "source".into(),
+                terminal_block_hash: "terminal".into(),
+            },
+            checkpoint_hash: "checkpoint".into(),
+            weight_commitment: "candidate-weights".into(),
+            weights: BTreeMap::from([("key".into(), 2)]),
+        });
+        let mut recovered = old.clone();
+        recovered.finalized_hashes.push("c".into());
+        old.validate_recovered(&recovered).unwrap();
+
+        recovered.candidate.as_mut().unwrap().source.prefix_hash = "changed".into();
+        assert!(old.validate_recovered(&recovered).is_err());
     }
 
     #[test]
@@ -787,11 +861,13 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("next_por_source_checkpoint");
+        value.as_object_mut().unwrap().remove("candidate");
         let previous: ShadowStatus = serde_json::from_value(value).unwrap();
         assert_eq!(previous.observed_finalized_wave, None);
         assert_eq!(previous.configured_rating_rater, None);
         assert_eq!(previous.active_por_checkpoint, None);
         assert_eq!(previous.next_por_source_checkpoint, None);
+        assert_eq!(previous.candidate, None);
         let mut recovered = status(&["a", "b"]);
         recovered.observed_finalized_wave = Some(1);
         previous.validate_recovered(&recovered).unwrap();
