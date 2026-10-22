@@ -8,12 +8,16 @@ use std::collections::HashMap;
 
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    PorConfig, PorError, ReputationBlock, ReputationBlockContext, ReputationState,
-    ReputationVector, ReputationWeight, build_reputation_block_with_penalties,
-    replay_reputation_transition_with_penalties, reputation_weights,
+    CheckpointReputationBlockContext, PorConfig, PorError, ReputationBlock,
+    ReputationBlockContext, ReputationState, ReputationVector, ReputationWeight,
+    build_checkpoint_reputation_block, build_reputation_block_with_penalties,
+    replay_reputation_transition, replay_reputation_transition_with_penalties,
+    reputation_weights,
 };
 
-use super::lifecycle::{CompletedPorRatingRound, PorRatingRoundCloseReason};
+use super::lifecycle::{
+    CompletedPorRatingRound, PorRatingRoundCloseReason, checkpoint::CompletedCheckpointRatingRound,
+};
 
 /// Result of a successfully applied reputation round.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +80,53 @@ pub(super) fn stage_completed_reputation_round(
     )?;
 
     stage_reputation_block(completed, state, config, shard_id, block)
+}
+
+/// Replay and audit a complete checkpoint round without changing live state.
+///
+/// The resulting v3 reputation block stores the finalized-prefix source, so
+/// the durable snapshot and history also retain the committed source cursor.
+pub(super) fn stage_completed_checkpoint_round(
+    completed: &CompletedCheckpointRatingRound,
+    state: &ReputationState,
+    config: &PorConfig,
+    shard_id: &[u8],
+) -> Result<(ReputationState, AppliedPorReputationRound), PorError> {
+    let source = completed.source();
+    let previous = ReputationVector {
+        round: state.round(),
+        values: state.reputation_list().entries.clone(),
+    };
+    let batch = completed.batch();
+    let reputation_list =
+        replay_reputation_transition(&previous, &batch.ratings, batch.round, config)?;
+    let block = build_checkpoint_reputation_block(
+        CheckpointReputationBlockContext {
+            shard_id,
+            source,
+            previous_block: state.latest_block(),
+        },
+        batch,
+        reputation_list,
+        config,
+    )?;
+    let mut staged = state.clone();
+    staged.apply_checkpoint_reputation_block(
+        shard_id,
+        source,
+        &batch.ratings,
+        block.clone(),
+        config,
+    )?;
+    let weights = reputation_weights(&staged);
+    Ok((
+        staged,
+        AppliedPorReputationRound {
+            close_reason: PorRatingRoundCloseReason::AllAuthorizedRaters,
+            block,
+            reputation_weights: weights,
+        },
+    ))
 }
 
 /// Re-audit an attested peer block against current state without publishing it.

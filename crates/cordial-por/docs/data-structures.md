@@ -423,6 +423,18 @@ the v2 envelope with a golden hash; `tests/snapshot.rs` locks the corresponding
 v2 state snapshot. V1 block and snapshot bytes are rejected; upgrades require
 an explicitly prepared v2 checkpoint.
 
+### Checkpoint-bound block v3
+
+Checkpoint ratings use the v2 signed rating payload and batch commitment. Their
+reputation blocks use header and wire version 3. The v3 block hash uses
+`cordial-por:reputation-block-commitment:v3` and commits the checkpoint's
+`finalized_prefix_len` and `finalized_prefix_hash` after the round, in addition
+to the v2 header fields and penalty commitment. Its `source_finalized_wave` is
+zero. The v3 wire envelope uses
+`cordial-por:reputation-block-envelope:v3` for its checksum and includes the
+checkpoint fields in the block payload. A wave-based v2 block has no checkpoint
+source; decoding requires its wire and header versions to agree.
+
 ## Signed Reputation Block Publication Envelope
 
 The f1r3node adapter wraps the canonical block envelope in a second, signed
@@ -511,11 +523,13 @@ map with zero weight so PoR never mutates membership. A zero-total projection is
 rejected.
 
 `LiveIngress::apply_por_weights` performs the runtime handoff atomically. It
-rejects non-genesis state without an audited checkpoint, requires the
-checkpoint's source wave to be covered by the published finalized output,
-prospectively verifies that the new values preserve the exported finalized prefix, replaces only the values, and clears the weighted ordering
-cache. Ratings from wave `k` therefore influence only subsequent Cordial
-decisions.
+rejects non-genesis state without an audited checkpoint. A wave-based block
+requires its source wave to be covered by published finality; a v3 checkpoint
+block requires its exact source prefix length and hash to match the locally
+finalized prefix. It then verifies that the new values preserve the exported
+finalized prefix, replaces only the values, and clears the weighted ordering
+cache. An incomplete checkpoint replay leaves activation pending; a conflicting
+prefix is rejected.
 
 ### Durable Activation Record
 
@@ -637,6 +651,12 @@ rejects trailing or truncated data, validates canonical ordering and the latest
 block, requires state/list/latest-block rounds to agree, and verifies that every
 exclusion flag exactly matches a zero-weight key in the permanent registry.
 `tests/snapshot.rs` locks the v2 format with a golden hash.
+
+Checkpoint-bound blocks are stored in a v3 snapshot envelope with checksum
+domain `cordial-por:state-snapshot:v3`. A v2 snapshot continues to represent
+wave-based state. Checkpoint v2 blocks and snapshots written before this
+version split are not migrated automatically; recovery requires a dedicated
+migration or a fresh observer data directory.
 
 The adapter writes these bytes to
 `<data_dir>/por/reputation-state.bin`. `PorStateStore` syncs a temporary

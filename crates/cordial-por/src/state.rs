@@ -3,11 +3,12 @@ use std::collections::BTreeSet;
 use cordial_miners_core::NodeId;
 
 use crate::{
-    audit::verify_reputation_transition_with_penalties,
-    block::{ReputationBlockContext, validate_reputation_block},
+    audit::{verify_checkpoint_reputation_transition, verify_reputation_transition_with_penalties},
+    block::{CheckpointReputationBlockContext, ReputationBlockContext, validate_reputation_block},
     commitments::{validate_reputation_entries, validate_reputation_vector},
     config::PorConfig,
     error::PorError,
+    ratings::RatingSourceCheckpoint,
     types::{
         RatingRecord, ReputationBlock, ReputationEntry, ReputationList, ReputationPenaltyEvents,
         ReputationRound, ReputationVector, ReputationWeight,
@@ -309,9 +310,42 @@ impl ReputationState {
             penalties,
         )?;
 
-        // Replay above validates the complete successor, including preservation
-        // of existing exclusions and retained balances. Install that audited list
-        // directly; the public vector API must not introduce new exclusions.
+        self.commit_audited_block(block)
+    }
+
+    /// Audit and atomically apply a checkpoint-bound v3 reputation block.
+    ///
+    /// The caller must have verified that `source` is canonical for
+    /// Cordial's finalized prefix and authenticated the rating signatures.
+    pub fn apply_checkpoint_reputation_block(
+        &mut self,
+        shard_id: &[u8],
+        source: RatingSourceCheckpoint,
+        ratings: &[RatingRecord],
+        block: ReputationBlock,
+        config: &PorConfig,
+    ) -> Result<(), PorError> {
+        let previous = ReputationVector {
+            round: self.current_round,
+            values: self.reputation_list.entries.clone(),
+        };
+        verify_checkpoint_reputation_transition(
+            &previous,
+            ratings,
+            &block,
+            CheckpointReputationBlockContext {
+                shard_id,
+                source,
+                previous_block: self.latest_block.as_ref(),
+            },
+            config,
+        )?;
+        self.commit_audited_block(block)
+    }
+
+    fn commit_audited_block(&mut self, block: ReputationBlock) -> Result<(), PorError> {
+        // Audited replay validates the successor, including exclusions and
+        // retained balances. Install that list without another transition.
         let mut staged = self.clone();
         staged.current_round = block.reputation_list.round;
         staged.reputation_list = block.reputation_list.clone();
