@@ -26,7 +26,7 @@ use crate::{
         LiveGrpcBlockClient, reconcile_trusted_predecessor_creators,
         trusted_block_from_light_block_info_with_options,
     },
-    live_ingress::LiveIngress,
+    live_ingress::{LiveIngress, PorWeightActivationError},
     ordered_output::OrderedFinalizedOutput,
     shard_conf::CasperShardConf,
     snapshot::CORDIAL_WAVELENGTH,
@@ -37,6 +37,7 @@ use super::{
     checkpoint_ratings::{
         close_checkpoint_rating_exchange_if_complete, stage_local_checkpoint_rating_batch,
     },
+    epoch_policy::PorWeightEpochPolicy,
     finality::{
         finalized_output_for_wave, finalized_prefix_checkpoint, finalized_wave_from_output,
     },
@@ -70,6 +71,8 @@ pub struct ShadowConfig {
     pub rating_exchange_dir: Option<PathBuf>,
     pub commit_complete_ratings: bool,
     pub checkpoint_ratings: bool,
+    /// Fixed number of waves from the rating source to the weight cutover.
+    pub checkpoint_epoch_delay_waves: Option<u64>,
     pub data_dir: PathBuf,
     pub shard_id: String,
     pub height_batch_size: i64,
@@ -131,12 +134,15 @@ impl ShadowStatus {
         rating_rater: Option<&str>,
         source_height: i64,
     ) -> Result<Self> {
-        let record = runtime
+        let legacy_record = runtime
             .state()
             .activated_weight_record()?
             .context("PoR genesis projection was not activated")?;
-        let weights = record
-            .weights()
+        let active_epoch = runtime.active_future_epoch();
+        let active_weights = active_epoch.map(|record| record.new_weights());
+        let weights = active_weights
+            .as_ref()
+            .unwrap_or_else(|| legacy_record.weights())
             .iter()
             .map(|(node, weight)| (hex::encode(&node.0), *weight))
             .collect();
@@ -159,11 +165,19 @@ impl ShadowStatus {
             schema_version: 1,
             shadow_mode: true,
             configured_rating_rater: rating_rater.map(str::to_owned),
-            active_por_round: record.reputation_round(),
-            active_por_checkpoint: record.checkpoint_hash().map(hex::encode),
+            active_por_round: active_epoch.map_or(legacy_record.reputation_round(), |record| {
+                record.por_round()
+            }),
+            active_por_checkpoint: active_epoch
+                .map(|record| hex::encode(record.reputation_checkpoint_hash()))
+                .or_else(|| legacy_record.checkpoint_hash().map(hex::encode)),
             next_por_source_checkpoint,
             candidate: None,
-            weight_commitment: hex::encode(record.weights_commitment()),
+            weight_commitment: hex::encode(
+                active_epoch.map_or(legacy_record.weights_commitment(), |record| {
+                    record.new_weights_commitment()
+                }),
+            ),
             weights,
             finalized_anchor: output.anchor_hash().map(hex::encode),
             observed_finalized_wave: finalized_wave_from_output(
@@ -319,6 +333,14 @@ fn validate_config(config: &ShadowConfig) -> Result<()> {
         !config.checkpoint_ratings || config.rating_exchange_dir.is_some(),
         "checkpoint ratings require a rating exchange directory and a validator key"
     );
+    ensure!(
+        config.checkpoint_epoch_delay_waves.is_none()
+            || (config.checkpoint_ratings && config.commit_complete_ratings),
+        "checkpoint epoch delay requires committed checkpoint ratings"
+    );
+    if let Some(delay) = config.checkpoint_epoch_delay_waves {
+        PorWeightEpochPolicy::new(delay)?;
+    }
     Ok(())
 }
 
@@ -472,7 +494,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
             continue;
         }
         let mut output = runtime.publish_finalized_output()?;
-        if runtime.state().has_unactivated_committed_round()? {
+        if runtime.has_unactivated_committed_round()? {
             let activation = runtime.retry_weight_activation()?;
             tracing::info!(
                 ?activation,
@@ -493,7 +515,9 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
         if let Some(published) = read_status(&path)? {
             published.validate_recovered(&status)?;
         }
-        if config.checkpoint_ratings {
+        // This PoC store holds one epoch. Continue observing after round one;
+        // a later checkpoint needs the append-only epoch journal.
+        if config.checkpoint_ratings && runtime.active_future_epoch().is_none() {
             let key = rating_key
                 .as_ref()
                 .context("checkpoint rating key disappeared")?;
@@ -581,37 +605,75 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                         last_logged_candidate_checkpoint = Some(candidate_hash);
                     }
                     if config.commit_complete_ratings {
-                        match runtime.commit_completed_checkpoint_round(&completed) {
-                            Ok(committed) => {
-                                let activation = committed.activation.with_context(|| {
+                        if let Some(delay) = config.checkpoint_epoch_delay_waves {
+                            let policy = PorWeightEpochPolicy::new(delay)?;
+                            match runtime
+                                .commit_completed_checkpoint_round_with_epoch(&completed, policy)
+                            {
+                                Ok(_) => {
+                                    tracing::info!(
+                                        committed_por_round = next_round,
+                                        delay_waves = delay,
+                                        "committed future-only checkpoint PoR epoch"
+                                    );
+                                    let before_commit = status.clone();
+                                    output = runtime.publish_finalized_output()?;
+                                    status = ShadowStatus::from_runtime(
+                                        &runtime,
+                                        &output,
+                                        configured_rating_rater.as_deref(),
+                                        head,
+                                    )?;
+                                    before_commit.validate_recovered(&status)?;
+                                }
+                                Err(PorRuntimeError::FutureEpoch(
+                                    super::epoch_record::PorWeightEpochRecordError::Preview(
+                                        error
+                                        @ PorWeightActivationError::EpochBoundaryWavePending {
+                                            ..
+                                        },
+                                    ),
+                                )) => {
+                                    if last_logged_deferred_checkpoint != Some(candidate_hash) {
+                                        tracing::warn!(por_round = next_round, %error, "checkpoint PoR epoch waits for its fixed Cordial boundary");
+                                        last_logged_deferred_checkpoint = Some(candidate_hash);
+                                    }
+                                }
+                                Err(error) => return Err(error.into()),
+                            }
+                        } else {
+                            match runtime.commit_completed_checkpoint_round(&completed) {
+                                Ok(committed) => {
+                                    let activation = committed.activation.with_context(|| {
                                     format!("PoR checkpoint round {next_round} committed but activation is pending")
                                 })?;
-                                tracing::info!(
-                                    committed_por_round = next_round,
-                                    ?activation,
-                                    "committed and activated checkpoint PoR round"
-                                );
-                                let before_commit = status.clone();
-                                output = runtime.publish_finalized_output()?;
-                                status = ShadowStatus::from_runtime(
-                                    &runtime,
-                                    &output,
-                                    configured_rating_rater.as_deref(),
-                                    head,
-                                )?;
-                                before_commit.validate_recovered(&status)?;
-                            }
-                            Err(PorRuntimeError::CheckpointActivation(error)) => {
-                                if last_logged_deferred_checkpoint != Some(candidate_hash) {
-                                    tracing::warn!(
-                                        por_round = next_round,
-                                        %error,
-                                        "checkpoint PoR commit waits for a safe Cordial activation boundary"
+                                    tracing::info!(
+                                        committed_por_round = next_round,
+                                        ?activation,
+                                        "committed and activated checkpoint PoR round"
                                     );
-                                    last_logged_deferred_checkpoint = Some(candidate_hash);
+                                    let before_commit = status.clone();
+                                    output = runtime.publish_finalized_output()?;
+                                    status = ShadowStatus::from_runtime(
+                                        &runtime,
+                                        &output,
+                                        configured_rating_rater.as_deref(),
+                                        head,
+                                    )?;
+                                    before_commit.validate_recovered(&status)?;
                                 }
+                                Err(PorRuntimeError::CheckpointActivation(error)) => {
+                                    if last_logged_deferred_checkpoint != Some(candidate_hash) {
+                                        tracing::warn!(
+                                            por_round = next_round,
+                                            %error,
+                                            "checkpoint PoR commit waits for a safe Cordial activation boundary"
+                                        );
+                                        last_logged_deferred_checkpoint = Some(candidate_hash);
+                                    }
+                                }
+                                Err(error) => return Err(error.into()),
                             }
-                            Err(error) => return Err(error.into()),
                         }
                     }
                     status.candidate = Some(candidate_status);
@@ -955,6 +1017,7 @@ mod tests {
             rating_exchange_dir: None,
             commit_complete_ratings: false,
             checkpoint_ratings: false,
+            checkpoint_epoch_delay_waves: None,
             data_dir: "data".into(),
             shard_id: "root".into(),
             height_batch_size: 64,
@@ -978,5 +1041,11 @@ mod tests {
         assert!(validate_config(&config).is_err());
         config.rating_exchange_dir = Some("exchange".into());
         assert!(validate_config(&config).is_ok());
+        config.checkpoint_epoch_delay_waves = Some(1);
+        assert!(validate_config(&config).is_err());
+        config.commit_complete_ratings = true;
+        assert!(validate_config(&config).is_ok());
+        config.checkpoint_epoch_delay_waves = Some(0);
+        assert!(validate_config(&config).is_err());
     }
 }

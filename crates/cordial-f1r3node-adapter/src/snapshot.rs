@@ -187,6 +187,9 @@ pub enum SnapshotError {
     /// Updating a shared ordered-output reader would rewrite a previously
     /// published finalized prefix.
     OrderedOutputPrefixViolation,
+
+    /// A committed future-only PoR epoch could not be replayed.
+    EpochReplay(String),
 }
 
 /// Build a [`CasperSnapshot`] from the current blocklace state.

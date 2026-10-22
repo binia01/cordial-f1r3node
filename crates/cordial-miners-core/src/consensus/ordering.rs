@@ -760,15 +760,14 @@ where
     if boundary.effective_wave <= boundary_wave {
         return Err(WeightedEpochError::InvalidBoundary);
     }
-    if weighted_final_leader_for_wave(
+    if !weighted_final_leader_for_wave(
         blocklace,
         boundary_wave,
         wavelength,
         old_bonds,
         leader_selection,
     )
-    .as_ref()
-        != Some(boundary.final_leader)
+    .is_some_and(|leader| leader.same_consensus_identity(boundary.final_leader))
     {
         return Err(WeightedEpochError::BoundaryNotFinal);
     }

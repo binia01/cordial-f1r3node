@@ -8,7 +8,10 @@
 
 use std::path::Path;
 
-use cordial_por::{MAX_REPUTATION_BLOCK_SHARD_ID_LEN, PorConfig, PorError, ReputationState};
+use cordial_por::{
+    MAX_REPUTATION_BLOCK_SHARD_ID_LEN, PorConfig, PorError, ReputationState,
+    authorized_validator_weights, reputation_block_hash,
+};
 use thiserror::Error;
 
 use crate::{
@@ -20,6 +23,8 @@ use crate::{
 use super::{
     activation::PorWeightActivationOutcome,
     checkpoint::AttestedPorCheckpoint,
+    epoch_policy::PorWeightEpochPolicy,
+    epoch_record::{PorWeightEpochRecord, PorWeightEpochRecordError, PorWeightEpochStore},
     finality::{
         PorFinalityError, finalized_prefix_checkpoint, validate_finalized_prefix_checkpoint,
     },
@@ -60,6 +65,15 @@ pub enum PorRuntimeError {
 
     #[error("a prior committed PoR round still awaits activation")]
     PendingActivation,
+
+    #[error("PoR future epoch failed: {0}")]
+    FutureEpoch(#[from] PorWeightEpochRecordError),
+
+    #[error("PoR future epoch record does not match the committed reputation state")]
+    FutureEpochStateMismatch,
+
+    #[error("a future-only PoR epoch is already recorded; later epochs require a journal")]
+    FutureEpochAlreadyRecorded,
 }
 
 /// A reputation round that is durably committed, together with its activation result.
@@ -93,6 +107,8 @@ pub struct PorRuntime<A> {
     shard_id: Vec<u8>,
     wavelength: u64,
     startup_activation: PorWeightActivationOutcome,
+    epoch_store: PorWeightEpochStore,
+    epoch_record: Option<PorWeightEpochRecord>,
 }
 
 impl<A> PorRuntime<A> {
@@ -116,7 +132,48 @@ impl<A> PorRuntime<A> {
         validate_shard_id(&shard_id)?;
 
         let mut state = DurablePorState::open(data_dir, initial_state)?;
+        let epoch_store = PorWeightEpochStore::open(data_dir)?;
+        let mut epoch_record = epoch_store.restore()?;
+        if let Some(record) = &epoch_record {
+            let committed_round = state.state()?.round();
+            if record.por_round()
+                == committed_round
+                    .checked_add(1)
+                    .ok_or(PorRuntimeError::FutureEpochStateMismatch)?
+            {
+                epoch_store.discard_uncommitted(record)?;
+                epoch_record = None;
+            } else if record.por_round() != committed_round {
+                return Err(PorRuntimeError::FutureEpochStateMismatch);
+            } else {
+                if record.wavelength() != wavelength {
+                    return Err(PorRuntimeError::FutureEpochStateMismatch);
+                }
+                Self::verify_epoch_state(&state, record)?;
+            }
+        }
         let restored_activation = state.restore_activated_weights(&mut ingress)?;
+        // The shadow host replays blocks after opening the runtime. Never
+        // publish old-table ordering for an already committed epoch.
+        if let Some(record) = &epoch_record {
+            let startup_activation =
+                restored_activation.ok_or(PorRuntimeError::FutureEpochStateMismatch)?;
+            if !ingress.blocklace().dom().is_empty() {
+                ingress
+                    .install_future_epoch(record.clone(), record.reputation_checkpoint_hash())
+                    .map_err(PorRuntimeError::FinalizedOutput)?;
+            }
+            return Ok(Self {
+                ingress,
+                state,
+                config,
+                shard_id,
+                wavelength,
+                startup_activation,
+                epoch_store,
+                epoch_record,
+            });
+        }
         let output = ingress
             .latest_finalized_ordered_output(wavelength)
             .map_err(PorRuntimeError::FinalizedOutput)?;
@@ -150,6 +207,8 @@ impl<A> PorRuntime<A> {
             shard_id,
             wavelength,
             startup_activation,
+            epoch_store,
+            epoch_record,
         })
     }
 
@@ -173,6 +232,18 @@ impl<A> PorRuntime<A> {
         &self.state
     }
 
+    pub fn active_future_epoch(&self) -> Option<&PorWeightEpochRecord> {
+        self.ingress.future_epoch()
+    }
+
+    pub fn has_unactivated_committed_round(&self) -> Result<bool, PorRuntimeError> {
+        if self.active_future_epoch().is_some() {
+            Ok(false)
+        } else {
+            Ok(self.state.has_unactivated_committed_round()?)
+        }
+    }
+
     pub fn config(&self) -> &PorConfig {
         &self.config
     }
@@ -187,6 +258,13 @@ impl<A> PorRuntime<A> {
 
     /// Recompute and publish Cordial's latest finalized view.
     pub fn publish_finalized_output(&mut self) -> Result<OrderedFinalizedOutput, PorRuntimeError> {
+        if let Some(record) = self.epoch_record.clone()
+            && self.ingress.future_epoch().is_none()
+        {
+            self.ingress
+                .install_future_epoch(record.clone(), record.reputation_checkpoint_hash())
+                .map_err(PorRuntimeError::FinalizedOutput)?;
+        }
         let output = self
             .ingress
             .latest_finalized_ordered_output(self.wavelength)
@@ -245,6 +323,9 @@ impl<A> PorRuntime<A> {
         &mut self,
         completed: &CompletedCheckpointRatingRound,
     ) -> Result<CommittedPorRound, PorRuntimeError> {
+        if self.epoch_record.is_some() {
+            return Err(PorRuntimeError::FutureEpochAlreadyRecorded);
+        }
         if self.state.has_unactivated_committed_round()? {
             return Err(PorRuntimeError::PendingActivation);
         }
@@ -268,6 +349,58 @@ impl<A> PorRuntime<A> {
             applied,
             activation,
         })
+    }
+
+    /// Commit one checkpoint with a sealed old-weight prefix and a fixed
+    /// future-wave cutover. The proposal is durable before reputation state;
+    /// startup discards an orphan or replays a committed epoch.
+    pub fn commit_completed_checkpoint_round_with_epoch(
+        &mut self,
+        completed: &CompletedCheckpointRatingRound,
+        policy: PorWeightEpochPolicy,
+    ) -> Result<AppliedPorReputationRound, PorRuntimeError> {
+        if self.epoch_record.is_some() {
+            return Err(PorRuntimeError::FutureEpochAlreadyRecorded);
+        }
+        if self.has_unactivated_committed_round()? {
+            return Err(PorRuntimeError::PendingActivation);
+        }
+        let output = self.publish_finalized_output()?;
+        validate_finalized_prefix_checkpoint(&output, completed.checkpoint())?;
+        let (candidate, _) = stage_completed_checkpoint_round(
+            completed,
+            self.state.state()?,
+            &self.config,
+            &self.shard_id,
+        )
+        .map_err(PorRuntimeError::CheckpointTransition)?;
+        let mut validators: Vec<_> = self.ingress.bonds().keys().cloned().collect();
+        validators.sort();
+        let projected = authorized_validator_weights(&candidate, &validators)
+            .map_err(PorRuntimeError::CheckpointTransition)?;
+        let checkpoint_hash = reputation_block_hash(
+            candidate
+                .latest_block()
+                .ok_or(PorRuntimeError::FutureEpochStateMismatch)?,
+        )
+        .map_err(PorRuntimeError::CheckpointTransition)?;
+        let record = PorWeightEpochRecord::prepare(
+            &self.ingress,
+            completed.checkpoint(),
+            checkpoint_hash,
+            &projected,
+            policy,
+        )?;
+        self.epoch_store.persist(&record)?;
+        let applied =
+            self.state
+                .apply_completed_checkpoint_round(completed, &self.config, &self.shard_id)?;
+        self.epoch_record = Some(record.clone());
+        Self::verify_epoch_state(&self.state, &record)?;
+        self.ingress
+            .install_future_epoch(record, checkpoint_hash)
+            .map_err(PorRuntimeError::FinalizedOutput)?;
+        Ok(applied)
     }
 
     /// Commit an attested checkpoint and immediately activate its weights.
@@ -314,8 +447,37 @@ impl<A> PorRuntime<A> {
     pub fn retry_weight_activation(
         &mut self,
     ) -> Result<PorWeightActivationOutcome, PorRuntimeError> {
+        if self.epoch_record.is_some() {
+            self.publish_finalized_output()?;
+            return Ok(PorWeightActivationOutcome::AlreadyActive);
+        }
         self.publish_finalized_output()?;
         Ok(self.state.activate_weights(&mut self.ingress)?)
+    }
+
+    fn verify_epoch_state(
+        state: &DurablePorState,
+        record: &PorWeightEpochRecord,
+    ) -> Result<(), PorRuntimeError> {
+        let committed = state.state()?;
+        let mut validators: Vec<_> = record.old_weights().into_keys().collect();
+        validators.sort();
+        let projected = authorized_validator_weights(committed, &validators)
+            .map_err(PorRuntimeError::CheckpointTransition)?;
+        let checkpoint_hash = committed
+            .latest_block()
+            .ok_or(PorRuntimeError::FutureEpochStateMismatch)
+            .and_then(|block| {
+                reputation_block_hash(block).map_err(PorRuntimeError::CheckpointTransition)
+            })?;
+        if committed.round() != record.por_round()
+            || state.committed_checkpoint_source()? != Some(record.source().rating_source())
+            || checkpoint_hash != record.reputation_checkpoint_hash()
+            || projected != record.new_weights()
+        {
+            return Err(PorRuntimeError::FutureEpochStateMismatch);
+        }
+        Ok(())
     }
 
     fn committed_checkpoint_ready(

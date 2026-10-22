@@ -151,6 +151,22 @@ impl PorWeightEpochRecord {
         self.delay_waves
     }
 
+    pub fn reputation_checkpoint_hash(&self) -> [u8; 32] {
+        self.reputation_checkpoint_hash
+    }
+
+    pub fn wavelength(&self) -> u64 {
+        self.wavelength
+    }
+
+    pub fn sealed_leader(&self) -> &BlockIdentity {
+        &self.sealed_leader
+    }
+
+    pub fn old_weights(&self) -> HashMap<NodeId, u64> {
+        self.old_weights.iter().cloned().collect()
+    }
+
     pub fn source(&self) -> &FinalizedPrefixCheckpoint {
         &self.source
     }
@@ -381,6 +397,26 @@ impl PorWeightEpochStore {
         fs::rename(&self.temporary_path, &self.record_path)?;
         File::open(&self.directory)?.sync_all()?;
         Ok(())
+    }
+
+    /// Remove only an identical proposal after recovery proves its reputation
+    /// state never committed. A committed epoch must never use this path.
+    pub fn discard_uncommitted(
+        &self,
+        record: &PorWeightEpochRecord,
+    ) -> Result<(), PorWeightEpochRecordError> {
+        let _writer = self
+            .writer
+            .lock()
+            .map_err(|_| PorWeightEpochRecordError::WriterLockPoisoned)?;
+        match self.restore()? {
+            Some(existing) if existing == *record => {
+                fs::remove_file(&self.record_path)?;
+                File::open(&self.directory)?.sync_all()?;
+                Ok(())
+            }
+            _ => Err(PorWeightEpochRecordError::ConflictingRecord),
+        }
     }
 }
 

@@ -130,6 +130,8 @@ def main():
     parser.add_argument("--commit-complete-ratings", action="store_true")
     parser.add_argument("--checkpoint-ratings", action="store_true",
                         help="use v2 finalized-prefix checkpoint rounds in all observers")
+    parser.add_argument("--checkpoint-epoch-delay-waves", type=int,
+                        help="fixed source-to-cutover delay for one future-only PoR epoch")
     parser.add_argument("--compose-override", type=Path)
     parser.add_argument("--compose-project")
     parser.add_argument("--skip-node-restart", action="store_true", help="only check runner recovery")
@@ -147,6 +149,11 @@ def main():
         parser.error("--checkpoint-ratings requires --rating-keys-dir")
     if args.min_candidate_round and not args.checkpoint_ratings:
         parser.error("--min-candidate-round requires --checkpoint-ratings")
+    if args.checkpoint_epoch_delay_waves is not None:
+        if args.checkpoint_epoch_delay_waves <= 0:
+            parser.error("--checkpoint-epoch-delay-waves must be positive")
+        if not (args.checkpoint_ratings and args.commit_complete_ratings):
+            parser.error("--checkpoint-epoch-delay-waves requires committed checkpoint ratings")
     binary = args.binary.resolve()
     bonds_file = args.bonds_file.resolve()
     root = args.data_root.resolve()
@@ -182,6 +189,8 @@ def main():
             command.append("--commit-complete-ratings")
         if args.checkpoint_ratings:
             command.append("--checkpoint-ratings")
+        if args.checkpoint_epoch_delay_waves is not None:
+            command += ["--checkpoint-epoch-delay-waves", str(args.checkpoint_epoch_delay_waves)]
         runners[node] = subprocess.Popen(
             command,
             stdout=log, stderr=subprocess.STDOUT,
