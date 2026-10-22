@@ -600,6 +600,29 @@ impl<TS, EE, BS, BC, ES, SF> CordialProposer<TS, EE, BS, BC, ES, SF> {
         Ok(())
     }
 
+    /// Queue a v2 intent for exactly one finalized 16-block checkpoint window.
+    /// The source-wave slot is reserved zero; the message domain selects v2.
+    pub fn queue_por_checkpoint_equivocation_authorization(
+        &mut self,
+        shard_id: &[u8],
+        round: u64,
+        proof: &cordial_miners_core::consensus::VerifiedEquivocationEvidence,
+    ) -> Result<(), cordial_por::PorError> {
+        let message =
+            cordial_por::checkpoint_equivocation_authorization_payload(shard_id, round, proof)?;
+        let authorization = cordial_miners_core::execution::PorEquivocationAuthorization {
+            shard_id: shard_id.to_vec(),
+            source_finalized_wave: 0,
+            round,
+            message,
+        };
+        if !self.por_authorizations.contains(&authorization) {
+            self.por_authorizations.push(authorization);
+            self.por_authorizations.sort();
+        }
+        Ok(())
+    }
+
     pub fn with_close_block(mut self, include: bool) -> Self {
         self.include_close_block = include;
         self
