@@ -25,6 +25,7 @@ use crate::block_translation::BlockMessage;
 use crate::deploy_trace::DeployTracer;
 use crate::grpc_ingest::{BlocklaceAdapter, GrpcBlockMapper, NativeBlockIdentityIndex};
 use crate::ordered_output::OrderedFinalizedOutput;
+use crate::por::{FinalizedPrefixCheckpoint, PorWeightEpochPolicy, PorWeightEpochPolicyError};
 use crate::repository::{BlocklaceRepository, RSpaceBlocklaceRepository, RepoError};
 use crate::shard_conf::CasperShardConf;
 use crate::shared_ordered_output::{ReadOrderedOutput, SharedOrderedOutput};
@@ -103,6 +104,11 @@ pub enum PorWeightActivationError {
         published_wave: u64,
     },
     FutureEpoch(WeightedEpochError),
+    FutureEpochPolicy(PorWeightEpochPolicyError),
+    EpochBoundaryWavePending {
+        required: u64,
+        published: u64,
+    },
 }
 
 impl std::fmt::Display for PorWeightActivationError {
@@ -150,6 +156,16 @@ impl std::fmt::Display for PorWeightActivationError {
                 "PoR effective wave {effective_wave} is not after published wave {published_wave}"
             ),
             Self::FutureEpoch(error) => write!(f, "future PoR weight epoch is invalid: {error:?}"),
+            Self::FutureEpochPolicy(error) => {
+                write!(f, "future PoR weight epoch policy is invalid: {error}")
+            }
+            Self::EpochBoundaryWavePending {
+                required,
+                published,
+            } => write!(
+                f,
+                "PoR epoch boundary requires finalized wave {required}, but published wave is {published}"
+            ),
             Self::ActivatedValidatorSetMismatch {
                 configured,
                 recorded,
@@ -659,6 +675,40 @@ impl<A> LiveIngress<A> {
             projected.len(),
             self.blocklace().dom().len(),
         ))
+    }
+
+    /// Derive a checkpoint's fixed effective wave, then preview its projection.
+    /// A late cutover fails instead of moving the wave to this observer's head.
+    pub fn preview_checkpoint_weight_epoch(
+        &self,
+        projected: &HashMap<NodeId, u64>,
+        source: &FinalizedPrefixCheckpoint,
+        policy: PorWeightEpochPolicy,
+    ) -> Result<(u64, OrderedFinalizedOutput), PorWeightActivationError> {
+        let published = self
+            .shared_ordered_output
+            .latest()
+            .ok_or(PorWeightActivationError::MissingEpochBoundary)?;
+        let effective_wave = policy
+            .effective_wave(self.blocklace(), published, source)
+            .map_err(PorWeightActivationError::FutureEpochPolicy)?;
+        let leader = published
+            .anchor
+            .as_ref()
+            .ok_or(PorWeightActivationError::MissingEpochBoundary)?;
+        let leader_round = depth(self.blocklace(), leader)
+            .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
+        let published_wave = wave_of_round(leader_round, published.wavelength)
+            .ok_or(PorWeightActivationError::InvalidWavelength)?;
+        let required_boundary_wave = effective_wave - 1;
+        if published_wave < required_boundary_wave {
+            return Err(PorWeightActivationError::EpochBoundaryWavePending {
+                required: required_boundary_wave,
+                published: published_wave,
+            });
+        }
+        let preview = self.preview_future_weight_epoch(projected, effective_wave)?;
+        Ok((effective_wave, preview))
     }
 
     fn checked_por_weights(
