@@ -301,6 +301,14 @@ the full blocklace:
    and reject a mirror that cannot reproduce the recorded boundary. A later
    PoR round creates another epoch using the same rules.
 
+The core epoch ordering primitive and an adapter-side read-only preview are
+implemented. The preview accepts projected weights and an explicit effective
+wave, checks authorized membership and the currently published old-weight
+boundary, then computes the prospective suffix without changing live weights
+or output. It does not choose an effective wave, persist an epoch record, or
+activate PoR weights. Those steps must be complete before an observer reports
+the new round as active.
+
 The implementation gate is an unequal-weight fixture in which applying the new
 table to the whole DAG changes an old leader, yet epoch-aware ordering leaves
 the old prefix byte-for-byte identical and changes a subsequent leader or
