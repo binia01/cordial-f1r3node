@@ -138,3 +138,44 @@ fn incomparable_blocks_of_different_depths_use_the_earliest_round() {
         0
     );
 }
+
+#[test]
+fn decoded_proofs_still_require_authentication_and_complete_ancestry() {
+    use cordial_miners_core::consensus::decode_equivocation_evidence;
+    let parent = block(2, 7, HashSet::new());
+    let mut lace = Blocklace::new();
+    lace.insert(parent.clone(), &Secp256k1Scheme).unwrap();
+    let claim = CordialEquivocationEvidence::new(
+        node(1),
+        1,
+        vec![
+            block(1, 8, HashSet::from([parent.identity.clone()])),
+            block(1, 9, HashSet::from([parent.identity])),
+        ],
+    );
+    let proof = verify_equivocation_evidence(&claim, &lace).unwrap();
+    let bytes = proof.canonical_bytes();
+    let mut decoded = decode_equivocation_evidence(&bytes).unwrap();
+    assert_eq!(
+        verify_equivocation_evidence(&decoded, &lace)
+            .unwrap()
+            .canonical_bytes(),
+        bytes
+    );
+    assert_eq!(
+        verify_equivocation_evidence(&decoded, &Blocklace::new()),
+        Err(EvidenceVerificationError::MissingHistory)
+    );
+    decoded.blocks[0].identity.signature.clear();
+    assert_eq!(
+        verify_equivocation_evidence(&decoded, &lace),
+        Err(EvidenceVerificationError::InvalidSignature)
+    );
+    for end in 0..bytes.len() {
+        assert!(decode_equivocation_evidence(&bytes[..end]).is_err());
+    }
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(decode_equivocation_evidence(&trailing).is_err());
+    assert!(decode_equivocation_evidence(&[1]).is_err());
+}

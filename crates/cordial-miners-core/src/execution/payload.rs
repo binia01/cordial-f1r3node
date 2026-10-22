@@ -32,6 +32,8 @@ pub struct CordialBlockPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PorEquivocationAuthorization {
     pub shard_id: Vec<u8>,
+    /// Wave for v1 messages; reserved zero for v2 checkpoint intents. The signed
+    /// message domain selects the mode, so wave zero is never a mode discriminator.
     pub source_finalized_wave: u64,
     pub round: u64,
     pub message: Vec<u8>,

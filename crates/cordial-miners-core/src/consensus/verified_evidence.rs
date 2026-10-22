@@ -20,6 +20,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvidenceVerificationError {
     TooFewBlocks,
+    MalformedEncoding,
     WrongCreator,
     InvalidHash,
     InvalidSignature,
@@ -207,4 +208,80 @@ fn complete_history(
     }
     let round = rounds[&block.identity.consensus_identity()];
     Ok((round, ancestors))
+}
+
+/// Decode canonical proof bytes into an UNVERIFIED claim. This grants no
+/// capability: callers must run verify_equivocation_evidence against their DAG.
+pub fn decode_equivocation_evidence(
+    bytes: &[u8],
+) -> Result<CordialEquivocationEvidence, EvidenceVerificationError> {
+    use EvidenceVerificationError::MalformedEncoding as Bad;
+    struct Reader<'a>(&'a [u8]);
+    impl<'a> Reader<'a> {
+        fn take(&mut self, n: usize) -> Result<&'a [u8], EvidenceVerificationError> {
+            if n > self.0.len() {
+                return Err(Bad);
+            }
+            let (head, tail) = self.0.split_at(n);
+            self.0 = tail;
+            Ok(head)
+        }
+        fn number(&mut self) -> Result<u64, EvidenceVerificationError> {
+            Ok(u64::from_be_bytes(
+                self.take(8)?.try_into().map_err(|_| Bad)?,
+            ))
+        }
+        fn bytes(&mut self) -> Result<Vec<u8>, EvidenceVerificationError> {
+            let n = usize::try_from(self.number()?).map_err(|_| Bad)?;
+            Ok(self.take(n)?.to_vec())
+        }
+        fn count(&mut self) -> Result<usize, EvidenceVerificationError> {
+            let n = usize::try_from(self.number()?).map_err(|_| Bad)?;
+            if n > self.0.len() / 32 {
+                return Err(Bad);
+            }
+            Ok(n)
+        }
+    }
+    let mut r = Reader(
+        bytes
+            .strip_prefix(b"cordial:verified-equivocation:v1")
+            .ok_or(Bad)?,
+    );
+    let validator = NodeId(r.bytes()?);
+    let round = r.number()?;
+    let count = r.count()?;
+    let mut blocks = Vec::new();
+    for _ in 0..count {
+        let content_hash = r.take(32)?.try_into().map_err(|_| Bad)?;
+        let creator = NodeId(r.bytes()?);
+        let signature = r.bytes()?;
+        let payload = r.bytes()?;
+        let mut predecessors = std::collections::HashSet::new();
+        for _ in 0..r.count()? {
+            let identity = crate::BlockIdentity {
+                content_hash: r.take(32)?.try_into().map_err(|_| Bad)?,
+                creator: NodeId(r.bytes()?),
+                signature: vec![],
+            };
+            if !predecessors.insert(identity) {
+                return Err(Bad);
+            }
+        }
+        blocks.push(Block {
+            identity: crate::BlockIdentity {
+                content_hash,
+                creator,
+                signature,
+            },
+            content: crate::BlockContent {
+                payload,
+                predecessors,
+            },
+        });
+    }
+    if !r.0.is_empty() {
+        return Err(Bad);
+    }
+    Ok(CordialEquivocationEvidence::new(validator, round, blocks))
 }

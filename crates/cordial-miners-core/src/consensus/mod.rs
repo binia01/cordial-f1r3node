@@ -57,7 +57,8 @@ pub use validation::{
     InvalidBlock, ValidationConfig, ValidationResult, validate_block, validated_insert,
 };
 pub use verified_evidence::{
-    EvidenceVerificationError, VerifiedEquivocationEvidence, verify_equivocation_evidence,
+    EvidenceVerificationError, VerifiedEquivocationEvidence, decode_equivocation_evidence,
+    verify_equivocation_evidence,
 };
 pub use wave::{
     first_round_of_wave, is_first_round_of_wave, last_round_of_wave, leader_blocks_of_wave,
