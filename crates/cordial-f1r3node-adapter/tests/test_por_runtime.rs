@@ -736,6 +736,28 @@ fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
     pending
         .apply_completed_checkpoint_round(&completed, &PorConfig::default(), SHARD_ID)
         .unwrap();
+    for block in &blocks[..10] {
+        genesis_ingress.ingest_trusted_block(block.clone()).unwrap();
+    }
+    let partial_output = genesis_ingress
+        .latest_finalized_ordered_output(WAVELENGTH)
+        .unwrap();
+    assert!(partial_output.anchor.is_some());
+    assert!(partial_output.blocks.len() < 16);
+    assert!(matches!(
+        pending.activate_weights(&mut genesis_ingress),
+        Err(DurablePorStateError::Activation(
+            PorWeightActivationError::FinalizedCheckpointUnavailable { round: 1 }
+        ))
+    ));
+    assert_eq!(
+        pending
+            .activated_weight_record()
+            .unwrap()
+            .unwrap()
+            .reputation_round(),
+        0
+    );
     drop(pending);
     let pending_ingress = LiveIngress::with_consensus_view(
         AcceptingAdapter,
@@ -806,6 +828,17 @@ fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
         wrong_ingress.ingest_trusted_block(next.clone()).unwrap();
         wrong_predecessor = Some(next.identity);
     }
+    wrong_ingress
+        .latest_finalized_ordered_output(WAVELENGTH)
+        .unwrap();
+    let mut pending_direct = DurablePorState::open(&pending_root, initial.clone()).unwrap();
+    assert!(matches!(
+        pending_direct.activate_weights(&mut wrong_ingress),
+        Err(DurablePorStateError::Activation(
+            PorWeightActivationError::FinalizedCheckpointMismatch { round: 1 }
+        ))
+    ));
+    drop(pending_direct);
     assert!(matches!(
         PorRuntime::open(
             &pending_root,
