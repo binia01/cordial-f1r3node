@@ -109,6 +109,34 @@ pub enum OrderingError {
     CycleDetected,
 }
 
+/// A previously finalized weighted output that a new weight epoch must retain.
+///
+/// The boundary is independent of the blocklace pruning checkpoint. Its full
+/// history stays in the blocklace so later reputation evidence remains
+/// replayable. The caller must also ensure no already-published output extends
+/// past this boundary when installing an epoch.
+pub struct WeightedEpochBoundary<'a> {
+    pub final_leader: &'a BlockIdentity,
+    pub ordered_prefix: &'a [BlockIdentity],
+    pub effective_wave: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WeightedEpochError {
+    InvalidBoundary,
+    ValidatorSetMismatch,
+    BoundaryNotFinal,
+    PrefixMismatch,
+    LeaderOutsideBoundary,
+    Ordering(OrderingError),
+}
+
+impl From<OrderingError> for WeightedEpochError {
+    fn from(error: OrderingError) -> Self {
+        Self::Ordering(error)
+    }
+}
+
 pub fn approved_blocks_for_leader(blocklace: &Blocklace, leader: &BlockIdentity) -> HashSet<Block> {
     if blocklace.get(leader).is_none() {
         return HashSet::new();
@@ -699,6 +727,146 @@ where
         }
     }
     Ok(state.ordered)
+}
+
+/// Return weighted tau across one future-only weight epoch.
+///
+/// The old table must still finalize `boundary.final_leader` and reproduce its
+/// exact sealed prefix. The new table is used only for leaders in waves at or
+/// after `effective_wave`. If none is final yet, the old prefix is returned.
+/// A new final leader must descend from the sealed leader; a conflicting fork
+/// fails closed. This function does not install an epoch or persist its record.
+pub fn weighted_tau_after_epoch_boundary<F>(
+    blocklace: &Blocklace,
+    wavelength: u64,
+    old_bonds: &HashMap<NodeId, u64>,
+    new_bonds: &HashMap<NodeId, u64>,
+    boundary: WeightedEpochBoundary<'_>,
+    leader_selection: F,
+) -> Result<(Vec<BlockIdentity>, BlockIdentity), WeightedEpochError>
+where
+    F: Fn(u64) -> Option<NodeId> + Copy,
+{
+    if old_bonds.len() != new_bonds.len()
+        || !old_bonds
+            .keys()
+            .all(|validator| new_bonds.contains_key(validator))
+    {
+        return Err(WeightedEpochError::ValidatorSetMismatch);
+    }
+    let boundary_wave = depth(blocklace, boundary.final_leader)
+        .and_then(|round| wave_of_round(round, wavelength))
+        .ok_or(WeightedEpochError::InvalidBoundary)?;
+    if boundary.effective_wave <= boundary_wave {
+        return Err(WeightedEpochError::InvalidBoundary);
+    }
+    if weighted_final_leader_for_wave(
+        blocklace,
+        boundary_wave,
+        wavelength,
+        old_bonds,
+        leader_selection,
+    )
+    .as_ref()
+        != Some(boundary.final_leader)
+    {
+        return Err(WeightedEpochError::BoundaryNotFinal);
+    }
+    let old_prefix = weighted_tau_at_leader(
+        blocklace,
+        boundary.final_leader,
+        wavelength,
+        old_bonds,
+        leader_selection,
+    )?;
+    if old_prefix != boundary.ordered_prefix {
+        return Err(WeightedEpochError::PrefixMismatch);
+    }
+
+    let Some(latest_leader) =
+        latest_weighted_final_leader(blocklace, wavelength, new_bonds, leader_selection)
+    else {
+        return Ok((old_prefix, boundary.final_leader.clone()));
+    };
+    let latest_wave = depth(blocklace, &latest_leader)
+        .and_then(|round| wave_of_round(round, wavelength))
+        .ok_or(WeightedEpochError::LeaderOutsideBoundary)?;
+    if latest_wave < boundary.effective_wave {
+        return Ok((old_prefix, boundary.final_leader.clone()));
+    }
+
+    let mut state = TauState {
+        emitted: old_prefix.iter().cloned().collect(),
+        ordered: old_prefix,
+    };
+    weighted_tau_from_epoch_leader(
+        blocklace,
+        &latest_leader,
+        wavelength,
+        new_bonds,
+        &boundary,
+        leader_selection,
+        &mut state,
+    )?;
+    Ok((state.ordered, latest_leader))
+}
+
+fn weighted_tau_from_epoch_leader<F>(
+    blocklace: &Blocklace,
+    leader: &BlockIdentity,
+    wavelength: u64,
+    bonds: &HashMap<NodeId, u64>,
+    boundary: &WeightedEpochBoundary<'_>,
+    leader_selection: F,
+    state: &mut TauState,
+) -> Result<(), WeightedEpochError>
+where
+    F: Fn(u64) -> Option<NodeId> + Copy,
+{
+    let current_wave = depth(blocklace, leader)
+        .and_then(|round| wave_of_round(round, wavelength))
+        .ok_or(WeightedEpochError::LeaderOutsideBoundary)?;
+    if current_wave < boundary.effective_wave || !blocklace.precedes(boundary.final_leader, leader)
+    {
+        return Err(WeightedEpochError::LeaderOutsideBoundary);
+    }
+    let current_block = blocklace
+        .get(leader)
+        .ok_or(WeightedEpochError::LeaderOutsideBoundary)?;
+
+    for wave in (boundary.effective_wave..current_wave).rev() {
+        let Some(previous) =
+            weighted_final_leader_for_wave(blocklace, wave, wavelength, bonds, leader_selection)
+        else {
+            continue;
+        };
+        let Some(previous_block) = blocklace.get(&previous) else {
+            continue;
+        };
+        if weighted_ratifies(blocklace, &current_block, &previous_block, bonds) {
+            weighted_tau_from_epoch_leader(
+                blocklace,
+                &previous,
+                wavelength,
+                bonds,
+                boundary,
+                leader_selection,
+                state,
+            )?;
+            break;
+        }
+    }
+
+    let newly_approved: HashSet<Block> = approved_blocks_for_leader(blocklace, leader)
+        .into_iter()
+        .filter(|block| !state.emitted.contains(&block.identity.consensus_identity()))
+        .collect();
+    for id in xsort(&newly_approved)? {
+        if state.emitted.insert(id.clone()) {
+            state.ordered.push(id);
+        }
+    }
+    Ok(())
 }
 
 /// Cached variant of [`weighted_tau`].
