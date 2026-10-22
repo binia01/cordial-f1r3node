@@ -798,6 +798,14 @@ fn proposer_carries_por_authorizations_through_block_translation() {
     proposer
         .queue_por_equivocation_authorization(context, &proof)
         .unwrap();
+    let checkpoint_expected =
+        cordial_por::checkpoint_equivocation_authorization_payload(b"root", 2, &proof).unwrap();
+    proposer
+        .queue_por_checkpoint_equivocation_authorization(b"root", 2, &proof)
+        .unwrap();
+    proposer
+        .queue_por_checkpoint_equivocation_authorization(b"root", 2, &proof)
+        .unwrap();
     let block = proposer
         .propose_at_time(
             &blocklace,
@@ -806,8 +814,11 @@ fn proposer_carries_por_authorizations_through_block_translation() {
         )
         .unwrap();
     let payload = CordialBlockPayload::from_bytes(&block.content.payload).unwrap();
-    assert_eq!(payload.por_authorizations.len(), 1);
+    assert_eq!(payload.por_authorizations.len(), 2);
     assert_eq!(payload.por_authorizations[0].message, expected);
+    assert_eq!(payload.por_authorizations[1].message, checkpoint_expected);
+    assert_eq!(payload.por_authorizations[1].source_finalized_wave, 0);
+    assert_eq!(payload.por_authorizations[1].round, 2);
     assert!(!payload.system_deploys.is_empty());
     let message = block_to_message(&block, "root").unwrap();
     assert!(!message.body.extra_bytes.is_empty());
