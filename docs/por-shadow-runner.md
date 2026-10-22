@@ -117,7 +117,9 @@ activates those weights in its local ingress and updates `shadow-status.json`.
 If the projection would rewrite the published leader or ordered prefix, the
 runner logs a deferred candidate and keeps the current active round. On
 restart, it waits for the complete committed source checkpoint before
-activating a pending round and rejects a conflicting replayed prefix.
+activating a pending round. An incomplete replay retries on later polls without
+publishing status; a conflicting replayed prefix stops the runner. Direct
+activation through `DurablePorState` applies the same checkpoint identity check.
 
 For a four-observer convergence and restart check, use the isolated Compose
 project in [Parallel keyed PoR smoke](#parallel-keyed-por-smoke). Its command
