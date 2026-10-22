@@ -13,7 +13,9 @@ use cordial_f1r3node_adapter::{
 use cordial_miners_core::{
     Block, BlockContent, BlockIdentity, Blocklace, NodeId, crypto::CryptoVerifier,
 };
-use cordial_por::{PorConfig, PorError, ReputationState};
+use cordial_por::{
+    PorConfig, PorError, ReputationState, ReputationVector, replay_reputation_transition,
+};
 use k256::ecdsa::SigningKey;
 
 struct AcceptAll;
@@ -136,6 +138,70 @@ fn first_checkpoint_skips_unsigned_genesis_and_closes_a_complete_validator_batch
     .unwrap();
     collector.insert_batch(batch).unwrap();
     assert!(collector.is_rater_complete(&node(9)).unwrap());
+}
+
+#[test]
+fn complete_peer_ratings_derive_unequal_weights_when_two_validators_miss_the_checkpoint() {
+    let (blocklace, output) = fixture();
+    let checkpoint = finalized_prefix_checkpoint(&output, 1).unwrap().unwrap();
+    let validators = [node(1), node(2), node(3), node(9)];
+    let config = PorConfig::default();
+    let mut state = ReputationState::new(0);
+    for validator in &validators {
+        state.set_reputation(validator.clone(), config.initial_reputation);
+    }
+    let mut collector = CheckpointBlockProductionRatingCollector::new(
+        &blocklace,
+        &output,
+        checkpoint.clone(),
+        validators.iter().cloned(),
+        &state,
+        &config,
+    )
+    .unwrap();
+
+    // Only validators 1 and 2 produced blocks in the first 16 finalized
+    // blocks. Validators 3 and 9 still sign their complete peer-rating batches.
+    for (seed, rater) in [1, 2, 3, 9].into_iter().zip(&validators) {
+        let batch = build_finalized_checkpoint_rating_batch(
+            &blocklace,
+            &output,
+            &checkpoint,
+            rater,
+            &state,
+            &config,
+            &key(seed),
+        )
+        .unwrap();
+        assert!(
+            batch
+                .ratings
+                .iter()
+                .all(|rating| rating.recipient == node(1) || rating.recipient == node(2))
+        );
+        collector.insert_batch(batch).unwrap();
+    }
+
+    assert!(collector.all_authorized_raters_complete().unwrap());
+    let ratings = collector.build_complete_batch().unwrap();
+    assert_eq!(ratings.ratings.len(), 6);
+    let previous = ReputationVector {
+        round: state.round(),
+        values: state.reputation_list().entries.clone(),
+    };
+    let projected =
+        replay_reputation_transition(&previous, &ratings.ratings, checkpoint.por_round, &config)
+            .unwrap();
+    let weights = projected
+        .entries
+        .iter()
+        .map(|entry| (entry.node_id.clone(), entry.reputation))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    assert!(weights[&node(1)] > config.initial_reputation);
+    assert!(weights[&node(2)] > config.initial_reputation);
+    assert_eq!(weights[&node(3)], config.initial_reputation);
+    assert_eq!(weights[&node(9)], config.initial_reputation);
 }
 
 #[test]
