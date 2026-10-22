@@ -129,6 +129,16 @@ commitment, and finalized prefix across all four observers, then restarts an
 observer and a validator. This is an observer convergence check; it does not
 show that the running f1r3node nodes consume PoR weights.
 
+The current single-table activation guard can defer a valid checkpoint when
+its new weights would change an already published Cordial leader. To verify
+checkpoint calculation separately, replace `--min-por-round 1` in the command
+below with `--min-por-round 0 --min-candidate-round 1`. All four observers must
+report the same complete source checkpoint, reputation checkpoint, projected
+weights, and weight commitment. The harness checks that candidate again after
+the observer restart. Add `--skip-node-restart` when testing against an existing
+cluster whose validator processes should stay running. This candidate gate
+does not claim that round 1 weights became active.
+
 ## Live smoke procedure
 
 Start the four-node cluster using `docker/four-node-cluster.yml`, then run
@@ -255,11 +265,12 @@ COMPOSE_PROJECT_NAME=por-keyed-smoke docker compose --env-file docker/.env \
 ```
 
 The override uses separate container names, host ports, network, and named
-volumes. Plain `down` preserves its volumes for diagnosis. The harness requires
-all four observers to reach at least PoR round 1 with the same active
+volumes. Plain `down` preserves its volumes for diagnosis. The command above
+requires all four observers to reach active PoR round 1 with the same
 checkpoint, weight commitment, weight map, and finalized prefix; it then
-checks observer and validator restarts. Logs and durable PoR data remain under
-`$smoke_root`.
+checks observer and validator restarts. The candidate gate described above
+passes when an equal complete candidate remains pending. Logs and durable PoR
+data remain under `$smoke_root`.
 
 **Legacy wave-path blocker observed on 2026-10-14:** four keyed observers
 launched before a fresh cluster, then all exited because no final leader could
