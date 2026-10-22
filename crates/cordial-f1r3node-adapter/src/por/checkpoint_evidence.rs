@@ -72,30 +72,38 @@ struct FinalizedCheckpointAuthorization<'a> {
 }
 
 impl<'a> FinalizedCheckpointAuthorization<'a> {
-    fn is_valid_carrier(
+    fn extract_valid_claim(
         &self,
         carrier: &PorEquivocationAuthorization,
         shard_id: &[u8],
-    ) -> Option<CordialEquivocationEvidence> {
+    ) -> Result<Option<CordialEquivocationEvidence>, PorError> {
         if carrier.shard_id != shard_id
             || carrier.source_finalized_wave != 0
             || carrier.round != self.checkpoint.por_round
         {
-            return None;
+            return Ok(None);
         }
-        let claim = decode_checkpoint_equivocation_authorization_payload(
+        // Deterministic handling of invalid claims (P1):
+        // Malformed carrier payloads and unverified equivocation proofs are discarded
+        // so that invalid claims in finalized blocks do not block checkpoint progress.
+        let claim = match decode_checkpoint_equivocation_authorization_payload(
             &carrier.message,
             shard_id,
             self.checkpoint.por_round,
-        )
-        .ok()?;
-        let proof = verify_equivocation_evidence(&claim, self.blocklace).ok()?;
+        ) {
+            Ok(claim) => claim,
+            Err(_) => return Ok(None),
+        };
+        let proof = match verify_equivocation_evidence(&claim, self.blocklace) {
+            Ok(proof) => proof,
+            Err(_) => return Ok(None),
+        };
         let context = CheckpointEquivocationAuthorizationContext {
             shard_id: shard_id.to_vec(),
             source: self.checkpoint.rating_source(),
         };
-        self.authorize_checkpoint(&context, &proof).ok()?;
-        Some(claim)
+        self.authorize_checkpoint(&context, &proof)?;
+        Ok(Some(claim))
     }
 }
 
@@ -189,7 +197,7 @@ impl CompletedCheckpointRatingRound {
             .iter()
             .filter(|carrier| carrier.shard_id == shard_id)
         {
-            if let Some(claim) = policy.is_valid_carrier(carrier, shard_id) {
+            if let Some(claim) = policy.extract_valid_claim(carrier, shard_id)? {
                 raw.push(claim);
             }
         }
@@ -228,12 +236,16 @@ impl CompletedCheckpointRatingRound {
         };
 
         // Determine the complete set of valid authorizations finalized in this window.
-        let valid_authorizations: BTreeSet<_> = self
+        let mut valid_authorizations = BTreeSet::new();
+        for carrier in self
             .finalized_authorizations
             .iter()
-            .filter(|carrier| policy.is_valid_carrier(carrier, shard_id).is_some())
-            .cloned()
-            .collect();
+            .filter(|carrier| carrier.shard_id == shard_id)
+        {
+            if policy.extract_valid_claim(carrier, shard_id)?.is_some() {
+                valid_authorizations.insert(carrier.clone());
+            }
+        }
 
         let mut selected = BTreeMap::new();
         let mut admitted = BTreeSet::new();
