@@ -955,3 +955,207 @@ fn unrelated_evidence_rounds_do_not_inflate_correlated_slashing() {
     assert_eq!(next.entries[0].retained_reputation, 750);
     assert_eq!(next.entries[1].retained_reputation, 750);
 }
+
+// The test policy stands in for the adapter's finalized-window admission policy.
+struct CheckpointTestAuthorization;
+impl cordial_por::CheckpointEquivocationAuthorizationPolicy for CheckpointTestAuthorization {
+    fn authorize_checkpoint(
+        &self,
+        _: &cordial_por::CheckpointEquivocationAuthorizationContext,
+        _: &VerifiedEquivocationEvidence,
+    ) -> Result<(), PorError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn checkpoint_penalties_bind_source_and_apply_atomically() {
+    use cordial_por::{
+        CheckpointEquivocationAuthorizationContext, CheckpointReputationBlockContext,
+        RatingSourceCheckpoint, build_checkpoint_reputation_block_with_penalties,
+        verify_checkpoint_reputation_transition,
+        verify_checkpoint_reputation_transition_with_penalties,
+    };
+    let source = RatingSourceCheckpoint {
+        round: 1,
+        finalized_prefix_len: 16,
+        finalized_prefix_hash: [7; 32],
+    };
+    let context = CheckpointReputationBlockContext {
+        shard_id: b"root",
+        source,
+        previous_block: None,
+    };
+    let events = ReputationPenaltyEvents {
+        round: 1,
+        equivocations: vec![
+            EquivocationPenalty::authorize_checkpoint(
+                &proof(1, 0),
+                CheckpointEquivocationAuthorizationContext {
+                    shard_id: b"root".to_vec(),
+                    source,
+                },
+                &CheckpointTestAuthorization,
+            )
+            .unwrap(),
+        ],
+        inactivity: vec![],
+    };
+    let list =
+        replay_reputation_transition_with_penalties(&previous(), &[], 1, &config(), Some(&events))
+            .unwrap();
+    let batch = build_rating_batch(1, vec![], &config()).unwrap();
+    let block = build_checkpoint_reputation_block_with_penalties(
+        context,
+        &batch,
+        list.clone(),
+        &config(),
+        Some(&events),
+    )
+    .unwrap();
+    verify_checkpoint_reputation_transition_with_penalties(
+        &previous(),
+        &[],
+        &block,
+        context,
+        &config(),
+        Some(&events),
+    )
+    .unwrap();
+    assert!(
+        verify_checkpoint_reputation_transition(&previous(), &[], &block, context, &config())
+            .is_err()
+    );
+    for wrong in [
+        CheckpointReputationBlockContext {
+            shard_id: b"other",
+            ..context
+        },
+        CheckpointReputationBlockContext {
+            source: RatingSourceCheckpoint {
+                finalized_prefix_hash: [8; 32],
+                ..source
+            },
+            ..context
+        },
+    ] {
+        assert!(
+            build_checkpoint_reputation_block_with_penalties(
+                wrong,
+                &batch,
+                list.clone(),
+                &config(),
+                Some(&events)
+            )
+            .is_err()
+        );
+        assert!(
+            verify_checkpoint_reputation_transition_with_penalties(
+                &previous(),
+                &[],
+                &block,
+                wrong,
+                &config(),
+                Some(&events)
+            )
+            .is_err()
+        );
+    }
+    let wave_events = ReputationPenaltyEvents {
+        round: 1,
+        equivocations: vec![penalty_at(1, 0, 1)],
+        inactivity: vec![],
+    };
+    assert!(
+        build_checkpoint_reputation_block_with_penalties(
+            context,
+            &batch,
+            list.clone(),
+            &config(),
+            Some(&wave_events)
+        )
+        .is_err()
+    );
+    assert!(
+        build_reputation_block_with_penalties(
+            ReputationBlockContext {
+                shard_id: b"root",
+                source_finalized_wave: 0,
+                previous_block: None
+            },
+            &batch,
+            list,
+            &config(),
+            Some(&events)
+        )
+        .is_err()
+    );
+    let mut state = ReputationState::new(0);
+    for entry in previous().values {
+        state.set_reputation(entry.node_id, entry.reputation);
+    }
+    let original = state.clone();
+    let mut forged = events.clone();
+    forged.equivocations[0] = EquivocationPenalty::unverified(node(1), vec![1]);
+    assert!(
+        state
+            .apply_checkpoint_reputation_block_with_penalties(
+                b"root",
+                source,
+                &[],
+                block.clone(),
+                &config(),
+                Some(&forged)
+            )
+            .is_err()
+    );
+    assert_eq!(state, original);
+    state
+        .apply_checkpoint_reputation_block_with_penalties(
+            b"root",
+            source,
+            &[],
+            block,
+            &config(),
+            Some(&events),
+        )
+        .unwrap();
+    assert!(state.is_ejected(&node(1)));
+    assert_eq!(state.reputation_list().entries[0].retained_reputation, 750);
+    assert_eq!(
+        cordial_por::authorized_validator_weights(&state, &[node(1), node(2)]).unwrap()[&node(1)],
+        0
+    );
+    assert_eq!(
+        decode_reputation_state_snapshot(&encode_reputation_state_snapshot(&state).unwrap())
+            .unwrap(),
+        state
+    );
+}
+
+#[test]
+fn checkpoint_intent_decoder_is_bounded_and_context_specific() {
+    use cordial_por::{
+        checkpoint_equivocation_authorization_payload,
+        decode_checkpoint_equivocation_authorization_payload,
+    };
+    let verified = proof(1, 2);
+    let bytes = checkpoint_equivocation_authorization_payload(b"root", 1, &verified).unwrap();
+    let raw = decode_checkpoint_equivocation_authorization_payload(&bytes, b"root", 1).unwrap();
+    assert_eq!(
+        verify_equivocation_evidence(&raw, &Blocklace::new()).unwrap(),
+        verified
+    );
+    assert!(decode_checkpoint_equivocation_authorization_payload(&bytes, b"other", 1).is_err());
+    assert!(decode_checkpoint_equivocation_authorization_payload(&bytes, b"root", 2).is_err());
+    for end in 0..bytes.len() {
+        assert!(
+            decode_checkpoint_equivocation_authorization_payload(&bytes[..end], b"root", 1)
+                .is_err()
+        );
+    }
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(decode_checkpoint_equivocation_authorization_payload(&trailing, b"root", 1).is_err());
+    assert!(decode_checkpoint_equivocation_authorization_payload(&[1], b"root", 1).is_err());
+}

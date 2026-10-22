@@ -203,7 +203,27 @@ pub fn verify_checkpoint_reputation_transition(
     context: CheckpointReputationBlockContext<'_>,
     config: &PorConfig,
 ) -> Result<(), PorError> {
+    verify_checkpoint_reputation_transition_with_penalties(
+        previous_reputation,
+        ratings,
+        proposed_block,
+        context,
+        config,
+        None,
+    )
+}
+
+/// Audit the exact authorized penalty set against the finalized checkpoint.
+pub fn verify_checkpoint_reputation_transition_with_penalties(
+    previous_reputation: &ReputationVector,
+    ratings: &[RatingRecord],
+    proposed_block: &ReputationBlock,
+    context: CheckpointReputationBlockContext<'_>,
+    config: &PorConfig,
+    penalties: Option<&crate::ReputationPenaltyEvents>,
+) -> Result<(), PorError> {
     context.source.validate()?;
+    crate::evidence::validate_checkpoint_penalty_context(penalties, context)?;
     validate_reputation_block(proposed_block)?;
 
     let header = &proposed_block.header;
@@ -247,12 +267,17 @@ pub fn verify_checkpoint_reputation_transition(
     {
         return Err(PorError::ReputationBlockRatingsHashMismatch);
     }
-    if header.penalties_hash != penalty_events_commitment(header.round, None)? {
+    if header.penalties_hash != penalty_events_commitment(header.round, penalties)? {
         return Err(PorError::ReputationBlockPenaltiesHashMismatch);
     }
 
-    let expected =
-        replay_reputation_transition(previous_reputation, ratings, header.round, config)?;
+    let expected = replay_reputation_transition_with_penalties(
+        previous_reputation,
+        ratings,
+        header.round,
+        config,
+        penalties,
+    )?;
     compare_reputation_lists(&expected, &proposed_block.reputation_list)
 }
 

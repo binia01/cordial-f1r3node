@@ -25,7 +25,8 @@ pub mod weights;
 
 pub use audit::{
     replay_reputation_transition, replay_reputation_transition_with_penalties,
-    verify_checkpoint_reputation_transition, verify_reputation_transition,
+    verify_checkpoint_reputation_transition,
+    verify_checkpoint_reputation_transition_with_penalties, verify_reputation_transition,
     verify_reputation_transition_with_penalties,
 };
 pub use commitments::{
@@ -39,8 +40,11 @@ pub use commitments::{
 pub use config::{MissingEntryPolicy, PorConfig};
 pub use error::PorError;
 pub use evidence::{
+    CheckpointEquivocationAuthorizationContext, CheckpointEquivocationAuthorizationPolicy,
     EquivocationAuthorizationContext, EquivocationAuthorizationPolicy,
-    POR_EQUIVOCATION_AUTHORIZATION_DOMAIN, equivocation_authorization_payload,
+    POR_CHECKPOINT_EQUIVOCATION_AUTHORIZATION_DOMAIN, POR_EQUIVOCATION_AUTHORIZATION_DOMAIN,
+    checkpoint_equivocation_authorization_payload,
+    decode_checkpoint_equivocation_authorization_payload, equivocation_authorization_payload,
 };
 pub use interactions::{
     AdmittedCheckpointInteraction, AdmittedInteraction, CheckpointInteractionEvidence,
@@ -74,9 +78,9 @@ pub use block::{
     MAX_REPUTATION_BLOCK_SHARD_ID_LEN, MAX_REPUTATION_BLOCK_WIRE_LEN,
     POR_CHECKPOINT_REPUTATION_BLOCK_WIRE_VERSION, POR_REPUTATION_BLOCK_MAGIC,
     POR_REPUTATION_BLOCK_WIRE_VERSION, REPUTATION_BLOCK_VERSION, ReputationBlockContext,
-    build_checkpoint_reputation_block, build_reputation_block,
-    build_reputation_block_with_penalties, decode_reputation_block, encode_reputation_block,
-    validate_reputation_block,
+    build_checkpoint_reputation_block, build_checkpoint_reputation_block_with_penalties,
+    build_reputation_block, build_reputation_block_with_penalties, decode_reputation_block,
+    encode_reputation_block, validate_reputation_block,
 };
 pub use types::{
     EquivocationPenalty, InactivityPenalty, NormalizedRatingEntry, NormalizedRatingMatrix,
