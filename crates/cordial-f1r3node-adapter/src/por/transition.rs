@@ -8,11 +8,10 @@ use std::collections::HashMap;
 
 use cordial_miners_core::NodeId;
 use cordial_por::{
-    CheckpointReputationBlockContext, PorConfig, PorError, ReputationBlock,
-    ReputationBlockContext, ReputationState, ReputationVector, ReputationWeight,
-    build_checkpoint_reputation_block, build_reputation_block_with_penalties,
-    replay_reputation_transition, replay_reputation_transition_with_penalties,
-    reputation_weights,
+    CheckpointReputationBlockContext, PorConfig, PorError, ReputationBlock, ReputationBlockContext,
+    ReputationState, ReputationVector, ReputationWeight,
+    build_checkpoint_reputation_block_with_penalties, build_reputation_block_with_penalties,
+    replay_reputation_transition_with_penalties, reputation_weights,
 };
 
 use super::lifecycle::{
@@ -92,15 +91,21 @@ pub(super) fn stage_completed_checkpoint_round(
     config: &PorConfig,
     shard_id: &[u8],
 ) -> Result<(ReputationState, AppliedPorReputationRound), PorError> {
+    completed.validate_complete_authorizations(shard_id)?;
     let source = completed.source();
     let previous = ReputationVector {
         round: state.round(),
         values: state.reputation_list().entries.clone(),
     };
     let batch = completed.batch();
-    let reputation_list =
-        replay_reputation_transition(&previous, &batch.ratings, batch.round, config)?;
-    let block = build_checkpoint_reputation_block(
+    let reputation_list = replay_reputation_transition_with_penalties(
+        &previous,
+        &batch.ratings,
+        batch.round,
+        config,
+        completed.penalties(),
+    )?;
+    let block = build_checkpoint_reputation_block_with_penalties(
         CheckpointReputationBlockContext {
             shard_id,
             source,
@@ -109,14 +114,16 @@ pub(super) fn stage_completed_checkpoint_round(
         batch,
         reputation_list,
         config,
+        completed.penalties(),
     )?;
     let mut staged = state.clone();
-    staged.apply_checkpoint_reputation_block(
+    staged.apply_checkpoint_reputation_block_with_penalties(
         shard_id,
         source,
         &batch.ratings,
         block.clone(),
         config,
+        completed.penalties(),
     )?;
     let weights = reputation_weights(&staged);
     Ok((

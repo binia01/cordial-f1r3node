@@ -6,6 +6,7 @@
 
 pub mod activation;
 pub mod checkpoint;
+mod checkpoint_evidence;
 pub mod checkpoint_ratings;
 pub mod collector;
 pub mod evidence;

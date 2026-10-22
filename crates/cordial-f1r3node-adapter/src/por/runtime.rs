@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::{
     live_ingress::{LiveIngress, PorWeightActivationError},
     ordered_output::OrderedFinalizedOutput,
+    shared_ordered_output::ReadOrderedOutput,
     snapshot::{CORDIAL_WAVELENGTH, SnapshotError},
 };
 
@@ -222,6 +223,27 @@ impl<A> PorRuntime<A> {
             .map_err(PorRuntimeError::PenaltyAuthorization)
     }
 
+    /// Authenticate every finalized checkpoint carrier using this runtime's
+    /// own source, membership and shard. Decoded bytes never grant authority.
+    pub fn authorize_checkpoint_equivocations(
+        &self,
+        completed: CompletedCheckpointRatingRound,
+    ) -> Result<CompletedCheckpointRatingRound, PorRuntimeError> {
+        let output = self.ingress.ordered_output_reader().latest().ok_or(
+            PorRuntimeError::CommittedCheckpointUnavailable {
+                round: completed.source().round,
+            },
+        )?;
+        completed
+            .with_finalized_equivocations(
+                self.ingress.blocklace(),
+                output,
+                self.ingress.bonds(),
+                &self.shard_id,
+            )
+            .map_err(PorRuntimeError::PenaltyAuthorization)
+    }
+
     /// Commit a completed local rating round and immediately activate its weights.
     ///
     /// # Safety
@@ -273,8 +295,9 @@ impl<A> PorRuntime<A> {
         }
         let output = self.publish_finalized_output()?;
         validate_finalized_prefix_checkpoint(&output, completed.checkpoint())?;
+        let completed = self.authorize_checkpoint_equivocations(completed.clone())?;
         let (candidate, _) = stage_completed_checkpoint_round(
-            completed,
+            &completed,
             self.state.state()?,
             &self.config,
             &self.shard_id,
@@ -283,9 +306,11 @@ impl<A> PorRuntime<A> {
         self.ingress
             .validate_por_weights(&candidate)
             .map_err(PorRuntimeError::CheckpointActivation)?;
-        let applied =
-            self.state
-                .apply_completed_checkpoint_round(completed, &self.config, &self.shard_id)?;
+        let applied = self.state.apply_completed_checkpoint_round(
+            &completed,
+            &self.config,
+            &self.shard_id,
+        )?;
         let activation = self.state.activate_weights(&mut self.ingress);
         Ok(CommittedPorRound {
             applied,

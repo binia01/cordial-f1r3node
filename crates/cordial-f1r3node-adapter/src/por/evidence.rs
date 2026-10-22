@@ -161,7 +161,10 @@ pub(super) fn finalized_authorizations(
         })?;
         if wave_of_round(round, output.wavelength) == Some(opened.finalized_wave) {
             messages.extend(carriers.into_iter().filter(|carrier| {
-                carrier.source_finalized_wave == opened.finalized_wave
+                !carrier
+                    .message
+                    .starts_with(cordial_por::POR_CHECKPOINT_EQUIVOCATION_AUTHORIZATION_DOMAIN)
+                    && carrier.source_finalized_wave == opened.finalized_wave
                     && carrier.round == opened.rating_round
             }));
         }

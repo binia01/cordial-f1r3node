@@ -143,7 +143,9 @@ impl From<PorError> for PorRatingCollectorError {
 /// Accumulates v2 ratings for one immutable finalized-prefix checkpoint.
 ///
 /// The authorized set is supplied by Cordial. PoR checks membership but does
-/// not choose validators. Every accepted rating is checked against the exact
+/// not choose validators. Required raters exclude only keys ejected in the
+/// preceding state; membership records and zero-weight active keys are retained.
+/// Every accepted rating is checked against the exact
 /// source window, preceding reputation state, deterministic score, and v2
 /// signature before it can enter a canonical batch.
 pub struct CheckpointBlockProductionRatingCollector<'a> {
@@ -173,7 +175,10 @@ impl<'a> CheckpointBlockProductionRatingCollector<'a> {
             blocklace,
             output,
             checkpoint,
-            authorized_raters: authorized_raters.into_iter().collect(),
+            authorized_raters: authorized_raters
+                .into_iter()
+                .filter(|rater| !state.is_ejected(rater))
+                .collect(),
             state,
             config,
             ratings: BTreeMap::new(),
@@ -214,7 +219,7 @@ impl<'a> CheckpointBlockProductionRatingCollector<'a> {
         Ok(collected == expected)
     }
 
-    /// A checkpoint closes only after every authorized rater's deterministic
+    /// A checkpoint closes only after every non-ejected authorized rater's deterministic
     /// evidence-backed batch is complete. Zero expected ratings are complete.
     pub fn all_authorized_raters_complete(&self) -> Result<bool, PorRatingCollectorError> {
         if self.authorized_raters.is_empty() {
