@@ -40,7 +40,7 @@ class FourNodeShadowChecks(unittest.TestCase):
     def test_rejects_different_weight_commitment(self):
         statuses = {node: status() for node in VERIFY.NODES}
         statuses[VERIFY.NODES[2]] = status(commitment="other")
-        with self.assertRaisesRegex(ValueError, "different PoR round, commitment, or weights"):
+        with self.assertRaisesRegex(ValueError, "different PoR round, checkpoint, commitment, or weights"):
             VERIFY.compare_statuses(statuses, 2)
 
     def test_restart_preserves_prefix_and_projection(self):
@@ -68,6 +68,15 @@ status = {
     'finalized_hashes': ['genesis', 'a'], 'finalized_anchor': 'a',
     'source_height': 2,
 }
+if '--checkpoint-ratings' in sys.argv:
+    status['candidate'] = {
+        'por_round': 1,
+        'source': {'por_round': 1, 'finalized_prefix_len': 16,
+                   'prefix_hash': 'source', 'terminal_block_hash': 'terminal'},
+        'checkpoint_hash': 'checkpoint',
+        'weight_commitment': 'candidate-weights',
+        'weights': {'validator': 180000000},
+    }
 while True:
     (directory / 'shadow-status.json').write_text(json.dumps(status))
     time.sleep(0.05)
@@ -84,6 +93,22 @@ while True:
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.count("PASS:"), 3)
+
+            keys = root / "keys"
+            keys.mkdir()
+            for index in range(1, 5):
+                (keys / f"validator-{index}.key").write_text("test-only-key")
+            candidate = subprocess.run(
+                ["python3", str(SCRIPT), "--data-root", str(root / "candidate-data"),
+                 "--binary", str(fake_runner), "--timeout-seconds", "8",
+                 "--rating-keys-dir", str(keys), "--checkpoint-ratings",
+                 "--min-candidate-round", "1", "--skip-node-restart"],
+                env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}"},
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(candidate.returncode, 0, candidate.stderr)
+            self.assertIn("complete candidate round 1", candidate.stdout)
+            self.assertEqual(candidate.stdout.count("PASS:"), 3)
 
 
 if __name__ == "__main__":

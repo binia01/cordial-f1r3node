@@ -38,6 +38,56 @@ class FourNodePorShadowGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different PoR round, checkpoint, commitment, or weights"):
             COMPARE(statuses, 2, 1)
 
+    def test_complete_checkpoint_candidate_converges_before_activation(self):
+        statuses = self.statuses()
+        for status in statuses.values():
+            status["active_por_round"] = 0
+            status["active_por_checkpoint"] = None
+            status["candidate"] = {
+                "por_round": 1,
+                "source": {"por_round": 1, "finalized_prefix_len": 16,
+                           "prefix_hash": "source-a", "terminal_block_hash": "block-a"},
+                "checkpoint_hash": "candidate-a",
+                "weight_commitment": "candidate-weights-a",
+                "weights": {"validator-a": 80},
+            }
+        self.assertEqual(COMPARE(statuses, 2, 0, 1), 2)
+
+        before = copy.deepcopy(statuses[NODES[0]])
+        SCRIPT["check_recovery"](before, copy.deepcopy(before))
+        changed = copy.deepcopy(before)
+        changed["candidate"]["source"]["prefix_hash"] = "source-b"
+        statuses[NODES[1]] = changed
+        with self.assertRaisesRegex(ValueError, "different PoR checkpoint candidate"):
+            COMPARE(statuses, 2, 0, 1)
+        with self.assertRaisesRegex(ValueError, "candidate changed"):
+            SCRIPT["check_recovery"](before, changed)
+
+        changed = copy.deepcopy(before)
+        changed["candidate"] = None
+        with self.assertRaisesRegex(ValueError, "waiting for complete PoR candidate"):
+            COMPARE({node: copy.deepcopy(changed) for node in NODES}, 2, 0, 1)
+
+    def test_candidate_can_become_the_active_projection_after_restart(self):
+        before = self.statuses()[NODES[0]]
+        before["active_por_round"] = 0
+        before["active_por_checkpoint"] = None
+        before["candidate"] = {
+            "por_round": 1, "source": {"por_round": 1},
+            "checkpoint_hash": "checkpoint-a",
+            "weight_commitment": "weights-a",
+            "weights": {"validator-a": 100},
+        }
+        after = copy.deepcopy(before)
+        after["active_por_round"] = 1
+        after["active_por_checkpoint"] = "checkpoint-a"
+        after["candidate"] = None
+        SCRIPT["check_recovery"](before, after)
+
+        after["weight_commitment"] = "wrong-weights"
+        with self.assertRaisesRegex(ValueError, "differs from the prior candidate"):
+            SCRIPT["check_recovery"](before, after)
+
 
 if __name__ == "__main__":
     unittest.main()
