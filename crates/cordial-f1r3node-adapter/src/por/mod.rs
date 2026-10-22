@@ -9,6 +9,7 @@ pub mod checkpoint;
 pub mod checkpoint_ratings;
 pub mod collector;
 pub mod epoch_policy;
+pub mod epoch_record;
 pub mod finality;
 pub mod history;
 pub mod interactions;
@@ -40,6 +41,10 @@ pub use collector::{
     PorRatingCollectorError,
 };
 pub use epoch_policy::{PorWeightEpochPolicy, PorWeightEpochPolicyError};
+pub use epoch_record::{
+    POR_WEIGHT_EPOCH_FILE_NAME, PorWeightEpochRecord, PorWeightEpochRecordError,
+    PorWeightEpochStore,
+};
 pub use finality::{
     FinalizedPrefixCheckpoint, FinalizedRatingRound, POR_FINALIZED_BLOCKS_PER_CHECKPOINT,
     PorFinalityError, PorFinalityTracker, finalized_prefix_checkpoint,
