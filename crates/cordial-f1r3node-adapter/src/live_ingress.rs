@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use cordial_miners_core::Block;
 use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::consensus::{
-    OrderingCache, depth, wave_of_round, weighted_final_leader_for_wave,
+    OrderingCache, WeightedEpochBoundary, WeightedEpochError, depth, wave_of_round,
+    weighted_final_leader_for_wave, weighted_tau_after_epoch_boundary,
 };
 use cordial_miners_core::crypto::CryptoVerifier;
 use cordial_miners_core::types::BlockIdentity;
@@ -78,14 +79,30 @@ impl std::error::Error for LiveIngressError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PorWeightActivationError {
     Projection(PorError),
-    MissingReputationCheckpoint { round: u64 },
-    MissingFinalizedOutput { source_wave: u64 },
+    MissingReputationCheckpoint {
+        round: u64,
+    },
+    MissingFinalizedOutput {
+        source_wave: u64,
+    },
     InvalidWavelength,
     UnknownFinalizedAnchor,
-    FinalizedWaveBehind { required: u64, available: u64 },
-    ActivatedValidatorSetMismatch { configured: usize, recorded: usize },
+    FinalizedWaveBehind {
+        required: u64,
+        available: u64,
+    },
+    ActivatedValidatorSetMismatch {
+        configured: usize,
+        recorded: usize,
+    },
     WouldRewriteFinalizedOutput,
     WouldRewriteFinalizedLeader,
+    MissingEpochBoundary,
+    EffectiveWaveAlreadyPublished {
+        effective_wave: u64,
+        published_wave: u64,
+    },
+    FutureEpoch(WeightedEpochError),
 }
 
 impl std::fmt::Display for PorWeightActivationError {
@@ -121,6 +138,18 @@ impl std::fmt::Display for PorWeightActivationError {
                 f,
                 "PoR weight activation would change the published Cordial final leader"
             ),
+            Self::MissingEpochBoundary => write!(
+                f,
+                "future PoR weight epoch requires a published Cordial final leader"
+            ),
+            Self::EffectiveWaveAlreadyPublished {
+                effective_wave,
+                published_wave,
+            } => write!(
+                f,
+                "PoR effective wave {effective_wave} is not after published wave {published_wave}"
+            ),
+            Self::FutureEpoch(error) => write!(f, "future PoR weight epoch is invalid: {error:?}"),
             Self::ActivatedValidatorSetMismatch {
                 configured,
                 recorded,
@@ -558,6 +587,78 @@ impl<A> LiveIngress<A> {
         state: &ReputationState,
     ) -> Result<(), PorWeightActivationError> {
         self.checked_por_weights(state).map(|_| ())
+    }
+
+    /// Preview an epoch cutover without changing weights or published output.
+    ///
+    /// The caller supplies an audited projection and a network-agreed effective
+    /// wave. The complete current publication becomes the sealed old-weight
+    /// prefix. A cutover into a wave that was already published fails closed.
+    /// This method does not persist or activate an epoch.
+    pub fn preview_future_weight_epoch(
+        &self,
+        projected: &HashMap<NodeId, u64>,
+        effective_wave: u64,
+    ) -> Result<OrderedFinalizedOutput, PorWeightActivationError> {
+        if self.bonds.len() != projected.len()
+            || !self
+                .bonds
+                .keys()
+                .all(|validator| projected.contains_key(validator))
+        {
+            return Err(PorWeightActivationError::ActivatedValidatorSetMismatch {
+                configured: self.bonds.len(),
+                recorded: projected.len(),
+            });
+        }
+        if self.bonds.is_empty() {
+            return Err(PorWeightActivationError::MissingEpochBoundary);
+        }
+        let published = self
+            .shared_ordered_output
+            .latest()
+            .ok_or(PorWeightActivationError::MissingEpochBoundary)?;
+        let leader = published
+            .anchor
+            .as_ref()
+            .ok_or(PorWeightActivationError::MissingEpochBoundary)?;
+        let leader_round = depth(self.blocklace(), leader)
+            .ok_or(PorWeightActivationError::UnknownFinalizedAnchor)?;
+        let published_wave = wave_of_round(leader_round, published.wavelength)
+            .ok_or(PorWeightActivationError::InvalidWavelength)?;
+        if effective_wave <= published_wave {
+            return Err(PorWeightActivationError::EffectiveWaveAlreadyPublished {
+                effective_wave,
+                published_wave,
+            });
+        }
+
+        let mut validators: Vec<_> = self.bonds.keys().cloned().collect();
+        validators.sort();
+        let leader_of_wave = |wave: u64| {
+            let index = usize::try_from(wave).ok()? % validators.len();
+            Some(validators[index].clone())
+        };
+        let (blocks, anchor) = weighted_tau_after_epoch_boundary(
+            self.blocklace(),
+            published.wavelength,
+            &self.bonds,
+            projected,
+            WeightedEpochBoundary {
+                final_leader: leader,
+                ordered_prefix: &published.blocks,
+                effective_wave,
+            },
+            leader_of_wave,
+        )
+        .map_err(PorWeightActivationError::FutureEpoch)?;
+        Ok(OrderedFinalizedOutput::new(
+            blocks,
+            Some(anchor),
+            published.wavelength,
+            projected.len(),
+            self.blocklace().dom().len(),
+        ))
     }
 
     fn checked_por_weights(
