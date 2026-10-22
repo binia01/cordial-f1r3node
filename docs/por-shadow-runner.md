@@ -1,4 +1,6 @@
-# One-node PoR shadow runner
+# Live PoR shadow runner and four-node smoke tests
+
+This guide covers a single observer and the four-observer checkpoint smoke.
 
 `live_por_shadow` connects to one real f1r3node gRPC endpoint and mirrors its
 blocks into a local Cordial `LiveIngress`. It loads the node's authorized
@@ -87,8 +89,9 @@ replays under the prior projection and retries activation before publishing
 status. The durable reputation round is the cursor for the next wave.
 
 This flag changes only the observer's Cordial view. The running upstream
-f1r3node still uses its own consensus weights. A live four-observer activation
-and restart smoke remains to be run. An exchange conflict or invalid peer
+f1r3node still uses its own consensus weights. The future-only checkpoint
+smoke below has now been run with four observers; the legacy wave path remains
+subject to the blocker noted below. An exchange conflict or invalid peer
 rating stops the runner for inspection.
 
 ## Checkpoint rating PoC
@@ -118,6 +121,16 @@ If the projection would rewrite the published leader or ordered prefix, the
 runner logs a deferred candidate and keeps the current active round. On
 restart, it waits for the complete committed source checkpoint before
 activating a pending round and rejects a conflicting replayed prefix.
+
+In this smoke, one keyed **shadow observer** runs beside each validator. It
+signs a rating for each *other* active validator that produced a block in the
+checkpoint's exact 16-block finalized window. It selects one canonical block
+as evidence per recipient, gives the current fixed block-production score,
+and does not rate itself or a validator with no qualifying block. The four
+observers exchange and verify these signed ratings through the shared rating
+directory. Round closure requires every authorized observer's complete
+evidence-derived batch. The f1r3node processes produce the blocks; PoR rating
+exchange and weight activation run in the observers, not inside f1r3node.
 
 For a four-observer convergence and restart check, use the isolated Compose
 project in [Parallel keyed PoR smoke](#parallel-keyed-por-smoke). Its command
@@ -234,8 +247,10 @@ harness does not start or reset it.
 
 ### Parallel keyed PoR smoke
 
-The keyed harness can run against a fresh Compose project without stopping an
-existing cluster. First build the current runner and prepare four owner-readable
+The keyed harness uses a fresh Compose project and preserves an existing
+project's volumes. The override fixes container names and host ports, so stop
+any older cluster using those names or ports before starting this one. First
+build the current runner and prepare four owner-readable
 key files named `validator-1.key` through `validator-4.key` under
 `$HOME/por-keys`. Their contents must match the validator private keys in the
 Compose configuration; the matching public keys must be in
@@ -268,7 +283,34 @@ COMPOSE_PROJECT_NAME=por-keyed-smoke docker compose --env-file docker/.env \
   -f docker/four-node-por-smoke-override.yml up -d
 ```
 
-After terminal A finishes or fails, stop only the smoke project:
+The first harness run may pass at the sealed boundary, before a new-weight
+wave finalizes. Keep the same cluster running and rerun the harness with the
+same observer data and exchange. Set `--min-finalized-blocks` above the first
+run's finalized hash count to require a later finalized suffix. For the
+2026-10-22 run, the sealed prefix had 139 hashes, so the second gate was 150:
+
+```sh
+python3 docker/scripts/verify-four-node-por-shadow.py \
+  --data-root "$smoke_root/observers" \
+  --binary target/release/live_por_shadow \
+  --rating-keys-dir "$HOME/por-keys" \
+  --rating-exchange-dir "$smoke_root/exchange" \
+  --checkpoint-ratings --commit-complete-ratings \
+  --checkpoint-epoch-delay-waves 12 \
+  --min-finalized-blocks 150 --min-por-round 1 \
+  --grpc-ports 61001 62001 63001 64001 \
+  --compose-override docker/four-node-por-smoke-override.yml \
+  --compose-project por-keyed-smoke --skip-node-restart --timeout-seconds 900
+```
+
+For another fresh run, replace `150` with a number greater than the first
+run's finalized hash count. Check each `shadow-status.json` for equal hashes,
+weights, and commitment, and confirm `observed_finalized_wave` reached or
+passed the `effective_wave` stored in each observer's
+`por/future-weight-epoch.bin`. The second harness run also restarts one
+observer and verifies its longer finalized prefix.
+
+After both runs finish or fail, stop only the smoke project:
 
 ```sh
 COMPOSE_PROJECT_NAME=por-keyed-smoke docker compose --env-file docker/.env \
@@ -284,14 +326,23 @@ checks observer and validator restarts. The candidate gate described above
 passes when an equal complete candidate remains pending. Logs and durable PoR
 data remain under `$smoke_root`.
 
+**Observed on 2026-10-22:** four observers derived the same round-1 checkpoint
+and weight commitment. They sealed 139 finalized hashes at wave 12, with
+effective wave 13. The first harness passed both observer and validator
+restarts. The second run recovered the same state and agreed on 158 finalized
+hashes at wave 14, including 19 hashes after the sealed prefix. Every
+validator's local PoR weight changed from 200,000,000 to 402,738,615. Because
+all four new weights were equal, this run does not show an unequal-weight
+ordering change or f1r3node enforcing those weights.
+
 **Legacy wave-path blocker observed on 2026-10-14:** four keyed observers
 launched before a fresh cluster, then all exited because no final leader could
 be replayed for wave 0 after a later wave finalized. The node's height-0
 genesis block has an empty sender. The legacy format mapped wave `k` to PoR
 round `k+1`, so no observer committed round 1 in that run. The checkpoint
-mode above selects its source from the finalized block prefix instead;
-its four-node result has not yet been measured. Do not treat a timeout or a
-genesis-only status as PoR convergence.
+mode above selects its source from the finalized block prefix and passed the
+four-observer run recorded above. Do not treat a timeout or a genesis-only
+status as PoR convergence.
 
 ### Isolated fresh-cluster reproduction
 
