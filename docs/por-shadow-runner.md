@@ -109,9 +109,12 @@ require an explicit migration; start the current four-observer smoke with fresh
 observer directories. There is no automatic conversion of those histories.
 
 Each observer stages its own signed checkpoint batch and closes the round only
-when every authorized rater's expected ratings are complete. With
+when every authorized rater that was not ejected in the preceding PoR state
+has supplied its expected ratings. Ejected keys stay in Cordial membership
+with zero weight; their observers can receive and audit rounds without signing
+ratings or blocking closure. With
 `--commit-complete-ratings`, the runner rechecks the source checkpoint against
-its current finalized prefix, audits the v2 transition, and commits only if
+its current finalized prefix, audits the checkpoint transition, and commits only if
 the projected weights preserve already published Cordial finality. It then
 activates those weights in its local ingress and updates `shadow-status.json`.
 If the projection would rewrite the published leader or ordered prefix, the
@@ -178,6 +181,44 @@ The bonds file is required and remains the authority for membership. Changing
 the file's validator set while reusing a data directory causes PoR startup to
 fail closed. The runner never adds senders observed in blocks to the membership
 map. Keep the data directory and its activation record across restarts.
+
+## Checkpoint equivocation authorization
+
+The checkpoint path authenticates finalized equivocation carriers before
+replaying, building, auditing, or applying a penalty-bearing reputation block.
+Arbitrary proof bytes and unapproved verified proofs cannot authorize penalties.
+`SlashSystemDeploy` remains a separate host-chain path.
+
+A producer calls `queue_por_checkpoint_equivocation_authorization` with a
+verified core proof, shard, and target PoR round. The v2 authorization message
+(`cordial-por:equivocation-authorization:v2`) is covered by the containing
+Cordial block's signature. It encodes the shard, target round, offender, and
+canonical proof bytes with big-endian u64 length prefixes; the target round
+is a big-endian u64. The existing carrier reserves `source_finalized_wave = 0`
+for v2 intents; the message domain distinguishes them from wave-zero v1 messages.
+
+For round `r`, the carrier must occur in finalized output positions
+`[(r - 1) * 16, r * 16)`. A carrier outside that window does not carry forward.
+The intent cannot include its own resulting prefix hash; admission binds the
+verified penalty to the finalized checkpoint's round, prefix length, and hash.
+Wave authorizations cannot be reused for checkpoint transitions or vice versa.
+
+The runtime decodes each in-window intent as an unverified claim, then verifies
+both conflicting blocks, signatures, derived evidence round, complete ancestry,
+and incomparability. The authorization publisher and offender must have positive
+weight in the supplied Cordial membership view, the publisher's block signature
+must verify, and neither conflicting block may be newer than its authorization
+block. Matching malformed or invalid finalized claims fail closed.
+
+Closure retains the complete in-window authorization set. Admission must account
+for every same-shard intent: omission and extra claims fail. Duplicate publications
+are deduplicated. If several valid proofs name the same offender, the
+lexicographically first canonical message selects one penalty for that round,
+after every proof has been verified. The penalty retains its core evidence round
+for correlated-slashing calculations. Runtime commit reauthenticates against its
+own published finalized view; durable application checks the retained complete
+set before changing state. Ejection, retained balances, and zero weights survive
+restart in the existing v3 checkpoint state format.
 
 ## Four-node recovery smoke
 
