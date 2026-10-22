@@ -129,6 +129,17 @@ commitment, and finalized prefix across all four observers, then restarts an
 observer and a validator. This is an observer convergence check; it does not
 show that the running f1r3node nodes consume PoR weights.
 
+To exercise the future-only cutover, add the same
+`--checkpoint-epoch-delay-waves N` to the keyed harness command below. The
+runner derives the effective wave from the rating source wave plus `N`, waits
+for the finalized wave immediately before it, then seals the old-weight
+prefix and commits the checkpoint. A late proposal is rejected; choose `N`
+large enough for all four rating exchanges to finish before that boundary.
+The proposal and reputation state recover together after observer restart.
+This PoC stores one epoch, so observers keep mirroring blocks after round 1
+without committing round 2. The four-observer check still measures observer
+agreement and local Cordial ordering; it does not prove node-side enforcement.
+
 The current single-table activation guard can defer a valid checkpoint when
 its new weights would change an already published Cordial leader. To verify
 checkpoint calculation separately, replace `--min-por-round 1` in the command
@@ -242,6 +253,7 @@ python3 docker/scripts/verify-four-node-por-shadow.py \
   --rating-keys-dir "$HOME/por-keys" \
   --rating-exchange-dir "$smoke_root/exchange" \
   --checkpoint-ratings --commit-complete-ratings \
+  --checkpoint-epoch-delay-waves 12 \
   --min-finalized-blocks 16 --min-por-round 1 \
   --grpc-ports 61001 62001 63001 64001 \
   --compose-override docker/four-node-por-smoke-override.yml \
