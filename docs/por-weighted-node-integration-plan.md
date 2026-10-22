@@ -308,10 +308,16 @@ Its result is the same when observers have different later heads, provided
 they replay the same source prefix. The adapter verifies that source before
 previewing the projected suffix. It waits for the finalized boundary wave
 immediately before the cutover and rejects a cutover into a published wave.
-The delay must be shared by all participants and bound to the future durable
-epoch record; there is no implicit default. The preview does not persist an
-epoch record or activate PoR weights. Those steps must be complete before an
-observer reports the new round as active.
+The delay must be shared by all participants; there is no implicit default.
+A separate prepared-epoch record now binds the source, policy delay, effective
+wave, reputation checkpoint hash, exact old and new validator weights, sealed
+leader, and sealed-prefix commitment. Its atomic store rejects a different
+record in the same data directory. On recovery, replay reconstructs the sealed
+prefix from the retained DAG and checks the checkpoint, validator set, and
+future ordering. This first store holds one prepared epoch; later rounds need
+an append-only epoch journal. The runtime does not yet persist or consume this
+record, and an observer must not report its weights as active until that
+activation path is complete.
 
 The implementation gate is an unequal-weight fixture in which applying the new
 table to the whole DAG changes an old leader, yet epoch-aware ordering leaves
