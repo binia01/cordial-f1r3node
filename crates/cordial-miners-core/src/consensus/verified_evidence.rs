@@ -8,14 +8,7 @@ use std::{
     fmt,
 };
 
-use crate::{
-    Block, Blocklace, NodeId,
-    consensus::{
-        evidence::CordialEquivocationEvidence,
-        validation::{ValidationConfig, validate_block},
-    },
-    crypto,
-};
+use crate::{Block, Blocklace, NodeId, consensus::evidence::CordialEquivocationEvidence, crypto};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvidenceVerificationError {
@@ -106,11 +99,6 @@ pub fn verify_equivocation_evidence(
     if raw.blocks.len() < 2 {
         return Err(Error::TooFewBlocks);
     }
-    let config = ValidationConfig {
-        check_sender: false,
-        check_chain_axiom: false,
-        ..ValidationConfig::default()
-    };
     let mut identities = BTreeSet::new();
     let mut earliest_round = u64::MAX;
     let mut histories = Vec::new();
@@ -134,9 +122,9 @@ pub fn verify_equivocation_evidence(
         let (round, ancestors) = complete_history(block, blocklace)?;
         histories.push(ancestors);
         earliest_round = earliest_round.min(round);
-        if !validate_block(block, blocklace, &Default::default(), &config).is_valid() {
-            return Err(Error::InvalidBlock);
-        }
+        // Hash, signature and full closure were checked above. Do not run
+        // insertion validation: a different valid signature already stored for
+        // this consensus identity must not change whether this proof is valid.
     }
     if earliest_round != raw.round {
         return Err(Error::WrongRound);
@@ -201,7 +189,9 @@ fn complete_history(
             stack.push((current.clone(), true));
             for predecessor in &current.content.predecessors {
                 ancestors.insert(predecessor.consensus_identity());
-                let ancestor = blocklace.get(predecessor).ok_or(Error::MissingHistory)?;
+                let ancestor = blocklace
+                    .get(&predecessor.consensus_identity())
+                    .ok_or(Error::MissingHistory)?;
                 stack.push((ancestor, false));
             }
         }

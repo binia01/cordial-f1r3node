@@ -79,11 +79,23 @@ struct Fixture {
 }
 impl Fixture {
     fn new(carriers: Vec<PorEquivocationAuthorization>) -> Self {
+        Self::two_windows(carriers, vec![])
+    }
+    fn two_windows(
+        carriers: Vec<PorEquivocationAuthorization>,
+        later: Vec<PorEquivocationAuthorization>,
+    ) -> Self {
         let mut lace = Blocklace::new();
         let mut ids: Vec<BlockIdentity> = vec![];
         for index in 0..32 {
             let payload = CordialBlockPayload {
-                por_authorizations: if index == 8 { carriers.clone() } else { vec![] },
+                por_authorizations: if index == 8 {
+                    carriers.clone()
+                } else if index == 24 {
+                    later.clone()
+                } else {
+                    vec![]
+                },
                 state: BlockState {
                     pre_state_hash: vec![],
                     post_state_hash: vec![],
@@ -395,12 +407,11 @@ fn checkpoint_admission_rejects_forgery_unapproved_proof_and_wrong_source() {
     for absent in [node(1), node(2)] {
         let mut membership = fixture.membership.clone();
         membership.remove(&absent);
-        assert!(
-            completed
-                .clone()
-                .with_finalized_equivocations(&fixture.lace, &fixture.output, &membership, b"root")
-                .is_err()
-        );
+        let filtered = completed
+            .clone()
+            .with_finalized_equivocations(&fixture.lace, &fixture.output, &membership, b"root")
+            .unwrap();
+        assert!(filtered.penalties().unwrap().equivocations.is_empty());
     }
     let mut bad_carrier = carrier(&claim, 1);
     // An invalid or malformed finalized claim must not block progress.
@@ -517,12 +528,23 @@ fn invalid_finalized_claim_alongside_valid_claim_does_not_block_progress() {
         authorized.penalties().unwrap().equivocations[0].offender,
         node(2)
     );
+    let again = authorized
+        .clone()
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert_eq!(again, authorized);
+    let dir = tempfile::tempdir().unwrap();
+    let mut durable = DurablePorState::open(dir.path(), fixture.state.clone()).unwrap();
+    durable
+        .apply_completed_checkpoint_round(&again, &fixture.config, b"root")
+        .unwrap();
+    assert!(durable.state().unwrap().is_ejected(&node(2)));
 }
 
 #[test]
 fn repeated_evidence_against_already_ejected_validator_is_idempotent() {
     let claim = raw(2, 1);
-    let fixture = Fixture::new(vec![carrier(&claim, 1)]);
+    let fixture = Fixture::two_windows(vec![carrier(&claim, 1)], vec![carrier(&claim, 2)]);
     let completed = fixture.complete(&fixture.state, 1, 1);
     let authorized = completed
         .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
@@ -535,6 +557,15 @@ fn repeated_evidence_against_already_ejected_validator_is_idempotent() {
         .unwrap();
     assert!(state.state().unwrap().is_ejected(&node(2)));
 
+    let excluded_before = state
+        .state()
+        .unwrap()
+        .reputation_list()
+        .entries
+        .iter()
+        .find(|entry| entry.node_id == node(2))
+        .unwrap()
+        .clone();
     // Now round 2 includes evidence against validator 2 (who is in membership with weight 0).
     let mut round2_membership = fixture.membership.clone();
     round2_membership.insert(node(2), 0); // Ejected validator has 0 weight
@@ -556,4 +587,132 @@ fn repeated_evidence_against_already_ejected_validator_is_idempotent() {
         .unwrap();
     assert_eq!(state.state().unwrap().round(), 2);
     assert!(state.state().unwrap().is_ejected(&node(2)));
+    assert_eq!(
+        state
+            .state()
+            .unwrap()
+            .reputation_list()
+            .entries
+            .iter()
+            .find(|entry| entry.node_id == node(2))
+            .unwrap(),
+        &excluded_before
+    );
+}
+
+#[test]
+fn unbonded_claim_is_ignored_but_valid_authorization_cannot_be_omitted() {
+    let good = raw(2, 1);
+    let fixture = Fixture::new(vec![carrier(&good, 1), carrier(&raw(8, 1), 1)]);
+    let completed = fixture.complete(&fixture.state, 1, 1);
+    assert!(
+        completed
+            .clone()
+            .with_authorized_equivocations(
+                &[],
+                &fixture.lace,
+                &fixture.output,
+                &fixture.membership,
+                b"root"
+            )
+            .is_err()
+    );
+    let admitted = completed
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert_eq!(admitted.penalties().unwrap().equivocations.len(), 1);
+    let again = admitted
+        .clone()
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert_eq!(again, admitted);
+    let dir = tempfile::tempdir().unwrap();
+    let mut durable = DurablePorState::open(dir.path(), fixture.state.clone()).unwrap();
+    durable
+        .apply_completed_checkpoint_round(&again, &fixture.config, b"root")
+        .unwrap();
+    assert!(durable.state().unwrap().is_ejected(&node(2)));
+}
+
+#[test]
+fn unavailable_ancestry_blocks_completion_until_recovered() {
+    let parent = signed(4, vec![99], HashSet::new());
+    let mut history = Blocklace::new();
+    history
+        .insert(parent.clone(), &crypto::Secp256k1Scheme)
+        .unwrap();
+    let claim = CordialEquivocationEvidence::new(
+        node(2),
+        1,
+        [0, 1]
+            .map(|tag| signed(2, vec![tag], HashSet::from([parent.identity.clone()])))
+            .to_vec(),
+    );
+    let proof = verify_equivocation_evidence(&claim, &history).unwrap();
+    let intent = PorEquivocationAuthorization {
+        shard_id: b"root".to_vec(),
+        source_finalized_wave: 0,
+        round: 1,
+        message: checkpoint_equivocation_authorization_payload(b"root", 1, &proof).unwrap(),
+    };
+    let mut fixture = Fixture::new(vec![intent]);
+    let completed = fixture.complete(&fixture.state, 1, 1);
+    assert!(
+        completed
+            .clone()
+            .with_finalized_equivocations(
+                &fixture.lace,
+                &fixture.output,
+                &fixture.membership,
+                b"root"
+            )
+            .is_err()
+    );
+    fixture
+        .lace
+        .insert(parent, &crypto::Secp256k1Scheme)
+        .unwrap();
+    let recovered = completed
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    let full = fixture
+        .complete(&fixture.state, 1, 1)
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert_eq!(recovered, full);
+    assert_eq!(full.penalties().unwrap().equivocations.len(), 1);
+}
+
+#[test]
+fn zero_weight_active_offender_is_ejected_and_classification_is_state_bound() {
+    let mut fixture = Fixture::new(vec![carrier(&raw(2, 1), 1)]);
+    fixture.membership.insert(node(2), 0);
+    fixture.state.set_reputation(node(2), 0);
+    assert!(!fixture.state.is_ejected(&node(2)));
+    let completed = fixture.complete(&fixture.state, 1, 1);
+    let admitted = completed
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert_eq!(admitted.penalties().unwrap().equivocations.len(), 1);
+    let dir = tempfile::tempdir().unwrap();
+    let mut durable = DurablePorState::open(dir.path(), fixture.state.clone()).unwrap();
+    // A caller cannot use an exclusion from a different preceding state to
+    // suppress this active validator's penalty at the durable boundary.
+    let mut other_state = fixture.state.clone();
+    other_state.eject_validator(&node(2)).unwrap();
+    let suppressed = fixture
+        .complete(&other_state, 1, 1)
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert!(suppressed.penalties().unwrap().equivocations.is_empty());
+    assert!(
+        durable
+            .apply_completed_checkpoint_round(&suppressed, &fixture.config, b"root")
+            .is_err()
+    );
+    assert_eq!(durable.state().unwrap(), &fixture.state);
+    durable
+        .apply_completed_checkpoint_round(&admitted, &fixture.config, b"root")
+        .unwrap();
+    assert!(durable.state().unwrap().is_ejected(&node(2)));
 }

@@ -179,3 +179,48 @@ fn decoded_proofs_still_require_authentication_and_complete_ancestry() {
     assert!(decode_equivocation_evidence(&trailing).is_err());
     assert!(decode_equivocation_evidence(&[1]).is_err());
 }
+
+#[test]
+fn stored_signature_variants_do_not_change_proof_validity() {
+    use k256::ecdsa::{Signature, signature::hazmat::RandomizedPrehashSigner};
+    use k256::elliptic_curve::rand_core::OsRng;
+    let claim = raw();
+    let expected = verify_equivocation_evidence(&claim, &Blocklace::new()).unwrap();
+    let mut variant = claim.blocks[0].clone();
+    let signature: Signature = SigningKey::from_slice(&[1; 32])
+        .unwrap()
+        .sign_prehash_with_rng(&mut OsRng, &variant.identity.content_hash)
+        .unwrap();
+    variant.identity.signature = signature.to_der().as_bytes().to_vec();
+    assert_ne!(
+        variant.identity.signature,
+        claim.blocks[0].identity.signature
+    );
+    let mut lace = Blocklace::new();
+    lace.insert(variant, &Secp256k1Scheme).unwrap();
+    assert_eq!(
+        verify_equivocation_evidence(&claim, &lace).unwrap(),
+        expected
+    );
+    // Signed predecessor references also resolve by consensus identity.
+    let parent = claim.blocks[0].clone();
+    let descendants = CordialEquivocationEvidence::new(
+        node(2),
+        1,
+        vec![
+            block(2, 3, HashSet::from([parent.identity.clone()])),
+            block(2, 4, HashSet::from([parent.identity.clone()])),
+        ],
+    );
+    let mut original_history = Blocklace::new();
+    original_history.insert(parent, &Secp256k1Scheme).unwrap();
+    assert_eq!(
+        verify_equivocation_evidence(&descendants, &lace).unwrap(),
+        verify_equivocation_evidence(&descendants, &original_history).unwrap()
+    );
+    // The insertion boundary still rejects a second signature variant.
+    assert!(
+        lace.insert(claim.blocks[0].clone(), &Secp256k1Scheme)
+            .is_err()
+    );
+}

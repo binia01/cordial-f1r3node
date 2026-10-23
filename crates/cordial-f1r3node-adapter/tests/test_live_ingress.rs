@@ -1047,3 +1047,77 @@ fn non_genesis_por_weights_require_an_audited_checkpoint() {
     );
     assert_eq!(ingress.bonds(), &initial_bonds);
 }
+
+#[test]
+fn trusted_ingress_correlates_deploys_in_legacy_and_versioned_payloads() {
+    use cordial_f1r3node_adapter::deploy_trace::{
+        DeployTraceState, DeployTracer, TraceIngressSource,
+    };
+    use cordial_miners_core::execution::{
+        Deploy, DeploySignatureAlgorithm, PorEquivocationAuthorization, ProcessedDeploy,
+        SignedDeploy,
+    };
+    for versioned in [false, true] {
+        let signature = vec![42; 64];
+        let tracer = DeployTracer::new();
+        tracer.record_observed(&signature, TraceIngressSource::Grpc);
+        let mut ingress =
+            LiveIngress::new(RecordingAdapter::default()).with_deploy_tracer(tracer.clone());
+        let payload = CordialBlockPayload {
+            por_authorizations: if versioned {
+                vec![PorEquivocationAuthorization {
+                    shard_id: b"root".to_vec(),
+                    source_finalized_wave: 0,
+                    round: 1,
+                    message: vec![1],
+                }]
+            } else {
+                vec![]
+            },
+            state: BlockState {
+                pre_state_hash: vec![],
+                post_state_hash: vec![],
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: vec![ProcessedDeploy {
+                deploy: SignedDeploy {
+                    deploy: Deploy {
+                        term: b"Nil".to_vec(),
+                        timestamp: 1,
+                        phlo_price: 1,
+                        phlo_limit: 100,
+                        valid_after_block_number: 0,
+                        shard_id: "root".into(),
+                        expiration_timestamp: None,
+                    },
+                    deployer: vec![7; 33],
+                    signature: signature.clone(),
+                    signature_algorithm: DeploySignatureAlgorithm::Secp256k1,
+                },
+                cost: 1,
+                is_failed: false,
+            }],
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+        };
+        let signing_key = test_signing_key(7);
+        let content = BlockContent {
+            payload: payload.to_bytes(),
+            predecessors: HashSet::new(),
+        };
+        let hash = hash_content(&content);
+        let block = Block {
+            identity: BlockIdentity {
+                content_hash: hash,
+                creator: NodeId(test_public_key(&signing_key)),
+                signature: sign(&hash, &signing_key),
+            },
+            content,
+        };
+        ingress.ingest_trusted_block(block).unwrap();
+        let report = tracer.get_deploy_trace(&signature).unwrap();
+        assert_eq!(report.state, DeployTraceState::BlockIncluded);
+        assert_eq!(report.block_hash_hex, Some(hex::encode(hash)));
+    }
+}

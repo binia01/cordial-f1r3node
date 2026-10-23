@@ -205,20 +205,31 @@ Wave authorizations cannot be reused for checkpoint transitions or vice versa.
 
 The runtime decodes each in-window intent as an unverified claim, then verifies
 both conflicting blocks, signatures, derived evidence round, complete ancestry,
-and incomparability. The authorization publisher and offender must have positive
-weight in the supplied Cordial membership view, the publisher's block signature
-must verify, and neither conflicting block may be newer than its authorization
-block. Matching malformed or invalid finalized claims fail closed.
+and incomparability. The offender must be a member and must not be excluded in
+the preceding PoR state; an active member with zero weight is still subject to
+permanent ejection. The publisher must have positive Cordial weight, its block
+signature must verify, and neither conflicting block may be newer than its
+authorization block.
 
-Closure retains the complete in-window authorization set. Admission must account
-for every same-shard intent: omission and extra claims fail. Duplicate publications
-are deduplicated. If several valid proofs name the same offender, the
-lexicographically first canonical message selects one penalty for that round,
-after every proof has been verified. The penalty retains its core evidence round
-for correlated-slashing calculations. Runtime commit reauthenticates against its
-own published finalized view; durable application checks the retained complete
-set before changing state. Ejection, retained balances, and zero weights survive
-restart in the existing v3 checkpoint state format.
+Malformed proofs and semantically ineligible claims, including unbonded offenders,
+are accounted for without creating penalty events. Previously ejected offenders
+are also no-ops, preserving their retained balances. Missing proof ancestry is
+an error that prevents completion until the node recovers that history; it is
+never treated as evidence of invalidity. Proof verification does not apply the
+DAG insertion rule that rejects another signature variant of a stored block.
+
+Closure retains the original complete in-window carrier set unchanged. Admission
+tracks eligible and ignored claims separately and requires exact accounting of
+both sets. An explicit proof list must cover every eligible authorization and
+cannot supply its own ignored-claim decisions. Duplicate publications are
+deduplicated. If several eligible proofs name the same offender, the
+lexicographically first canonical message selects one penalty for that round.
+The penalty retains its core evidence round for correlated-slashing calculations.
+Runtime commit reauthenticates against its own published finalized view and checks
+the preceding state used for classification. Durable application checks that
+state and the complete accounting before changing reputation. Reauthorization is
+idempotent. Ejection, retained balances, and zero weights survive restart in the
+existing v3 checkpoint state format.
 
 ## Four-node recovery smoke
 
