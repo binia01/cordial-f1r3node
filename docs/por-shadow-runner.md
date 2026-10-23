@@ -8,9 +8,131 @@ with `PorConfig::default().initial_reputation`. `PorRuntime` persists and
 activates the genesis projection; on restart it restores the exact activated
 weights before computing finality.
 
-The runner observes and reports PoR weights. It does not change the running
-f1r3node validator, produce ratings, or advance reputation rounds. Finalized
-wave rating lifecycle and peer transport are later slices.
+The runner observes and reports PoR weights and the latest finalized Cordial
+wave. It does not change the running f1r3node validator. Finalized-wave
+reporting does not imply that intermediate waves were processed as PoR rating
+rounds. With keyed observers and a shared exchange, it derives complete round
+candidates. An explicit flag can commit and activate them in the local Cordial
+observer.
+
+For a validator observer, `--validator-rating-key-file /path/to/validator.key`
+optionally loads its own secp256k1 private key at startup. The file contains
+exactly 64 hexadecimal characters, with optional surrounding whitespace.
+The runner derives the public key and requires it to match exactly one active
+entry in the bonds file. Status then reports its public identity as
+`configured_rating_rater`; the private key is never written to status or logs.
+Keep one key file per observer and restrict access to its owner. This option
+only validates the key for the existing rating-signing path. Reusing a data
+directory with a different key is rejected.
+
+To stage a local signed rating batch, add `--stage-local-ratings` alongside
+`--validator-rating-key-file`. The runner uses PoR's existing round coordinator
+and writes its signed envelopes under `<data-dir>/por/rating-outbox` before
+publishing a new shadow status. It stages only the next round expected by the
+durable PoR state. If the latest finalized leader is in a later wave, the
+runner replays the expected wave's final leader and ordered prefix under the
+currently active weights, then checks that prefix against the latest published
+output.
+Missing leaders or a prefix mismatch stop the runner. Start this opt-in check
+with a fresh chain or a source whose full block history is available. Repeated
+polls and restarts accept the same batch and reject conflicting ratings for
+that wave. Without an exchange directory, nothing is sent to peers.
+`active_por_round` remains unchanged without an exchange and the explicit
+commit flag.
+
+For host-side exchange between keyed observers, also pass the same
+`--rating-exchange-dir` to each runner. Every observer needs its own data
+directory and its own validator key file. The key file contains the 64-character
+private key configured for that validator in the cluster's Compose environment;
+the TLS `node.key.pem` is a different key. For example, run validator 1 with:
+
+```sh
+cargo run -j 1 -p cordial-f1r3node-adapter --bin live_por_shadow -- \
+  --grpc-url http://127.0.0.1:51401 \
+  --bonds-file docker/genesis/cordial-bonds.txt \
+  --validator-rating-key-file "$HOME/por-keys/validator-1.key" \
+  --stage-local-ratings \
+  --rating-exchange-dir "$HOME/cordial-por-rating-exchange" \
+  --data-dir "$HOME/cordial-por-four-node/validator-1"
+```
+
+Run validators 2, 3, and 4 with gRPC ports `52401`, `53401`, and `54401`,
+their matching key files, separate data directories, and the **same** exchange
+directory. Reuse that directory for observer restarts and choose a new one for
+a fresh chain. The demo private keys and bonded public keys are in
+`docker/.env.example` and `docker/genesis/cordial-bonds.txt`; use the actual
+Compose-configured keys if they differ. Keep key files owner-readable only.
+The runner republishes its immutable outbox envelopes after restart, verifies
+peer signatures and finalized interaction evidence, and logs envelope counts,
+complete raters, and quorum progress. When **every** eligible rater is complete,
+it closes an in-memory candidate, replays the reputation transition, and logs
+`candidate_por_round`, `candidate_checkpoint`, and
+`candidate_weight_commitment`. Compare all three fields across four observer
+logs. The weighted quorum alone does not trigger a candidate because observers
+could otherwise close with different subsets. Without the flag below, no state
+or active weights are committed.
+
+To allow a complete candidate to advance durable PoR state, add
+`--commit-complete-ratings` to **each** keyed observer command. The runner
+commits only while the candidate's source wave is the latest finalized wave.
+It first checks that the projected weights preserve the published final leader
+and ordered prefix, then commits the audited reputation state and activates
+the weights in its local Cordial ingress. The JSON status then reports the new
+`active_por_round`, `weight_commitment`, and exact `weights` map. It defers
+commit when a later wave has already finalized; such a candidate stays
+visible in logs. Use a fresh cluster and start all keyed observers promptly to
+exercise this gate. A restart restores the last active projection before
+replaying blocks; if a commit was interrupted before activation, the runner
+replays under the prior projection and retries activation before publishing
+status. The durable reputation round is the cursor for the next wave.
+
+This flag changes only the observer's Cordial view. The running upstream
+f1r3node still uses its own consensus weights. A live four-observer activation
+and restart smoke remains to be run. An exchange conflict or invalid peer
+rating stops the runner for inspection.
+
+## Checkpoint rating PoC
+
+For a fresh cluster and fresh observer data directories, add
+`--checkpoint-ratings` to each keyed observer. This selects v2 ratings bound
+to consecutive 16-block checkpoints in Cordial's finalized prefix. It
+requires `--validator-rating-key-file`, `--stage-local-ratings`, and a shared
+`--rating-exchange-dir`. The v2 outbox and exchange use separate namespaces
+from the older wave format. Do not reuse a data directory with a committed
+wave-format PoR round.
+
+Checkpoint ratings retain their v2 signing and exchange format. The committed
+checkpoint reputation block, its wire envelope, and the durable snapshot use
+v3, which includes the finalized-prefix source and penalty commitment. Data
+directories containing checkpoint v2 blocks from before the `dev` rebase
+require an explicit migration; start the current four-observer smoke with fresh
+observer directories. There is no automatic conversion of those histories.
+
+Each observer stages its own signed checkpoint batch and closes the round only
+when every authorized rater that was not ejected in the preceding PoR state
+has supplied its expected ratings. Ejected keys stay in Cordial membership
+with zero weight; their observers can receive and audit rounds without signing
+ratings or blocking closure. With
+`--commit-complete-ratings`, the runner rechecks the source checkpoint against
+its current finalized prefix, audits the checkpoint transition, and commits only if
+the projected weights preserve already published Cordial finality. It then
+activates those weights in its local ingress and updates `shadow-status.json`.
+If the projection would rewrite the published leader or ordered prefix, the
+runner logs a deferred candidate and keeps the current active round. On
+restart, it waits for the complete committed source checkpoint before
+activating a pending round. An incomplete replay retries on later polls without
+publishing status; a conflicting replayed prefix stops the runner. Direct
+activation through `DurablePorState` applies the same checkpoint identity check.
+
+For a four-observer convergence and restart check, use the isolated Compose
+project in [Parallel keyed PoR smoke](#parallel-keyed-por-smoke). Its command
+passes `--checkpoint-ratings`, starts the observers before the validators,
+and waits for at least one committed checkpoint round.
+
+The script compares the active round, checkpoint hash, exact weights,
+commitment, and finalized prefix across all four observers, then restarts an
+observer and a validator. This is an observer convergence check; it does not
+show that the running f1r3node nodes consume PoR weights.
 
 ## Live smoke procedure
 
@@ -39,13 +161,17 @@ repository. The runner polls every two seconds by default. It emits a JSON
 status line after each successful poll and atomically writes the same document
 to `<data-dir>/por/shadow-status.json`. The document contains
 `active_por_round`, `weight_commitment`, the exact hex-keyed `weights` map,
-`finalized_anchor`, and `finalized_hashes`. The full finalized hash sequence
-is retained so startup can reject a replay that changes or loses the previously
-published prefix.
+`finalized_anchor`, `observed_finalized_wave`, and `finalized_hashes`.
+`observed_finalized_wave` is null until Cordial exports a final leader; it is
+the wave of that leader, not the active PoR reputation round. The full
+finalized hash sequence is retained so startup can reject a replay that
+changes or loses the previously published prefix. A recovered observed wave
+must not regress, and a leader change within the same wave is rejected.
 
 For a restart check, save the status file, stop the runner, and start it again
 with the same arguments. Compare the old and new `active_por_round`,
-`weight_commitment`, and `weights`. The new `finalized_hashes` must begin
+`weight_commitment`, `weights`, and `observed_finalized_wave`. The new
+`finalized_hashes` must begin
 with the old sequence. The runner checks these conditions before publishing its
 first recovered status. It replays blocks from height zero because the mirror
 itself is process-local. A node that cannot supply its complete history cannot
@@ -56,7 +182,59 @@ the file's validator set while reusing a data directory causes PoR startup to
 fail closed. The runner never adds senders observed in blocks to the membership
 map. Keep the data directory and its activation record across restarts.
 
+## Checkpoint equivocation authorization
+
+The checkpoint path authenticates finalized equivocation carriers before
+replaying, building, auditing, or applying a penalty-bearing reputation block.
+Arbitrary proof bytes and unapproved verified proofs cannot authorize penalties.
+`SlashSystemDeploy` remains a separate host-chain path.
+
+A producer calls `queue_por_checkpoint_equivocation_authorization` with a
+verified core proof, shard, and target PoR round. The v2 authorization message
+(`cordial-por:equivocation-authorization:v2`) is covered by the containing
+Cordial block's signature. It encodes the shard, target round, offender, and
+canonical proof bytes with big-endian u64 length prefixes; the target round
+is a big-endian u64. The existing carrier reserves `source_finalized_wave = 0`
+for v2 intents; the message domain distinguishes them from wave-zero v1 messages.
+
+For round `r`, the carrier must occur in finalized output positions
+`[(r - 1) * 16, r * 16)`. A carrier outside that window does not carry forward.
+The intent cannot include its own resulting prefix hash; admission binds the
+verified penalty to the finalized checkpoint's round, prefix length, and hash.
+Wave authorizations cannot be reused for checkpoint transitions or vice versa.
+
+The runtime decodes each in-window intent as an unverified claim, then verifies
+both conflicting blocks, signatures, derived evidence round, complete ancestry,
+and incomparability. The offender must be a member and must not be excluded in
+the preceding PoR state; an active member with zero weight is still subject to
+permanent ejection. The publisher must have positive Cordial weight, its block
+signature must verify, and neither conflicting block may be newer than its
+authorization block.
+
+Malformed proofs and semantically ineligible claims, including unbonded offenders,
+are accounted for without creating penalty events. Previously ejected offenders
+are also no-ops, preserving their retained balances. Missing proof ancestry is
+an error that prevents completion until the node recovers that history; it is
+never treated as evidence of invalidity. Proof verification does not apply the
+DAG insertion rule that rejects another signature variant of a stored block.
+
+Closure retains the original complete in-window carrier set unchanged. Admission
+tracks eligible and ignored claims separately and requires exact accounting of
+both sets. An explicit proof list must cover every eligible authorization and
+cannot supply its own ignored-claim decisions. Duplicate publications are
+deduplicated. If several eligible proofs name the same offender, the
+lexicographically first canonical message selects one penalty for that round.
+The penalty retains its core evidence round for correlated-slashing calculations.
+Runtime commit reauthenticates against its own published finalized view and checks
+the preceding state used for classification. Durable application checks that
+state and the complete accounting before changing reputation. Reauthorization is
+idempotent. Ejection, retained balances, and zero weights survive restart in the
+existing v3 checkpoint state format.
+
 ## Four-node recovery smoke
+
+This harness exercises the default observer mode. It does not pass validator
+keys or start the shared rating exchange described above.
 
 Start and verify a recently started connected cluster, then build the runner
 once and run the four-observer harness from the repository root:
@@ -86,6 +264,65 @@ runs. Logs are written to `<data-root>/<node>/runner.log`; each status is at
 observer restart check. `--timeout-seconds` and `--min-finalized-blocks` adjust
 the convergence gate. The cluster must be running before this command; the
 harness does not start or reset it.
+
+### Parallel keyed PoR smoke
+
+The keyed harness can run against a fresh Compose project without stopping an
+existing cluster. First build the current runner and prepare four owner-readable
+key files named `validator-1.key` through `validator-4.key` under
+`$HOME/por-keys`. Their contents must match the validator private keys in the
+Compose configuration; the matching public keys must be in
+`docker/genesis/cordial-bonds.txt`. Prepare the cluster certificates with
+`./docker/scripts/generate-four-node-cluster-certs.sh` if needed.
+
+In terminal A, start the observers **before** the fresh validators:
+
+```sh
+cargo build --release -j 1 -p cordial-f1r3node-adapter --bin live_por_shadow
+smoke_root="$(mktemp -d /tmp/por-keyed-smoke.XXXXXX)"
+python3 docker/scripts/verify-four-node-por-shadow.py \
+  --data-root "$smoke_root/observers" \
+  --binary target/release/live_por_shadow \
+  --rating-keys-dir "$HOME/por-keys" \
+  --rating-exchange-dir "$smoke_root/exchange" \
+  --checkpoint-ratings --commit-complete-ratings \
+  --min-finalized-blocks 16 --min-por-round 1 \
+  --grpc-ports 61001 62001 63001 64001 \
+  --compose-override docker/four-node-por-smoke-override.yml \
+  --compose-project por-keyed-smoke --timeout-seconds 900
+```
+
+In terminal B, start the separate cluster:
+
+```sh
+COMPOSE_PROJECT_NAME=por-keyed-smoke docker compose --env-file docker/.env \
+  -f docker/four-node-cluster.yml \
+  -f docker/four-node-por-smoke-override.yml up -d
+```
+
+After terminal A finishes or fails, stop only the smoke project:
+
+```sh
+COMPOSE_PROJECT_NAME=por-keyed-smoke docker compose --env-file docker/.env \
+  -f docker/four-node-cluster.yml \
+  -f docker/four-node-por-smoke-override.yml down
+```
+
+The override uses separate container names, host ports, network, and named
+volumes. Plain `down` preserves its volumes for diagnosis. The harness requires
+all four observers to reach at least PoR round 1 with the same active
+checkpoint, weight commitment, weight map, and finalized prefix; it then
+checks observer and validator restarts. Logs and durable PoR data remain under
+`$smoke_root`.
+
+**Legacy wave-path blocker observed on 2026-10-14:** four keyed observers
+launched before a fresh cluster, then all exited because no final leader could
+be replayed for wave 0 after a later wave finalized. The node's height-0
+genesis block has an empty sender. The legacy format mapped wave `k` to PoR
+round `k+1`, so no observer committed round 1 in that run. The checkpoint
+mode above selects its source from the finalized block prefix instead;
+its four-node result has not yet been measured. Do not treat a timeout or a
+genesis-only status as PoR convergence.
 
 ### Isolated fresh-cluster reproduction
 
@@ -137,7 +374,8 @@ the subsequent ordering calculation. Use the isolated fresh-cluster procedure
 for the recovery smoke until the long-history path has bounded memory and a
 durable mirror checkpoint.
 
-All observers currently retain the genesis reputation round because the live
-shadow runner does not yet produce ratings or activate later rounds. Agreement
-here tests deterministic observation and durable recovery, not enforcement of
-PoR weights by f1r3node.
+The default harness does not supply validator rating keys, so its observers
+retain the genesis reputation round. A keyed exchange can derive later
+candidates and, with `--commit-complete-ratings`, activate them locally.
+Agreement in the default harness tests deterministic observation and durable
+recovery, not enforcement of PoR weights by f1r3node.
