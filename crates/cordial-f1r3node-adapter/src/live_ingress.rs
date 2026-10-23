@@ -1304,7 +1304,7 @@ where
 fn correlate_block_payload(tracer: &crate::deploy_trace::DeployTracer, block: &Block) {
     use cordial_miners_core::execution::CordialBlockPayload;
 
-    let payload: CordialBlockPayload = match bincode::deserialize(&block.content.payload) {
+    let payload = match CordialBlockPayload::from_bytes(&block.content.payload) {
         Ok(p) => p,
         Err(_) => return,
     };

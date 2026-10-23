@@ -357,7 +357,12 @@ rejected. Evidence is nonempty and at most 64 KiB; node IDs are at most 4 KiB,
 total events at most one million, and the encoded input at most 64 MiB.
 `None` and an explicit empty event set have identical commitments. The block
 header binds this hash even for rounds with no penalty or no numeric decay.
-Evidence authentication and retention remain host responsibilities.
+Equivocation inputs require a private authorization created from core-verified
+evidence by EquivocationPenalty::authorize. Arbitrary bytes or altered claims
+are rejected before replay. Construction and audit bind approval to the shard
+and source wave. The adapter policy requires a signed authorization payload
+included in trusted finalized Cordial output. Evidence retention and inactivity
+authentication remain host responsibilities.
 
 ## Canonical Reputation Block Wire Envelope
 

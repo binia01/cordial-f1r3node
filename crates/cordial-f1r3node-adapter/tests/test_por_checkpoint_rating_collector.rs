@@ -33,8 +33,8 @@ use cordial_miners_core::{
     Block, BlockContent, BlockIdentity, Blocklace, NodeId, crypto::CryptoVerifier,
 };
 use cordial_por::{
-    CHECKPOINT_REPUTATION_BLOCK_VERSION, PorConfig, PorError, RatingBatch, RatingRecord,
-    ReputationState, reputation_block_hash,
+    CHECKPOINT_REPUTATION_BLOCK_VERSION, PorConfig, RatingBatch, RatingRecord, ReputationState,
+    reputation_block_hash,
 };
 use k256::ecdsa::SigningKey;
 
@@ -378,9 +378,7 @@ fn completion_rejects_an_ejected_rater_even_without_submissions() {
     .unwrap();
     assert_eq!(
         collector.is_rater_complete(&node(9)),
-        Err(PorRatingCollectorError::Interaction(
-            PorInteractionError::Admission(PorError::EjectedInteractionRater)
-        ))
+        Err(PorRatingCollectorError::UnauthorizedRater(node(9)))
     );
 }
 
@@ -637,4 +635,41 @@ fn first_checkpoint_commit_recovers_source_and_rejects_replay() {
         recovered.committed_checkpoint_source().unwrap(),
         Some(source)
     );
+}
+
+#[test]
+fn checkpoint_completion_excludes_ejected_keys_but_still_requires_zero_weight_active_keys() {
+    let fixture = Fixture::new();
+    let mut state = fixture.state.clone();
+    state.eject_validator(&node(9)).unwrap();
+    state.set_reputation(node(2), 0);
+    let mut collector = CheckpointBlockProductionRatingCollector::new(
+        &fixture.blocklace,
+        &fixture.output,
+        fixture.checkpoint.clone(),
+        [node(2), node(3), node(9)],
+        &state,
+        &fixture.config,
+    )
+    .unwrap();
+    assert!(!collector.all_authorized_raters_complete().unwrap());
+    for seed in [3, 2] {
+        let batch = build_finalized_checkpoint_rating_batch(
+            &fixture.blocklace,
+            &fixture.output,
+            &fixture.checkpoint,
+            &node(seed),
+            &state,
+            &fixture.config,
+            &key(seed),
+        )
+        .unwrap();
+        collector.insert_batch(batch).unwrap();
+        assert_eq!(
+            collector.all_authorized_raters_complete().unwrap(),
+            seed == 2
+        );
+    }
+    let batch = collector.build_complete_batch().unwrap();
+    assert!(batch.ratings.iter().all(|rating| rating.rater != node(9)));
 }

@@ -6,10 +6,12 @@
 
 pub mod activation;
 pub mod checkpoint;
+mod checkpoint_evidence;
 pub mod checkpoint_ratings;
 pub mod collector;
 pub mod epoch_policy;
 pub mod epoch_record;
+pub mod evidence;
 pub mod finality;
 pub mod history;
 pub mod interactions;
@@ -45,6 +47,7 @@ pub use epoch_record::{
     POR_WEIGHT_EPOCH_FILE_NAME, PorWeightEpochRecord, PorWeightEpochRecordError,
     PorWeightEpochStore,
 };
+pub use evidence::FinalizedEquivocationAuthorization;
 pub use finality::{
     FinalizedPrefixCheckpoint, FinalizedRatingRound, POR_FINALIZED_BLOCKS_PER_CHECKPOINT,
     PorFinalityError, PorFinalityTracker, finalized_prefix_checkpoint,

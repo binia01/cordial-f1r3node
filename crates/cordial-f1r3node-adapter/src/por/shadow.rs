@@ -572,6 +572,7 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
                     outbox,
                     exchange,
                 )? {
+                    let completed = runtime.authorize_checkpoint_equivocations(completed)?;
                     let (candidate_state, _) = stage_completed_checkpoint_round(
                         &completed,
                         state,

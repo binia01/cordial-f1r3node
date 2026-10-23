@@ -36,6 +36,7 @@ pub enum LiveGrpcError {
         got: usize,
     },
     NumericOverflow(&'static str),
+    InvalidPorCarrier(String),
     HeightMismatch {
         hash: String,
         summary: i64,
@@ -48,16 +49,23 @@ pub enum LiveGrpcError {
 impl std::fmt::Display for LiveGrpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Transport(err) => write!(f, "failed to connect to live gRPC endpoint: {err}"),
+            Self::Transport(err) => {
+                write!(f, "failed to connect to live gRPC endpoint: {err}")
+            }
             Self::Status(err) => write!(f, "live gRPC request failed: {err}"),
-            Self::MissingPayload(kind) => write!(f, "live gRPC response missing payload: {kind}"),
+            Self::MissingPayload(kind) => {
+                write!(f, "live gRPC response missing payload: {kind}")
+            }
             Self::DecodeHex { field, value } => {
                 write!(f, "failed to decode hex field {field}: {value}")
             }
             Self::InvalidHashLength { field, got } => {
                 write!(f, "field {field} must decode to 32 bytes, got {got}")
             }
-            Self::NumericOverflow(field) => write!(f, "numeric overflow while converting {field}"),
+            Self::InvalidPorCarrier(message) => write!(f, "{message}"),
+            Self::NumericOverflow(field) => {
+                write!(f, "numeric overflow while converting {field}")
+            }
             Self::HeightMismatch {
                 hash,
                 summary,
@@ -325,6 +333,8 @@ pub fn trusted_block_from_light_block_info_with_options(
     }
 
     let payload = CordialBlockPayload {
+        por_authorizations: CordialBlockPayload::decode_por_extra(&info.body_extra_bytes)
+            .map_err(LiveGrpcError::InvalidPorCarrier)?,
         state: BlockState {
             pre_state_hash: decode_hex("pre_state_hash", &info.pre_state_hash)?,
             post_state_hash: decode_hex("post_state_hash", &info.post_state_hash)?,

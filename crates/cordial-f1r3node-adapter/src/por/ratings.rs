@@ -203,6 +203,7 @@ pub fn build_finalized_checkpoint_rating_batch(
     config: &PorConfig,
     private_key: &[u8],
 ) -> Result<RatingBatch, PorRatingError> {
+    cordial_por::validate_checkpoint_rater(&checkpoint.rating_source(), rater, state)?;
     let admitted = admit_checkpoint_block_production_interactions(
         blocklace, output, checkpoint, rater, state,
     )?;

@@ -117,6 +117,7 @@ pub fn penalty_events_commitment(
     payload.extend_from_slice(&round.to_be_bytes());
     put_len(&mut payload, equivocations.len())?;
     for event in equivocations {
+        event.validate_authorization(round)?;
         if !seen.insert(&event.offender)
             || event.offender.0.len() > MAX_REPUTATION_BLOCK_NODE_ID_LEN
             || event.evidence.is_empty()
