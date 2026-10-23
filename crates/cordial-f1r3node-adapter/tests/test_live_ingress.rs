@@ -11,7 +11,7 @@ use cordial_f1r3node_adapter::shard_conf::CasperShardConf;
 use cordial_f1r3node_adapter::shared_ordered_output::ReadOrderedOutput;
 use cordial_miners_core::Block;
 use cordial_miners_core::consensus::is_weighted_supermajority;
-use cordial_miners_core::crypto::{hash_content, sign};
+use cordial_miners_core::crypto::{block_hash, sign};
 use cordial_miners_core::execution::{BlockState, CordialBlockPayload};
 use cordial_miners_core::types::{BlockContent, BlockIdentity, NodeId};
 use cordial_por::{PorError, ReputationState};
@@ -1014,7 +1014,7 @@ fn build_test_block_with_predecessors(
         payload: payload.to_bytes(),
         predecessors,
     };
-    let content_hash = hash_content(&content);
+    let content_hash = block_hash(&creator, &content);
     let signature = sign(&content_hash, signing_key);
     Block {
         identity: BlockIdentity {
@@ -1106,11 +1106,12 @@ fn trusted_ingress_correlates_deploys_in_legacy_and_versioned_payloads() {
             payload: payload.to_bytes(),
             predecessors: HashSet::new(),
         };
-        let hash = hash_content(&content);
+        let creator = NodeId(test_public_key(&signing_key));
+        let hash = block_hash(&creator, &content);
         let block = Block {
             identity: BlockIdentity {
                 content_hash: hash,
-                creator: NodeId(test_public_key(&signing_key)),
+                creator,
                 signature: sign(&hash, &signing_key),
             },
             content,

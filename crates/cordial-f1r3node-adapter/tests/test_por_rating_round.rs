@@ -586,11 +586,12 @@ fn signed_evidence_block(seed: u8, payload: Vec<u8>) -> Block {
         payload,
         predecessors: HashSet::new(),
     };
-    let content_hash = cordial_miners_core::crypto::hash_content(&content);
+    let creator = node(seed);
+    let content_hash = cordial_miners_core::crypto::block_hash(&creator, &content);
     Block {
         identity: BlockIdentity {
             content_hash,
-            creator: node(seed),
+            creator,
             signature: cordial_miners_core::crypto::sign(&content_hash, &private_key(seed)),
         },
         content,

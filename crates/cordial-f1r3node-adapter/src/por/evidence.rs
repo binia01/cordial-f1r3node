@@ -120,7 +120,8 @@ impl EquivocationAuthorizationPolicy for FinalizedEquivocationAuthorization<'_> 
                     .copied()
                     .unwrap_or(0)
                     == 0
-                || crypto::hash_content(&block.content) != block.identity.content_hash
+                || crypto::block_hash(&block.identity.creator, &block.content)
+                    != block.identity.content_hash
                 || !crypto::verify(
                     &block.identity.content_hash,
                     &block.identity.creator.0,

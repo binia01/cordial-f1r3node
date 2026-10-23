@@ -61,11 +61,12 @@ fn proof(id: u8, tag: u8) -> VerifiedEquivocationEvidence {
             payload: vec![tag, branch],
             predecessors: HashSet::new(),
         };
-        let content_hash = crypto::hash_content(&content);
+        let creator = node(id);
+        let content_hash = crypto::block_hash(&creator, &content);
         Block {
             identity: BlockIdentity {
                 content_hash,
-                creator: node(id),
+                creator,
                 signature: crypto::sign(&content_hash, &keys()[usize::from(id - 1)].1),
             },
             content,
@@ -904,11 +905,12 @@ fn unrelated_evidence_rounds_do_not_inflate_correlated_slashing() {
         payload: vec![9],
         predecessors: HashSet::new(),
     };
-    let parent_hash = crypto::hash_content(&parent_content);
+    let parent_creator = node(8);
+    let parent_hash = crypto::block_hash(&parent_creator, &parent_content);
     let parent = Block {
         identity: BlockIdentity {
             content_hash: parent_hash,
-            creator: node(8),
+            creator: parent_creator,
             signature: crypto::sign(&parent_hash, &keys()[7].1),
         },
         content: parent_content,
@@ -921,11 +923,12 @@ fn unrelated_evidence_rounds_do_not_inflate_correlated_slashing() {
             payload: vec![branch],
             predecessors: HashSet::from([parent.identity.clone()]),
         };
-        let content_hash = crypto::hash_content(&content);
+        let creator = node(2);
+        let content_hash = crypto::block_hash(&creator, &content);
         Block {
             identity: BlockIdentity {
                 content_hash,
-                creator: node(2),
+                creator,
                 signature: crypto::sign(&content_hash, &keys()[1].1),
             },
             content,

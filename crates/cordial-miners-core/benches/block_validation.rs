@@ -47,7 +47,7 @@ fn make_block(creator: &NodeId, tag: u64, predecessors: HashSet<BlockIdentity>) 
         payload: tag.to_le_bytes().to_vec(),
         predecessors,
     };
-    let content_hash = cordial_miners_core::crypto::hash_content(&content);
+    let content_hash = cordial_miners_core::crypto::block_hash(creator, &content);
     Block {
         identity: BlockIdentity {
             content_hash,

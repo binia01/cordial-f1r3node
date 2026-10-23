@@ -106,7 +106,9 @@ pub fn verify_equivocation_evidence(
         if block.identity.creator != raw.validator {
             return Err(Error::WrongCreator);
         }
-        if crypto::hash_content(&block.content) != block.identity.content_hash {
+        if crypto::block_hash(&block.identity.creator, &block.content)
+            != block.identity.content_hash
+        {
             return Err(Error::InvalidHash);
         }
         if !crypto::verify(
@@ -165,7 +167,9 @@ fn complete_history(
         if rounds.contains_key(&identity) {
             continue;
         }
-        if crypto::hash_content(&current.content) != current.identity.content_hash {
+        if crypto::block_hash(&current.identity.creator, &current.content)
+            != current.identity.content_hash
+        {
             return Err(Error::InvalidHash);
         }
         if expanded {

@@ -10,7 +10,7 @@ use cordial_f1r3node_adapter::http_observer::{
 use cordial_f1r3node_adapter::live_ingress::LiveIngress;
 use cordial_f1r3node_adapter::shard_conf::CasperShardConf;
 use cordial_miners_core::Block;
-use cordial_miners_core::crypto::{hash_content, sign};
+use cordial_miners_core::crypto::{block_hash, sign};
 use cordial_miners_core::execution::{BlockState, CordialBlockPayload};
 use cordial_miners_core::types::{BlockContent, BlockIdentity, NodeId};
 
@@ -285,7 +285,7 @@ fn build_test_block_message_with_state(
     };
 
     // Cordial content hash — used for the signature.
-    let content_hash = hash_content(&content);
+    let content_hash = block_hash(&NodeId(creator.to_vec()), &content);
     let signature = sign(&content_hash, signing_key);
 
     // Build the message with a placeholder block_hash first so we can run

@@ -250,7 +250,7 @@ fn genesis_has_block_number_zero() {
 fn chain_of_typed_blocks() {
     let verifier = MockVerifier;
     use cordial_miners_core::blocklace::Blocklace;
-    use cordial_miners_core::crypto::hash_content;
+    use cordial_miners_core::crypto::block_hash;
 
     let mut bl = Blocklace::new();
     let bonds = sample_bonds();
@@ -263,7 +263,7 @@ fn chain_of_typed_blocks() {
     };
     let genesis = Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&genesis_content),
+            content_hash: block_hash(&node(1), &genesis_content),
             creator: node(1),
             signature: vec![],
         },
@@ -294,7 +294,7 @@ fn chain_of_typed_blocks() {
     };
     let b1 = Block {
         identity: BlockIdentity {
-            content_hash: hash_content(&b1_content),
+            content_hash: block_hash(&node(2), &b1_content),
             creator: node(2),
             signature: vec![],
         },

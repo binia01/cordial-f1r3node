@@ -25,11 +25,12 @@ fn block(seed: u8, tag: u8, predecessors: HashSet<BlockIdentity>) -> Block {
         payload: vec![tag],
         predecessors,
     };
-    let content_hash = crypto::hash_content(&content);
+    let creator = node(seed);
+    let content_hash = crypto::block_hash(&creator, &content);
     Block {
         identity: BlockIdentity {
             content_hash,
-            creator: node(seed),
+            creator,
             signature: crypto::sign(&content_hash, &[seed; 32]),
         },
         content,
