@@ -60,6 +60,7 @@ fn make_block(
 
 fn simple_payload(block_number: u64, bonds: Vec<CmBond>) -> CordialBlockPayload {
     CordialBlockPayload {
+        por_authorizations: vec![],
         state: BlockState {
             pre_state_hash: vec![0x00; 32],
             post_state_hash: vec![block_number as u8; 32],

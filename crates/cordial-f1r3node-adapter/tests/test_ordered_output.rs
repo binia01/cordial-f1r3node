@@ -55,6 +55,7 @@ fn shard_conf() -> CasperShardConf {
 
 fn payload(block_number: u64, state_tag: u8) -> CordialBlockPayload {
     CordialBlockPayload {
+        por_authorizations: vec![],
         state: BlockState {
             pre_state_hash: vec![state_tag; 32],
             post_state_hash: vec![state_tag.wrapping_add(1); 32],

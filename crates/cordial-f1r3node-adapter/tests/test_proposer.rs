@@ -107,6 +107,7 @@ fn bonds(entries: &[(u8, u64)]) -> HashMap<NodeId, u64> {
 
 fn simple_payload(block_number: u64, post_byte: u8) -> CordialBlockPayload {
     CordialBlockPayload {
+        por_authorizations: vec![],
         state: cordial_miners_core::execution::BlockState {
             pre_state_hash: if block_number == 0 {
                 vec![]
@@ -795,4 +796,101 @@ fn two_validators_proposing_in_idle_round_get_distinct_native_proposals() {
     // But because of format v3 creator-binding, their native identities are distinct
     assert_ne!(b1.identity.creator, b2.identity.creator);
     assert_ne!(b1.identity.content_hash, b2.identity.content_hash);
+}
+
+#[test]
+fn proposer_carries_por_authorizations_through_block_translation() {
+    use cordial_f1r3node_adapter::block_translation::{block_to_message, message_to_block};
+    use cordial_miners_core::consensus::{
+        CordialEquivocationEvidence, verify_equivocation_evidence,
+    };
+    let blocklace = Blocklace::new();
+    let key = test_signing_key(8);
+    let offender = NodeId(test_public_key(&key));
+    let blocks = [1, 2].map(|tag| {
+        let content = BlockContent {
+            payload: vec![tag],
+            predecessors: HashSet::new(),
+        };
+        let content_hash = block_hash(&offender, &content);
+        Block {
+            identity: BlockIdentity {
+                content_hash,
+                creator: offender.clone(),
+                signature: cordial_miners_core::crypto::sign(&content_hash, &key),
+            },
+            content,
+        }
+    });
+    let proof = verify_equivocation_evidence(
+        &CordialEquivocationEvidence::new(offender, 0, blocks.to_vec()),
+        &blocklace,
+    )
+    .unwrap();
+    let context = cordial_por::EquivocationAuthorizationContext {
+        shard_id: b"root".to_vec(),
+        source_finalized_wave: 0,
+        round: 1,
+    };
+    let expected = cordial_por::equivocation_authorization_payload(&context, &proof).unwrap();
+    let proposer_key = test_signing_key(9);
+    let creator = NodeId(test_public_key(&proposer_key));
+    let mut proposer = build_proposer(
+        creator.clone(),
+        HashMap::from([(creator, 100)]),
+        MockRuntime::permissive(),
+        Secp256k1BlockSigner::new(proposer_key),
+        RecordingBroadcaster::new(),
+        true,
+    );
+    proposer
+        .queue_por_equivocation_authorization(context.clone(), &proof)
+        .unwrap();
+    proposer
+        .queue_por_equivocation_authorization(context, &proof)
+        .unwrap();
+    let checkpoint_expected =
+        cordial_por::checkpoint_equivocation_authorization_payload(b"root", 2, &proof).unwrap();
+    proposer
+        .queue_por_checkpoint_equivocation_authorization(b"root", 2, &proof)
+        .unwrap();
+    proposer
+        .queue_por_checkpoint_equivocation_authorization(b"root", 2, &proof)
+        .unwrap();
+    let block = proposer
+        .propose_at_time(
+            &blocklace,
+            &DeployPool::new(DeployPoolConfig::default()),
+            1000,
+        )
+        .unwrap();
+    let payload = CordialBlockPayload::from_bytes(&block.content.payload).unwrap();
+    assert_eq!(payload.por_authorizations.len(), 2);
+    assert_eq!(payload.por_authorizations[0].message, expected);
+    assert_eq!(payload.por_authorizations[1].message, checkpoint_expected);
+    assert_eq!(payload.por_authorizations[1].source_finalized_wave, 0);
+    assert_eq!(payload.por_authorizations[1].round, 2);
+    assert!(!payload.system_deploys.is_empty());
+    let message = block_to_message(&block, "root").unwrap();
+    assert!(!message.body.extra_bytes.is_empty());
+    let restored = message_to_block(&message).unwrap();
+    assert_eq!(restored, block);
+    assert!(cordial_miners_core::crypto::verify(
+        &restored.identity.content_hash,
+        &restored.identity.creator.0,
+        &restored.identity.signature
+    ));
+    let next = proposer
+        .propose_at_time(
+            &blocklace,
+            &DeployPool::new(DeployPoolConfig::default()),
+            1001,
+        )
+        .unwrap();
+    assert!(
+        CordialBlockPayload::from_bytes(&next.content.payload)
+            .unwrap()
+            .por_authorizations
+            .is_empty()
+    );
 }

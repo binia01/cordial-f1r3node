@@ -268,6 +268,7 @@ fn make_block_with_real_hash(
     deploys: Vec<SignedDeploy>,
 ) -> Block {
     let payload = CordialBlockPayload {
+        por_authorizations: vec![],
         state: BlockState {
             pre_state_hash: vec![tag_sig; 32],
             post_state_hash: vec![tag_sig; 32],

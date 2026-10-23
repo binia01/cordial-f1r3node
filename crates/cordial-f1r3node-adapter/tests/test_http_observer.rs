@@ -255,6 +255,7 @@ fn build_test_block_message_with_state(
         .collect();
 
     let payload = CordialBlockPayload {
+        por_authorizations: vec![],
         state: BlockState {
             pre_state_hash: vec![state_tag; 32],
             post_state_hash: vec![state_tag.wrapping_add(1); 32],

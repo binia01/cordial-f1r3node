@@ -111,7 +111,7 @@ The cryptographic identity of a block: `i = signedhash((v, P), k_p)`.
 
 | Field          | Type       | Description                                |
 |----------------|------------|--------------------------------------------|
-| `content_hash` | `[u8; 32]` | Blake2b-256 hash of the serialized BlockContent (default) |
+| `content_hash` | `[u8; 32]` | Format-v3 Blake2b-256 hash of the domain, creator, and serialized `BlockContent` |
 | `creator`      | `NodeId`   | The node that signed this block            |
 | `signature`    | `Vec<u8>`  | `sign(content_hash, creator_private_key)`  |
 

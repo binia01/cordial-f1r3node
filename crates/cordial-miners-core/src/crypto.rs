@@ -158,8 +158,8 @@ pub const BLOCK_HASH_DOMAIN: &[u8] = b"cordial-block-hash-v3";
 /// u64_le(len(payload)) ‖ payload ‖ u64_le(#preds) ‖ preds…`, where each
 /// predecessor is `content_hash ‖ u64_le(len(creator)) ‖ creator`, sorted by
 /// `(content_hash, creator)`. Predecessor signatures are excluded (see v2).
-/// Including the creator means two validators can never produce the same hash
-/// for otherwise identical content.
+/// Absent a cryptographic collision, including the creator makes otherwise
+/// identical content from two validators produce different hashes.
 pub fn block_hash_ext(creator: &NodeId, content: &BlockContent, hasher: &dyn Hasher) -> [u8; 32] {
     let mut buf = Vec::new();
     buf.extend_from_slice(BLOCK_HASH_DOMAIN);

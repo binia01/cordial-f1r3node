@@ -46,11 +46,11 @@
 //!
 //! Under format v3 (`block_hash`), native block hashes are domain-separated with
 //! `cordial-block-hash-v3` and commit to both the creator `NodeId` (length-prefixed)
-//! and the block content. This guarantees that blocks created by different
-//! validators with identical content (e.g. idle rounds with empty payloads and
-//! the same predecessors) produce distinct native block hashes. Consequently,
-//! snapshot indices (`dag_set`, `block_number_map`, `height_map`, and `child_map`)
-//! never collapse distinct blocks into a single entry.
+//! and the block content. Absent a cryptographic collision, blocks created by
+//! different validators with identical content (e.g. idle rounds with empty
+//! payloads and the same predecessors) therefore have distinct native hashes.
+//! Consequently, snapshot indices (`dag_set`, `block_number_map`, `height_map`,
+//! and `child_map`) never collapse distinct blocks into a single entry.
 //!
 //!
 //! ## Single-validator fork awareness is shared across seams
