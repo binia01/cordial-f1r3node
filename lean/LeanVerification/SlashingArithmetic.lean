@@ -27,7 +27,7 @@ structure SlashingConfig where
   deriving DecidableEq, Repr
 
 /-- Preconditions validated by Rust before slashing arithmetic is evaluated. -/
-def SlashingConfig.WellFormed (config : SlashingConfig) : Prop :=
+abbrev SlashingConfig.WellFormed (config : SlashingConfig) : Prop :=
   0 < config.scale ∧
     config.correlationThreshold ≤ config.scale ∧
     config.basePenalty ≤ config.scale ∧
@@ -188,5 +188,194 @@ example : retainedReputation defaultSlashingConfig 1_000_000_000 250_000_000 =
 
 example : retainedReputation defaultSlashingConfig 10 250_000_000 = 7 := by
   native_decide
+
+/-! ## Checked fixed-width refinement -/
+
+/-- Largest value representable by Rust's `u64`. -/
+def u64Max : Nat := 2 ^ 64 - 1
+
+/-- Largest value representable by Rust's `u128`. -/
+def u128Max : Nat := 2 ^ 128 - 1
+
+/-- Every relevant configuration value is represented by a Rust `u64`. -/
+abbrev SlashingConfig.FitsU64 (config : SlashingConfig) : Prop :=
+  config.scale ≤ u64Max ∧
+    config.correlationThreshold ≤ u64Max ∧
+    config.basePenalty ≤ u64Max ∧
+    config.fullSlash ≤ u64Max
+
+/-- Observable error classes of the Rust arithmetic. -/
+inductive SlashingArithmeticError where
+  | invalidConfiguration
+  | overflow
+  deriving DecidableEq, Repr
+
+/-- Model `u128::checked_mul` using unbounded naturals plus an explicit bound. -/
+def checkedMulU128 (left right : Nat) : Except SlashingArithmeticError Nat :=
+  if left * right ≤ u128Max then
+    .ok (left * right)
+  else
+    .error .overflow
+
+/-- Model conversion of an unbounded result back to Rust's reputation `u64`. -/
+def checkedCastU64 (value : Nat) : Except SlashingArithmeticError Nat :=
+  if value ≤ u64Max then .ok value else .error .overflow
+
+/-- Validate exactly the relevant slashing fields and their Rust widths. -/
+def validateSlashingConfig
+    (config : SlashingConfig) : Except SlashingArithmeticError Unit :=
+  if config.WellFormed ∧ config.FitsU64 then
+    .ok ()
+  else
+    .error .invalidConfiguration
+
+/-- Checked executable model of `compute_slash_penalty_wide`.
+
+The two weights model `u128` inputs because the transition aggregates active
+reputation into wide intermediates before selecting a tier.
+-/
+def checkedSelectSlashPenalty
+    (config : SlashingConfig) (equivocatingWeight totalWeight : Nat) :
+    Except SlashingArithmeticError Nat := do
+  validateSlashingConfig config
+  if u128Max < equivocatingWeight ∨ u128Max < totalWeight then
+    throw .overflow
+  if totalWeight = 0 ∨ totalWeight < equivocatingWeight then
+    throw .invalidConfiguration
+  let equivocatingProduct ← checkedMulU128 equivocatingWeight config.scale
+  let thresholdProduct ← checkedMulU128 totalWeight config.correlationThreshold
+  if equivocatingProduct ≤ thresholdProduct then
+    pure config.basePenalty
+  else
+    pure config.fullSlash
+
+/-- Checked executable model of `apply_slash_to_reputation`. -/
+def checkedRetainedReputation
+    (config : SlashingConfig) (oldWeight penalty : Nat) :
+    Except SlashingArithmeticError Nat := do
+  validateSlashingConfig config
+  if u64Max < oldWeight ∨ u64Max < penalty then
+    throw .overflow
+  if config.scale < penalty then
+    throw .invalidConfiguration
+  let product ← checkedMulU128 oldWeight (config.scale - penalty)
+  checkedCastU64 (product / config.scale)
+
+theorem checkedMulU128_eq_ok
+    (left right : Nat) (hProduct : left * right ≤ u128Max) :
+    checkedMulU128 left right = .ok (left * right) := by
+  simp [checkedMulU128, hProduct]
+
+theorem checkedCastU64_eq_ok (value : Nat) (hValue : value ≤ u64Max) :
+    checkedCastU64 value = .ok value := by
+  simp [checkedCastU64, hValue]
+
+/-- Whenever all Rust preconditions and intermediate bounds hold, the checked
+tier selector returns the pure mathematical result. -/
+theorem checkedSelectSlashPenalty_refines
+    (config : SlashingConfig) (equivocatingWeight totalWeight : Nat)
+    (hConfig : config.WellFormed) (hConfigBound : config.FitsU64)
+    (hEquivocatingBound : equivocatingWeight ≤ u128Max)
+    (hTotalBound : totalWeight ≤ u128Max)
+    (hTotalPositive : 0 < totalWeight)
+    (hWeightOrder : equivocatingWeight ≤ totalWeight)
+    (hEquivocatingProduct : equivocatingWeight * config.scale ≤ u128Max)
+    (hThresholdProduct : totalWeight * config.correlationThreshold ≤ u128Max) :
+    checkedSelectSlashPenalty config equivocatingWeight totalWeight =
+      .ok (selectSlashPenalty config equivocatingWeight totalWeight) := by
+  have hValidate : validateSlashingConfig config = .ok () := by
+    simp [validateSlashingConfig, hConfig, hConfigBound]
+  have hWidths : ¬(u128Max < equivocatingWeight ∨ u128Max < totalWeight) := by
+    omega
+  have hWeights : ¬(totalWeight = 0 ∨ totalWeight < equivocatingWeight) := by
+    omega
+  simp [checkedSelectSlashPenalty, hValidate, hWidths, hWeights,
+    checkedMulU128, hEquivocatingProduct, hThresholdProduct,
+    selectSlashPenalty, Bind.bind, Except.bind]
+  change
+    (if equivocatingWeight * config.scale ≤ totalWeight * config.correlationThreshold then
+      Except.ok config.basePenalty else Except.ok config.fullSlash) = _
+  by_cases hTier :
+      equivocatingWeight * config.scale ≤ totalWeight * config.correlationThreshold <;>
+    simp [hTier]
+
+/-- Whenever all Rust preconditions and bounds hold, checked penalty
+application returns the pure floor-divided mathematical result. -/
+theorem checkedRetainedReputation_refines
+    (config : SlashingConfig) (oldWeight penalty : Nat)
+    (hConfig : config.WellFormed) (hConfigBound : config.FitsU64)
+    (hOldBound : oldWeight ≤ u64Max) (hPenaltyBound : penalty ≤ u64Max)
+    (hPenalty : penalty ≤ config.scale)
+    (hProduct : oldWeight * (config.scale - penalty) ≤ u128Max) :
+    checkedRetainedReputation config oldWeight penalty =
+      .ok (retainedReputation config oldWeight penalty) := by
+  have hResultBound :
+      oldWeight * (config.scale - penalty) / config.scale ≤ u64Max :=
+    le_trans (retainedReputation_le config oldWeight penalty hPenalty) hOldBound
+  have hValidate : validateSlashingConfig config = .ok () := by
+    simp [validateSlashingConfig, hConfig, hConfigBound]
+  have hWidths : ¬(u64Max < oldWeight ∨ u64Max < penalty) := by omega
+  have hPenaltyOrder : ¬config.scale < penalty := by omega
+  simp [checkedRetainedReputation, hValidate, hWidths, hPenaltyOrder,
+    checkedMulU128, hProduct, checkedCastU64, hResultBound,
+    retainedReputation, Bind.bind, Except.bind]
+
+/-! ## Executable boundary cases -/
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 0 1_000 =
+    .ok 250_000_000 := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 29 100 =
+    .ok 250_000_000 := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 30 100 =
+    .ok 250_000_000 := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 3_000_000_001 10_000_000_000 =
+    .ok 1_000_000_000 := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 100 100 =
+    .ok 1_000_000_000 := by native_decide
+
+example : checkedRetainedReputation defaultSlashingConfig 10 250_000_000 =
+    .ok 7 := by native_decide
+
+example : checkedRetainedReputation defaultSlashingConfig 0 250_000_000 =
+    .ok 0 := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 0 0 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig 2 1 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedSelectSlashPenalty { defaultSlashingConfig with scale := 0 } 1 1 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedSelectSlashPenalty
+    { defaultSlashingConfig with correlationThreshold := 1_000_000_001 } 1 10 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedSelectSlashPenalty
+    { defaultSlashingConfig with basePenalty := 1_000_000_001 } 1 10 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedSelectSlashPenalty
+    { defaultSlashingConfig with fullSlash := 999_999_999 } 1 10 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedRetainedReputation defaultSlashingConfig 100 1_000_000_001 =
+    .error .invalidConfiguration := by native_decide
+
+example : checkedMulU128 u128Max 2 = .error .overflow := by native_decide
+
+example : checkedSelectSlashPenalty defaultSlashingConfig u128Max u128Max =
+    .error .overflow := by native_decide
+
+/-- Maximum `u64` inputs fit exactly in the `u128` intermediate, as in Rust. -/
+example : checkedRetainedReputation
+    { scale := u64Max, correlationThreshold := 0, basePenalty := 0,
+      fullSlash := u64Max }
+    u64Max 0 = .ok u64Max := by native_decide
 
 end CordialMiners
