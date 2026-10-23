@@ -162,6 +162,12 @@ claiming host punishment or host-runtime replay:
   slashing, permanent exclusion, persistence, fresh-key state registration,
   signed rating rounds, deterministic replay, and atomic rejection of forged
   penalty results or missing excluded entries even with recomputed commitments.
+  The weight assertions distinguish the two exports: `reputation_weights()`
+  omits permanently ejected keys, while `authorized_validator_weights()` keeps
+  an ejected key with explicit zero weight when it is included in the supplied
+  Cordial-authorized validator set. The audited `ReputationBlock` still includes
+  the excluded key's zero-reputation entry; omission from the active weight
+  export does not permit omission from the committed reputation state.
   Fresh-key registration assumes an external lifecycle supplies its starting
   reputation; it does not authorize a transfer, consume the old retained balance,
   or automatically admit the new key into Cordial's authorized validator set.
