@@ -171,8 +171,11 @@ claiming host punishment or host-runtime replay:
   Fresh-key registration assumes an external lifecycle supplies its starting
   reputation; it does not authorize a transfer, consume the old retained balance,
   or automatically admit the new key into Cordial's authorized validator set.
-  The coordinator supplies agreed penalty events and does not implement host
-  evidence finalization, authorization, or runtime punishment.
+  The coordinator uses the core's strict evidence verifier and
+  `EquivocationPenalty::authorize()` with an explicit fixture policy that approves
+  only the exact verified proof and PoR context supplied by the test. This
+  exercises authenticated penalty inputs without implementing production
+  finalization, host authorization, or runtime punishment.
 
 Run from the repository root:
 

@@ -2,7 +2,8 @@
 //!
 //! Host authorization/execution and capital transfers are outside this harness.
 //! Its formatter uses synthetic host metadata only to inspect prepared requests;
-//! a test coordinator supplies the agreed penalty events to the real PoR APIs.
+//! a test coordinator verifies the prepared proofs and authorizes them with an
+//! explicit fixture policy before supplying penalty events to the real PoR APIs.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -21,7 +22,8 @@ use cordial_f1r3node_adapter::tiered_slashing::{
 };
 use cordial_miners_core::consensus::{
     CordialEquivocationEvidence, CordialEvidencePool, EvidencePool, InvalidBlock, ValidationConfig,
-    record_rejected_equivocation, validate_block,
+    VerifiedEquivocationEvidence, record_rejected_equivocation, validate_block,
+    verify_equivocation_evidence,
 };
 use cordial_miners_core::crypto::CryptoVerifier;
 use cordial_miners_core::execution::{
@@ -30,9 +32,10 @@ use cordial_miners_core::execution::{
 };
 use cordial_miners_core::{Block, BlockContent, BlockIdentity, Blocklace, NodeId};
 use cordial_por::{
-    EquivocationPenalty, InteractionEvidence, InteractionKind, PorConfig, PorError, RatingRecord,
-    ReputationBlock, ReputationBlockContext, ReputationEntry, ReputationPenaltyEvents,
-    ReputationState, ReputationVector, admit_interaction_evidence, authorized_validator_weights,
+    EquivocationAuthorizationContext, EquivocationAuthorizationPolicy, EquivocationPenalty,
+    InteractionEvidence, InteractionKind, PorConfig, PorError, RatingRecord, ReputationBlock,
+    ReputationBlockContext, ReputationEntry, ReputationPenaltyEvents, ReputationState,
+    ReputationVector, admit_interaction_evidence, authorized_validator_weights,
     build_reputation_block_with_penalties, decode_reputation_state_snapshot,
     encode_reputation_state_snapshot, replay_reputation_transition,
     replay_reputation_transition_with_penalties, reputation_list_commitment, reputation_weights,
@@ -177,6 +180,29 @@ struct SlashRound {
     events: ReputationPenaltyEvents,
 }
 
+// Approves only the coordinator's exact verified proof and context. This fixture
+// policy does not establish production finalization or host authorization.
+struct FixtureAuthorization<'a> {
+    context: &'a EquivocationAuthorizationContext,
+    proof: &'a VerifiedEquivocationEvidence,
+}
+
+impl EquivocationAuthorizationPolicy for FixtureAuthorization<'_> {
+    fn authorize(
+        &self,
+        context: &EquivocationAuthorizationContext,
+        proof: &VerifiedEquivocationEvidence,
+    ) -> Result<(), PorError> {
+        if context == self.context && proof == self.proof {
+            Ok(())
+        } else {
+            Err(PorError::InvalidPenaltyEvents(
+                "proof or context was not approved by the fixture coordinator".into(),
+            ))
+        }
+    }
+}
+
 impl Fixture {
     fn new(offenders: &[u8]) -> Self {
         let config = PorConfig::new(1000, INITIAL_REPUTATION);
@@ -197,6 +223,7 @@ impl Fixture {
             .collect::<Vec<_>>();
         let signed_block = |seed, tag| {
             let payload = CordialBlockPayload {
+                por_authorizations: vec![],
                 state: BlockState {
                     pre_state_hash: vec![],
                     post_state_hash: vec![tag; 32],
@@ -316,29 +343,24 @@ impl Fixture {
                 .map(|bytes| bincode::deserialize(bytes).unwrap())
                 .collect();
             assert_eq!(proofs, original[0].blocks);
-            for proof in proofs {
-                verifier()
-                    .verify_block(
-                        &proof.content,
-                        &proof.identity.signature,
-                        &proof.identity.creator,
-                    )
+            let proof = verify_equivocation_evidence(
+                &CordialEquivocationEvidence::new(validator.clone(), *round, proofs),
+                &self.blocklace,
+            )
+            .unwrap();
+            let authorization_context = EquivocationAuthorizationContext {
+                shard_id: b"root".to_vec(),
+                source_finalized_wave: FINALIZED_WAVE,
+                round: PENALTY_ROUND,
+            };
+            let policy = FixtureAuthorization {
+                context: &authorization_context,
+                proof: &proof,
+            };
+            let penalty =
+                EquivocationPenalty::authorize(&proof, authorization_context.clone(), &policy)
                     .unwrap();
-            }
-            // The fixture supplies agreed events; this is not a production
-            // authentication or finalization bridge from prepared host bytes.
-            assert!(
-                events
-                    .insert(
-                        validator.clone(),
-                        EquivocationPenalty {
-                            offender: validator.clone(),
-                            evidence: bincode::serialize(&evidence.conflicting_block_bytes)
-                                .unwrap(),
-                        }
-                    )
-                    .is_none()
-            );
+            assert!(events.insert(validator.clone(), penalty).is_none());
         }
         assert_eq!(
             events.keys().collect::<Vec<_>>(),
