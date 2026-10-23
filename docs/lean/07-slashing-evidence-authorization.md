@@ -84,11 +84,14 @@ and application round.
 - a separate authentication proof;
 - the bound offender and original offense round;
 - a distinct PoR penalty application round;
-- a proof that application is not before the offense;
 - the finalization or attestation decision;
-- a proof that the configured protocol policy authorizes the application.
+- a proof that the configured protocol policy authorizes the evidence in that
+  exact application round.
 
 Thus detection, authentication, and authorization remain independent facts.
+The model does not compare the two round numbers: Cordial depth and PoR round
+are separate coordinate systems, so a numeric ordering between them would be
+an undocumented assumption.
 
 ## Key theorems
 
@@ -143,32 +146,51 @@ The event-level offender is tied to both conflicting block creators.
 
 ```lean
 theorem authorizedEvent_applicationRound_bound ... :
-  event.offenseRound ≤ event.applicationRound ∧
-  event.evidence.offenseRound ≤ event.applicationRound
+  PenaltyApplicationAuthorized policy event.authorizationDecision
+    event.evidence event.applicationRound
 ```
 
-The PoR application round is distinct from, and cannot precede, the original
-offense round.
+The authorization proof names the exact PoR application round. It does not
+compare that round with the Cordial evidence depth.
 
-## Lean-to-Rust contract mapping
+## Lean-to-Rust contract mapping after the `dev` integration
 
-The table describes the contract Rust must eventually satisfy. It does not
-claim the current implementation already enforces every boundary.
+The updated Rust tree now has explicit verification and authorization layers.
+The table maps those concrete layers to the formal contract without claiming
+full conformance where the models intentionally differ.
 
 | Lean definition or theorem | Rust counterpart / obligation |
 |---|---|
-| `RawEquivocationEvidence` | `consensus::evidence::EquivocationEvidence` raw retained record |
-| `ValidEquivocationEvidence` | checks currently split across block validation, round depth, equivocation detection, and adapter evidence validation |
+| `RawEquivocationEvidence` | `CordialEquivocationEvidence`, the untrusted evidence-pool record |
+| `ValidEquivocationEvidence` | structural checks in `verify_equivocation_evidence`, plus the equal-depth condition described below |
 | `validEvidence_implies_equivocation` | `equivocation_blocks_at_round` / `all_equivocations` structural result |
-| `validEvidence_implies_equivocator` | offender indexing in `EvidencePool` must agree with the conflicting blocks' creator |
-| `validEvidence_round_bound` | `consensus::round::depth` and `EquivocationEvidence::round` correlation |
-| `EvidenceAuthenticated` | future verified host-content mapping plus `CryptoVerifier::verify_block` for both blocks |
-| `PenaltyAuthorizationDecision` | finalized host block or finalized PoR attestation used to authorize a penalty |
-| `AuthorizedPenaltyEvent` | future authenticated input to `ReputationPenaltyEvents` / tiered-slashing application |
-| `authorizedEvent_offender_bound` | formatter and host authorization must not accept an offender independent of the signed block creators |
-| `authorizedEvent_applicationRound_bound` | PoR transition scheduling must retain the original offense round separately from the application round |
+| `validEvidence_implies_equivocator` | verifier creator checks and evidence-pool offender indexing |
+| `validEvidence_round_bound` | `blockDepth` versus the claimed evidence round; Rust currently uses the minimum depth as described below |
+| `EvidenceAuthenticated` | sealed `VerifiedEquivocationEvidence`, constructible only through `verify_equivocation_evidence` |
+| `CryptographicVerificationAssumption` | Rust content-hash, Secp256k1 signature, creator, complete-ancestry, identity, and incomparability checks |
+| `PenaltyAuthorizationPolicy` | `EquivocationAuthorizationPolicy` and `CheckpointEquivocationAuthorizationPolicy` |
+| `PenaltyAuthorizationDecision` | trusted finalized Cordial output or finalized checkpoint-prefix authorization |
+| `AuthorizedPenaltyEvent` | `EquivocationPenalty` carrying its private `EquivocationAuthorization` capability |
+| `authorizedEvent_offender_bound` | `EquivocationPenalty::authorize` derives the offender from `VerifiedEquivocationEvidence` |
+| `authorizedEvent_applicationRound_bound` | the private capability binds `EquivocationAuthorizationContext.round` or the checkpoint source round |
 
-The production formatter currently rejects nonempty evidence when verified host
-metadata is unavailable. That fail-closed behavior is compatible with this
-contract; it does not yet implement the authentication and authorization proof
-objects modeled here.
+### Remaining conformance boundary
+
+The Lean issue defines a Cordial equivocation as two same-creator,
+incomparable blocks at the same depth. Rust's new verifier authenticates two or
+more same-creator, pairwise-incomparable blocks, but it intentionally accepts
+blocks at different depths and records their minimum depth as the evidence
+round. Such a Rust value satisfies the authentication boundary but does not, by
+itself, construct `ValidEquivocationEvidence` in this formal model.
+
+This distinction is now explicit rather than hidden behind the mapping table.
+Closing it requires a separate protocol decision: either restrict the Rust
+verifier to equal-depth pairs or deliberately broaden the formal definition.
+Issue #281 keeps the existing Lean `Equivocation` predicate and therefore takes
+the first interpretation as its contract.
+
+The merged implementation does satisfy the separation principle: decoding
+canonical bytes returns an unverified claim, only the verifier creates the
+sealed authenticated value, and authorization requires a separate trusted
+policy over finalized protocol output. Arbitrary nonempty evidence bytes cannot
+create the private penalty capability.

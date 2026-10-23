@@ -16,6 +16,10 @@ The cryptographic algorithm is intentionally outside the Lean model. Its sole
 trust assumption is `CryptographicVerificationAssumption.verifies`; in
 particular, authentication is never inferred from `proofMaterial` being
 nonempty (or from any other property of those bytes).
+
+Cordial depths and PoR application rounds are distinct coordinate systems.
+The model binds each to its source, but deliberately assumes no numeric ordering
+between them.
 -/
 
 import LeanVerification.Equivocation
@@ -122,7 +126,9 @@ An implementation may assert `verifies B evidence` only after checking that the
 supplied block contents map to the claimed identities and that both creators'
 signatures verify. Lean treats the result of that external cryptographic
 algorithm as an assumption; it does not model the algorithm and does not derive
-the result from the opaque `proofMaterial` bytes.
+the result from the opaque `proofMaterial` bytes. The concrete Rust counterpart
+is the sealed `VerifiedEquivocationEvidence` value returned only by
+`verify_equivocation_evidence`.
 -/
 structure CryptographicVerificationAssumption where
   verifies : Blocklace → RawEquivocationEvidence → Prop
@@ -162,8 +168,9 @@ def PenaltyApplicationAuthorized
 A penalty event that crossed all three boundaries: structural validation,
 cryptographic authentication, and protocol authorization.
 
-The offense round records when the equivocation occurred. `applicationRound`
-is deliberately separate and cannot precede the offense.
+The offense round records the Cordial depth where the equivocation occurred.
+`applicationRound` is deliberately separate: it is a PoR round bound by the
+authorization policy, not a value ordered against the Cordial depth.
 -/
 structure AuthorizedPenaltyEvent
     (B : Blocklace) (hV : ValidBlocklace B)
@@ -177,7 +184,6 @@ structure AuthorizedPenaltyEvent
   offenseRound : Nat
   offenseRoundBound : offenseRound = evidence.offenseRound
   applicationRound : Nat
-  offenseBeforeApplication : offenseRound ≤ applicationRound
   authorizationDecision : PenaltyAuthorizationDecision
   authorized :
     PenaltyApplicationAuthorized policy authorizationDecision evidence applicationRound
@@ -204,15 +210,14 @@ theorem authorizedEvent_offender_bound
   · simpa [event.offenderBound] using event.validEvidence.firstCreatorIsOffender
   · simpa [event.offenderBound] using event.validEvidence.secondCreatorIsOffender
 
-/-- An authorized penalty cannot be applied before its bound offense round. -/
+/-- The authorization decision binds this evidence to this exact PoR application round. -/
 theorem authorizedEvent_applicationRound_bound
     (B : Blocklace) (hV : ValidBlocklace B)
     (crypto : CryptographicVerificationAssumption)
     (policy : PenaltyAuthorizationPolicy)
     (event : AuthorizedPenaltyEvent B hV crypto policy) :
-    event.offenseRound ≤ event.applicationRound ∧
-      event.evidence.offenseRound ≤ event.applicationRound := by
-  exact ⟨event.offenseBeforeApplication,
-    event.offenseRoundBound ▸ event.offenseBeforeApplication⟩
+    PenaltyApplicationAuthorized policy event.authorizationDecision
+      event.evidence event.applicationRound :=
+  event.authorized
 
 end CordialMiners
