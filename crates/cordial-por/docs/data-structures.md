@@ -529,7 +529,9 @@ block requires its exact source prefix length and hash to match the locally
 finalized prefix. It then verifies that the new values preserve the exported
 finalized prefix, replaces only the values, and clears the weighted ordering
 cache. An incomplete checkpoint replay leaves activation pending; a conflicting
-prefix is rejected.
+prefix is rejected. When a new table would change an earlier final leader,
+the future-only epoch path seals the old-weight prefix and activates at a
+durable effective wave.
 
 ### Durable Activation Record
 
@@ -558,6 +560,12 @@ therefore binds the exact Cordial-supplied membership projection without making
 membership a PoR decision. The outer checksum is domain-separated with
 `"cordial-por:weight-activation-record:v2"`; malformed, non-canonical,
 oversized, unsupported, and corrupt records fail startup.
+
+Version 2 records do not contain an effective wave or a sealed output prefix.
+They restore the current single-table activation path; they cannot establish a
+shared future-only cutover between observers. The separate
+`<data_dir>/por/future-weight-epoch.bin` record binds the effective wave and
+sealed old-weight prefix for the current single-epoch prototype.
 
 `DurablePorState::activate_weights` enforces this ordering:
 

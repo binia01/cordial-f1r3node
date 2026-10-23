@@ -11,8 +11,9 @@ use cordial_f1r3node_adapter::{
     por::{
         CompletedPorRatingRound, DurablePorState, DurablePorStateError, PorFinalityTracker,
         PorRatingRoundCoordinator, PorRatingRoundCutoffPolicy, PorRuntime, PorRuntimeError,
-        PorWeightActivationOutcome, RatingEnvelopeBroadcaster,
-        close_checkpoint_rating_exchange_if_complete, finalized_prefix_checkpoint,
+        PorWeightActivationOutcome, PorWeightEpochPolicy, PorWeightEpochStore,
+        RatingEnvelopeBroadcaster, close_checkpoint_rating_exchange_if_complete,
+        finalized_prefix_checkpoint,
         rating_key::load_bonded_rating_key,
         stage_local_checkpoint_rating_batch,
         transport::{file_exchange::FileRatingExchange, outbox::RatingOutbox},
@@ -22,7 +23,9 @@ use cordial_f1r3node_adapter::{
     snapshot::CORDIAL_WAVELENGTH,
 };
 use cordial_miners_core::{
-    Block, BlockContent, BlockIdentity, Blocklace, NodeId, crypto::CryptoVerifier,
+    Block, BlockContent, BlockIdentity, Blocklace, NodeId,
+    consensus::{depth, wave_of_round},
+    crypto::CryptoVerifier,
 };
 use cordial_por::{PorConfig, ReputationState, authorized_validator_weights};
 use k256::ecdsa::SigningKey;
@@ -894,6 +897,163 @@ fn completed_checkpoint_commits_activates_and_recovers_from_live_finality() {
         restarted.ingress().bonds(),
         &HashMap::from([(validator, 100)])
     );
+}
+
+#[test]
+fn committed_future_epoch_preserves_prefix_and_recovers_after_replay() {
+    let directory = tempdir().unwrap();
+    let validators: Vec<_> = (1..=4).map(node).collect();
+    let mut initial = ReputationState::new(0);
+    for validator in &validators {
+        initial.set_reputation(validator.clone(), 100);
+    }
+    let ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        validators
+            .iter()
+            .cloned()
+            .map(|validator| (validator, 100))
+            .collect(),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut runtime = PorRuntime::open(
+        directory.path(),
+        initial.clone(),
+        ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+    let mut blocks = Vec::new();
+    let mut previous_layer: Vec<Block> = Vec::new();
+    let mut tag = 1u8;
+    for _round in 0..30 {
+        let predecessors: Vec<_> = previous_layer.iter().collect();
+        let mut layer = Vec::new();
+        for validator in &validators {
+            let next = raw_block(tag, validator, &predecessors);
+            runtime
+                .ingress_mut()
+                .ingest_trusted_block(next.clone())
+                .unwrap();
+            blocks.push(next.clone());
+            layer.push(next);
+            tag += 1;
+        }
+        previous_layer = layer;
+    }
+    let before = runtime.publish_finalized_output().unwrap();
+    let checkpoint = finalized_prefix_checkpoint(&before, 1).unwrap().unwrap();
+    let keys: Vec<_> = (1..=4)
+        .map(|seed| {
+            let path = directory.path().join(format!("validator-{seed}.key"));
+            fs::write(&path, hex::encode([seed; 32])).unwrap();
+            load_bonded_rating_key(&path, runtime.ingress().bonds()).unwrap()
+        })
+        .collect();
+    let outbox = RatingOutbox::open(directory.path()).unwrap();
+    let exchange = FileRatingExchange::open(&directory.path().join("exchange"), SHARD_ID).unwrap();
+    for key in &keys {
+        stage_local_checkpoint_rating_batch(
+            runtime.ingress().blocklace(),
+            &before,
+            &checkpoint,
+            runtime.state().state().unwrap(),
+            runtime.config(),
+            key,
+            &outbox,
+        )
+        .unwrap();
+    }
+    let authorized: HashSet<_> = validators.iter().cloned().collect();
+    for key in &keys[1..] {
+        close_checkpoint_rating_exchange_if_complete(
+            runtime.ingress().blocklace(),
+            &before,
+            &checkpoint,
+            runtime.state().state().unwrap(),
+            runtime.config(),
+            key,
+            &authorized,
+            &outbox,
+            &exchange,
+        )
+        .unwrap();
+    }
+    let completed = close_checkpoint_rating_exchange_if_complete(
+        runtime.ingress().blocklace(),
+        &before,
+        &checkpoint,
+        runtime.state().state().unwrap(),
+        runtime.config(),
+        &keys[0],
+        &authorized,
+        &outbox,
+        &exchange,
+    )
+    .unwrap()
+    .unwrap();
+    let source_wave = wave_of_round(
+        depth(runtime.ingress().blocklace(), &checkpoint.terminal_block).unwrap(),
+        WAVELENGTH,
+    )
+    .unwrap();
+    let boundary_wave = wave_of_round(
+        depth(
+            runtime.ingress().blocklace(),
+            before.anchor.as_ref().unwrap(),
+        )
+        .unwrap(),
+        WAVELENGTH,
+    )
+    .unwrap();
+    let policy = PorWeightEpochPolicy::new(boundary_wave + 1 - source_wave).unwrap();
+    runtime
+        .commit_completed_checkpoint_round_with_epoch(&completed, policy)
+        .unwrap();
+    let active = runtime.publish_finalized_output().unwrap();
+    assert!(active.blocks.starts_with(&before.blocks));
+    assert_eq!(runtime.active_future_epoch().unwrap().por_round(), 1);
+    assert!(!runtime.has_unactivated_committed_round().unwrap());
+    let active_weights = runtime.ingress().bonds().clone();
+    assert!(
+        PorWeightEpochStore::open(directory.path())
+            .unwrap()
+            .restore()
+            .unwrap()
+            .is_some()
+    );
+    drop(runtime);
+
+    let ingress = LiveIngress::with_consensus_view(
+        AcceptingAdapter,
+        validators
+            .into_iter()
+            .map(|validator| (validator, 7))
+            .collect(),
+        CasperShardConf::default(),
+        "root",
+    );
+    let mut restarted = PorRuntime::open(
+        directory.path(),
+        initial,
+        ingress,
+        PorConfig::default(),
+        SHARD_ID,
+        WAVELENGTH,
+    )
+    .unwrap();
+    assert!(restarted.publish_finalized_output().is_err());
+    for block in blocks {
+        restarted.ingress_mut().ingest_trusted_block(block).unwrap();
+    }
+    let recovered = restarted.publish_finalized_output().unwrap();
+    assert_eq!(recovered.blocks, active.blocks);
+    assert_eq!(recovered.anchor, active.anchor);
+    assert_eq!(restarted.ingress().bonds(), &active_weights);
+    assert!(!restarted.has_unactivated_committed_round().unwrap());
 }
 
 #[test]

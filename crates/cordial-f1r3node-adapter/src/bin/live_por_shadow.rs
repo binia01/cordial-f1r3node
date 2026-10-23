@@ -24,6 +24,9 @@ struct Args {
     /// Use finalized-prefix checkpoint rounds and v2 rating envelopes.
     #[arg(long)]
     checkpoint_ratings: bool,
+    /// Activate committed checkpoint weights at the fixed future wave.
+    #[arg(long)]
+    checkpoint_epoch_delay_waves: Option<u64>,
     #[arg(long)]
     data_dir: PathBuf,
     #[arg(long, default_value = "root")]
@@ -48,6 +51,7 @@ async fn main() -> Result<()> {
         rating_exchange_dir: args.rating_exchange_dir,
         commit_complete_ratings: args.commit_complete_ratings,
         checkpoint_ratings: args.checkpoint_ratings,
+        checkpoint_epoch_delay_waves: args.checkpoint_epoch_delay_waves,
         data_dir: args.data_dir,
         shard_id: args.shard_id,
         height_batch_size: args.height_batch_size,

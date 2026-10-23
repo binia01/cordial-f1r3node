@@ -9,6 +9,8 @@ pub mod checkpoint;
 mod checkpoint_evidence;
 pub mod checkpoint_ratings;
 pub mod collector;
+pub mod epoch_policy;
+pub mod epoch_record;
 pub mod evidence;
 pub mod finality;
 pub mod history;
@@ -39,6 +41,11 @@ pub use checkpoint_ratings::{
 pub use collector::{
     BlockProductionRatingCollector, CheckpointBlockProductionRatingCollector,
     PorRatingCollectorError,
+};
+pub use epoch_policy::{PorWeightEpochPolicy, PorWeightEpochPolicyError};
+pub use epoch_record::{
+    POR_WEIGHT_EPOCH_FILE_NAME, PorWeightEpochRecord, PorWeightEpochRecordError,
+    PorWeightEpochStore,
 };
 pub use evidence::FinalizedEquivocationAuthorization;
 pub use finality::{

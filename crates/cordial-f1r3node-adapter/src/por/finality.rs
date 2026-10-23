@@ -19,6 +19,7 @@ pub use cordial_por::POR_FINALIZED_BLOCKS_PER_CHECKPOINT;
 use cordial_por::{
     PorError, RatingSourceCheckpoint, ReputationRound, rating_round_from_finalized_wave,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::ordered_output::OrderedFinalizedOutput;
 
@@ -26,7 +27,7 @@ const POR_FINALIZED_PREFIX_HASH_DOMAIN: &[u8] = b"cordial-por:finalized-prefix:v
 
 /// A source checkpoint selected from a fixed position in Cordial's finalized
 /// block prefix. Its identity is independent of when an observer polls.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinalizedPrefixCheckpoint {
     pub por_round: ReputationRound,
     pub finalized_prefix_len: u64,
