@@ -91,6 +91,7 @@ pub(super) fn stage_completed_checkpoint_round(
     config: &PorConfig,
     shard_id: &[u8],
 ) -> Result<(ReputationState, AppliedPorReputationRound), PorError> {
+    completed.validate_preceding_state(state)?;
     completed.validate_complete_authorizations(shard_id)?;
     let source = completed.source();
     let previous = ReputationVector {

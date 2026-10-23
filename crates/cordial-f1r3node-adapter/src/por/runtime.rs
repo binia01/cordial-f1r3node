@@ -229,6 +229,9 @@ impl<A> PorRuntime<A> {
         &self,
         completed: CompletedCheckpointRatingRound,
     ) -> Result<CompletedCheckpointRatingRound, PorRuntimeError> {
+        completed
+            .validate_preceding_state(self.state.state()?)
+            .map_err(PorRuntimeError::PenaltyAuthorization)?;
         let output = self.ingress.ordered_output_reader().latest().ok_or(
             PorRuntimeError::CommittedCheckpointUnavailable {
                 round: completed.source().round,

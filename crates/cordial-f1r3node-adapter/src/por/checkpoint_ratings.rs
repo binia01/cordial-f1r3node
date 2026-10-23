@@ -136,5 +136,6 @@ pub fn close_checkpoint_rating_exchange_if_complete(
         super::checkpoint_evidence::finalized_checkpoint_authorizations(
             blocklace, output, checkpoint,
         )?,
+        state,
     )))
 }

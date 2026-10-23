@@ -8,8 +8,8 @@ use crate::ordered_output::OrderedFinalizedOutput;
 use cordial_miners_core::{
     Blocklace, NodeId,
     consensus::{
-        CordialEquivocationEvidence, VerifiedEquivocationEvidence, depth,
-        verify_equivocation_evidence,
+        CordialEquivocationEvidence, EvidenceVerificationError, VerifiedEquivocationEvidence,
+        depth, verify_equivocation_evidence,
     },
     crypto,
     execution::{CordialBlockPayload, PorEquivocationAuthorization},
@@ -17,7 +17,7 @@ use cordial_miners_core::{
 use cordial_por::{
     CheckpointEquivocationAuthorizationContext, CheckpointEquivocationAuthorizationPolicy,
     EquivocationPenalty, POR_CHECKPOINT_EQUIVOCATION_AUTHORIZATION_DOMAIN,
-    POR_FINALIZED_BLOCKS_PER_CHECKPOINT, PorError, ReputationPenaltyEvents,
+    POR_FINALIZED_BLOCKS_PER_CHECKPOINT, PorError, ReputationList, ReputationPenaltyEvents,
     checkpoint_equivocation_authorization_payload,
     decode_checkpoint_equivocation_authorization_payload, penalty_events_commitment,
 };
@@ -69,6 +69,7 @@ struct FinalizedCheckpointAuthorization<'a> {
     output: &'a OrderedFinalizedOutput,
     checkpoint: &'a FinalizedPrefixCheckpoint,
     membership: &'a HashMap<NodeId, u64>,
+    preceding_reputation: &'a ReputationList,
 }
 
 impl<'a> FinalizedCheckpointAuthorization<'a> {
@@ -83,9 +84,8 @@ impl<'a> FinalizedCheckpointAuthorization<'a> {
         {
             return Ok(None);
         }
-        // Deterministic handling of invalid claims (P1):
-        // Malformed carrier payloads and unverified equivocation proofs are discarded
-        // so that invalid claims in finalized blocks do not block checkpoint progress.
+        // Only definitive invalidity may be ignored. Missing local verification
+        // data must prevent completion rather than produce a different penalty set.
         let claim = match decode_checkpoint_equivocation_authorization_payload(
             &carrier.message,
             shard_id,
@@ -94,31 +94,57 @@ impl<'a> FinalizedCheckpointAuthorization<'a> {
             Ok(claim) => claim,
             Err(_) => return Ok(None),
         };
+        // Membership and ejection are protocol facts, not proof failures.
+        if !self.eligible_offender(&claim.validator) {
+            return Ok(None);
+        }
         let proof = match verify_equivocation_evidence(&claim, self.blocklace) {
             Ok(proof) => proof,
+            Err(EvidenceVerificationError::MissingHistory) => {
+                return Err(invalid(
+                    "equivocation verification requires unavailable ancestry",
+                ));
+            }
             Err(_) => return Ok(None),
         };
         let context = CheckpointEquivocationAuthorizationContext {
             shard_id: shard_id.to_vec(),
             source: self.checkpoint.rating_source(),
         };
-        self.authorize_checkpoint(&context, &proof)?;
+        if checkpoint_equivocation_authorization_payload(shard_id, context.source.round, &proof)?
+            != carrier.message
+            || !self.is_authorized(&context, &proof)?
+        {
+            return Ok(None);
+        }
         Ok(Some(claim))
     }
 }
 
-impl CheckpointEquivocationAuthorizationPolicy for FinalizedCheckpointAuthorization<'_> {
-    fn authorize_checkpoint(
+impl FinalizedCheckpointAuthorization<'_> {
+    fn eligible_offender(&self, offender: &NodeId) -> bool {
+        self.membership.contains_key(offender)
+            && self
+                .preceding_reputation
+                .entries
+                .iter()
+                .any(|entry| &entry.node_id == offender && !entry.is_excluded)
+    }
+
+    // False is a deterministic policy rejection. Errors represent unavailable
+    // local data or a violated source invariant and must prevent completion.
+    fn is_authorized(
         &self,
         context: &CheckpointEquivocationAuthorizationContext,
         proof: &VerifiedEquivocationEvidence,
-    ) -> Result<(), PorError> {
-        if context.source != self.checkpoint.rating_source()
-            || !self.membership.contains_key(proof.validator())
-        {
+    ) -> Result<bool, PorError> {
+        if context.source != self.checkpoint.rating_source() {
             return Err(invalid(
                 "invalid checkpoint authorization source or offender",
             ));
+        }
+        if !self.eligible_offender(proof.validator()) {
+            return Ok(false);
         }
         let expected = checkpoint_equivocation_authorization_payload(
             &context.shard_id,
@@ -154,25 +180,49 @@ impl CheckpointEquivocationAuthorizationPolicy for FinalizedCheckpointAuthorizat
                     &block.identity.signature,
                 )
             {
-                return Err(invalid("invalid checkpoint authorization publisher"));
+                continue;
             }
             let authorization_depth = depth(self.blocklace, &block.identity)
                 .ok_or_else(|| invalid("missing authorization ancestry"))?;
+            let mut too_new = false;
             for conflicting in proof.blocks() {
+                let mut content = conflicting.content.clone();
+                content.predecessors = content
+                    .predecessors
+                    .iter()
+                    .map(|id| id.consensus_identity())
+                    .collect();
                 let proof_depth = cordial_miners_core::consensus::round::candidate_depth(
                     self.blocklace,
-                    &conflicting.content,
+                    &content,
                 )
                 .ok_or_else(|| invalid("missing equivocation ancestry"))?;
                 if proof_depth > authorization_depth {
-                    return Err(invalid("proof is newer than its authorization block"));
+                    too_new = true;
+                    break;
                 }
             }
-            return Ok(());
+            if !too_new {
+                return Ok(true);
+            }
         }
-        Err(invalid(
-            "proof has no authorization in its target checkpoint window",
-        ))
+        Ok(false)
+    }
+}
+
+impl CheckpointEquivocationAuthorizationPolicy for FinalizedCheckpointAuthorization<'_> {
+    fn authorize_checkpoint(
+        &self,
+        context: &CheckpointEquivocationAuthorizationContext,
+        proof: &VerifiedEquivocationEvidence,
+    ) -> Result<(), PorError> {
+        if self.is_authorized(context, proof)? {
+            Ok(())
+        } else {
+            Err(invalid(
+                "proof has no eligible authorization in its target checkpoint",
+            ))
+        }
     }
 }
 
@@ -190,6 +240,7 @@ impl CompletedCheckpointRatingRound {
             output,
             checkpoint: self.checkpoint(),
             membership,
+            preceding_reputation: &self.preceding_reputation,
         };
         let mut raw = Vec::new();
         for carrier in self
@@ -219,6 +270,7 @@ impl CompletedCheckpointRatingRound {
             output,
             checkpoint: self.checkpoint(),
             membership,
+            preceding_reputation: &self.preceding_reputation,
         };
         // Re-extract from the admitting node's trusted DAG, including for an
         // empty submission. A caller's completed snapshot cannot hide carriers
@@ -264,11 +316,8 @@ impl CompletedCheckpointRatingRound {
                 round: context.source.round,
                 message: message.clone(),
             });
-            // Idempotent handling for already-ejected validators:
-            // Only active validators (weight > 0) receive penalty events.
-            if membership.get(proof.validator()).copied().unwrap_or(0) > 0 {
-                selected.insert(message, event);
-            }
+            // Authorization checks preceding-state exclusion, not weight.
+            selected.insert(message, event);
         }
 
         // Completeness check: caller-admitted authorizations must match
@@ -291,12 +340,16 @@ impl CompletedCheckpointRatingRound {
         penalty_events_commitment(events.round, Some(&events))?;
         self.penalties = Some(events);
         self.admitted_authorizations = admitted;
-        // Retain only valid authorizations for this shard to preserve completeness on audit.
-        self.finalized_authorizations = self
+        // Keep the original signed carrier set immutable for runtime reauthorization.
+        // Ignored claims are derived here; callers cannot omit valid claims by
+        // supplying their own filtering decisions.
+        self.ignored_authorizations = self
             .finalized_authorizations
-            .into_iter()
-            .filter(|carrier| carrier.shard_id != shard_id)
-            .chain(valid_authorizations)
+            .iter()
+            .filter(|carrier| {
+                carrier.shard_id == shard_id && !valid_authorizations.contains(*carrier)
+            })
+            .cloned()
             .collect();
         self.validate_complete_authorizations(shard_id)?;
         Ok(self)
