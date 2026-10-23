@@ -44,6 +44,7 @@ fn build_block(
 
 fn sample_payload() -> CordialBlockPayload {
     CordialBlockPayload {
+        por_authorizations: vec![],
         state: BlockState {
             pre_state_hash: vec![0x11; 32],
             post_state_hash: vec![0x22; 32],

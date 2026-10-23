@@ -77,7 +77,27 @@ impl FileRatingExchange {
         local_rater: &NodeId,
         authorized: &HashSet<NodeId>,
     ) -> Result<Vec<Vec<u8>>> {
+        self.read_checkpoint_peer_envelopes_for_eligible(
+            source,
+            local_rater,
+            authorized,
+            authorized,
+        )
+    }
+
+    /// Membership stays intact; preceding-state ejections determine who must rate.
+    pub fn read_checkpoint_peer_envelopes_for_eligible(
+        &self,
+        source: RatingSourceCheckpoint,
+        local_rater: &NodeId,
+        authorized: &HashSet<NodeId>,
+        eligible: &HashSet<NodeId>,
+    ) -> Result<Vec<Vec<u8>>> {
         source.validate()?;
+        ensure!(
+            eligible.is_subset(authorized),
+            "eligible raters must be authorized"
+        );
         ensure!(
             authorized.contains(local_rater),
             "local PoR exchange rater is not authorized"
@@ -108,7 +128,7 @@ impl FileRatingExchange {
                 authorized.contains(&rater),
                 "unauthorized PoR checkpoint exchange rater"
             );
-            if &rater == local_rater {
+            if &rater == local_rater || !eligible.contains(&rater) {
                 continue;
             }
             for envelope_entry in fs::read_dir(rater_entry.path())? {

@@ -88,6 +88,7 @@ pub fn build_reputation_block_with_penalties(
     penalties: Option<&crate::types::ReputationPenaltyEvents>,
 ) -> Result<ReputationBlock, PorError> {
     config.validate()?;
+    crate::evidence::validate_penalty_context(penalties, context)?;
     validate_shard_id(context.shard_id)?;
     let round = rating_round_from_finalized_wave(context.source_finalized_wave)?;
     if ratings.round != round {
@@ -140,9 +141,27 @@ pub fn build_checkpoint_reputation_block(
     reputation_list: ReputationList,
     config: &PorConfig,
 ) -> Result<ReputationBlock, PorError> {
+    build_checkpoint_reputation_block_with_penalties(
+        context,
+        ratings,
+        reputation_list,
+        config,
+        None,
+    )
+}
+
+/// Build a checkpoint block with authenticated, source-bound penalty events.
+pub fn build_checkpoint_reputation_block_with_penalties(
+    context: CheckpointReputationBlockContext<'_>,
+    ratings: &RatingBatch,
+    reputation_list: ReputationList,
+    config: &PorConfig,
+    penalties: Option<&crate::ReputationPenaltyEvents>,
+) -> Result<ReputationBlock, PorError> {
     config.validate()?;
     validate_shard_id(context.shard_id)?;
     context.source.validate()?;
+    crate::evidence::validate_checkpoint_penalty_context(penalties, context)?;
     let round = context.source.round;
     if ratings.round != round {
         return Err(PorError::InvalidRatingRound);
@@ -162,7 +181,7 @@ pub fn build_checkpoint_reputation_block(
             previous_reputation_hash,
             config_hash: config_commitment(config),
             ratings_hash: checkpoint_rating_batch_commitment(ratings, &context.source, config)?,
-            penalties_hash: penalty_events_commitment(round, None)?,
+            penalties_hash: penalty_events_commitment(round, penalties)?,
             reputation_root: reputation_list_commitment(&reputation_list)?,
         },
         reputation_list,

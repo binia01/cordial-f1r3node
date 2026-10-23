@@ -809,6 +809,7 @@ name = "cordial-por"
 version = "0.1.0"
 dependencies = [
  "cordial-miners-core",
+ "k256",
 ]
 
 [[package]]

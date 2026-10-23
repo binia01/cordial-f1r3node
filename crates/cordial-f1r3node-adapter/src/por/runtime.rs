@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::{
     live_ingress::{LiveIngress, PorWeightActivationError},
     ordered_output::OrderedFinalizedOutput,
+    shared_ordered_output::ReadOrderedOutput,
     snapshot::{CORDIAL_WAVELENGTH, SnapshotError},
 };
 
@@ -42,6 +43,9 @@ pub enum PorRuntimeError {
 
     #[error("cannot publish the Cordial finalized view: {0:?}")]
     FinalizedOutput(SnapshotError),
+
+    #[error("cannot authorize PoR equivocation evidence: {0}")]
+    PenaltyAuthorization(#[source] PorError),
 
     #[error("cannot restore or activate durable PoR state: {0}")]
     Durable(#[from] DurablePorStateError),
@@ -199,6 +203,50 @@ impl<A> PorRuntime<A> {
         Ok(output)
     }
 
+    /// Admit retained raw evidence using this runtime's own finalized view,
+    /// Cordial membership and shard. Call before collecting checkpoint
+    /// attestations so every replay uses the same authorized penalty set.
+    pub fn authorize_equivocations(
+        &mut self,
+        completed: CompletedPorRatingRound,
+        raw: &[cordial_miners_core::consensus::CordialEquivocationEvidence],
+    ) -> Result<CompletedPorRatingRound, PorRuntimeError> {
+        let output = self.publish_finalized_output()?;
+        completed
+            .with_authorized_equivocations(
+                raw,
+                self.ingress.blocklace(),
+                &output,
+                self.ingress.bonds(),
+                &self.shard_id,
+            )
+            .map_err(PorRuntimeError::PenaltyAuthorization)
+    }
+
+    /// Authenticate every finalized checkpoint carrier using this runtime's
+    /// own source, membership and shard. Decoded bytes never grant authority.
+    pub fn authorize_checkpoint_equivocations(
+        &self,
+        completed: CompletedCheckpointRatingRound,
+    ) -> Result<CompletedCheckpointRatingRound, PorRuntimeError> {
+        completed
+            .validate_preceding_state(self.state.state()?)
+            .map_err(PorRuntimeError::PenaltyAuthorization)?;
+        let output = self.ingress.ordered_output_reader().latest().ok_or(
+            PorRuntimeError::CommittedCheckpointUnavailable {
+                round: completed.source().round,
+            },
+        )?;
+        completed
+            .with_finalized_equivocations(
+                self.ingress.blocklace(),
+                output,
+                self.ingress.bonds(),
+                &self.shard_id,
+            )
+            .map_err(PorRuntimeError::PenaltyAuthorization)
+    }
+
     /// Commit a completed local rating round and immediately activate its weights.
     ///
     /// # Safety
@@ -250,8 +298,9 @@ impl<A> PorRuntime<A> {
         }
         let output = self.publish_finalized_output()?;
         validate_finalized_prefix_checkpoint(&output, completed.checkpoint())?;
+        let completed = self.authorize_checkpoint_equivocations(completed.clone())?;
         let (candidate, _) = stage_completed_checkpoint_round(
-            completed,
+            &completed,
             self.state.state()?,
             &self.config,
             &self.shard_id,
@@ -260,9 +309,11 @@ impl<A> PorRuntime<A> {
         self.ingress
             .validate_por_weights(&candidate)
             .map_err(PorRuntimeError::CheckpointActivation)?;
-        let applied =
-            self.state
-                .apply_completed_checkpoint_round(completed, &self.config, &self.shard_id)?;
+        let applied = self.state.apply_completed_checkpoint_round(
+            &completed,
+            &self.config,
+            &self.shard_id,
+        )?;
         let activation = self.state.activate_weights(&mut self.ingress);
         Ok(CommittedPorRound {
             applied,

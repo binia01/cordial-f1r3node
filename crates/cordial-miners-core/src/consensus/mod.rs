@@ -9,6 +9,7 @@ pub mod ordering;
 pub mod pruning;
 pub mod round;
 pub mod validation;
+pub mod verified_evidence;
 pub mod wave;
 pub mod weight_snapshot;
 
@@ -54,6 +55,10 @@ pub use round::{
 };
 pub use validation::{
     InvalidBlock, ValidationConfig, ValidationResult, validate_block, validated_insert,
+};
+pub use verified_evidence::{
+    EvidenceVerificationError, VerifiedEquivocationEvidence, decode_equivocation_evidence,
+    verify_equivocation_evidence,
 };
 pub use wave::{
     first_round_of_wave, is_first_round_of_wave, last_round_of_wave, leader_blocks_of_wave,

@@ -146,12 +146,14 @@ pub struct ReputationVector {
 // Finalized penalty inputs
 // ============================================================
 
-/// One externally authenticated equivocation event. The pure calculation
-/// layer requires a nonempty evidence reference but does not verify proofs.
+/// One equivocation claim, usable for penalties only after strict proof
+/// verification and protocol authorization through EquivocationPenalty::authorize.
+/// Changing its public claim fields invalidates its private authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EquivocationPenalty {
     pub offender: NodeId,
     pub evidence: Vec<u8>,
+    pub(crate) authorization: Option<crate::evidence::EquivocationAuthorization>,
 }
 
 /// One externally established missed participation round. Consecutive replay
