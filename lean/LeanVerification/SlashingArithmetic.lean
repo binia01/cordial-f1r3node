@@ -65,6 +65,18 @@ def selectSlashPenalty
   else
     config.fullSlash
 
+/-- Tier selection is definitionally the exact cross-product comparison; no
+rounded quotient participates in the branch decision. -/
+theorem selectSlashPenalty_before_division
+    (config : SlashingConfig) (equivocatingWeight totalWeight : Nat) :
+    selectSlashPenalty config equivocatingWeight totalWeight =
+      if equivocatingWeight * config.scale ≤
+          totalWeight * config.correlationThreshold then
+        config.basePenalty
+      else
+        config.fullSlash :=
+  rfl
+
 /-- Cross multiplication expresses the ordinary rational comparison exactly. -/
 theorem atOrBelowCorrelationThreshold_iff_ratio_le
     (config : SlashingConfig) (equivocatingWeight totalWeight : Nat)
@@ -93,6 +105,16 @@ theorem selectSlashPenalty_eq_full
     (h : ¬ atOrBelowCorrelationThreshold config equivocatingWeight totalWeight) :
     selectSlashPenalty config equivocatingWeight totalWeight = config.fullSlash := by
   simp [selectSlashPenalty, h]
+
+/-- Under a valid configuration, the above-threshold tier is exactly the
+fixed-point scale (a 100% penalty). -/
+theorem selectSlashPenalty_eq_scale
+    (config : SlashingConfig) (equivocatingWeight totalWeight : Nat)
+    (hConfig : config.WellFormed)
+    (h : ¬ atOrBelowCorrelationThreshold config equivocatingWeight totalWeight) :
+    selectSlashPenalty config equivocatingWeight totalWeight = config.scale := by
+  rw [selectSlashPenalty_eq_full config equivocatingWeight totalWeight h,
+    hConfig.2.2.2]
 
 /-- A valid policy never selects a penalty greater than its fixed-point scale. -/
 theorem selectSlashPenalty_le_scale
