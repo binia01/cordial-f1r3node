@@ -12,14 +12,42 @@ use std::time::Duration;
 use tempfile::tempdir;
 const MAP_SIZE: usize = 512 * 1024 * 1024;
 
+// Close heed's registry-owned environment before removing its directory.
+// Criterion drops this fixture after the timed routine on every iteration.
+struct TemporaryRepository {
+    repository: Option<RSpaceBlocklaceRepository>,
+    _directory: tempfile::TempDir,
+}
+impl TemporaryRepository {
+    fn new() -> Self {
+        let directory = tempdir().expect("temporary database directory");
+        let repository = RSpaceBlocklaceRepository::open(directory.path(), MAP_SIZE)
+            .expect("open temporary database");
+        Self {
+            repository: Some(repository),
+            _directory: directory,
+        }
+    }
+    fn repo(&self) -> &RSpaceBlocklaceRepository {
+        self.repository.as_ref().expect("live repository")
+    }
+}
+impl Drop for TemporaryRepository {
+    fn drop(&mut self) {
+        if let Some(repository) = self.repository.take() {
+            repository.close();
+        }
+    }
+}
+
 fn bench_storage(c: &mut Criterion) {
     let mut group = c.benchmark_group("lmdb_persistence");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
     for n in support::sizes(&[100, 500], &[100, 1_000, 5_000]) {
         let blocks = support::chain(n, if support::large() { 4_096 } else { 256 });
-        let dir = tempdir().expect("tempdir");
-        let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).expect("open");
+        let fixture = TemporaryRepository::new();
+        let repo = fixture.repo();
         for block in &blocks {
             repo.put_block(block).expect("persist");
         }
@@ -53,7 +81,7 @@ fn bench_storage(c: &mut Criterion) {
             support::bonds(4),
             CasperShardConf::default(),
             "root",
-            &repo,
+            repo,
             &support::FixtureVerifier,
         )
         .expect("production startup");
@@ -62,12 +90,9 @@ fn bench_storage(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n as u64));
         group.bench_function(BenchmarkId::new("put_blocks", n), |b| {
             b.iter_batched_ref(
-                || {
-                    let dir = tempdir().expect("tempdir");
-                    let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).expect("open");
-                    (repo, dir)
-                },
-                |(repo, _dir)| {
+                TemporaryRepository::new,
+                |fixture| {
+                    let repo = fixture.repo();
                     for block in &blocks {
                         repo.put_block(block).expect("persist");
                     }
@@ -102,7 +127,7 @@ fn bench_storage(c: &mut Criterion) {
                         bonds,
                         conf,
                         "root",
-                        &repo,
+                        repo,
                         &support::FixtureVerifier,
                     )
                     .expect("startup")
@@ -119,8 +144,8 @@ fn bench_storage(c: &mut Criterion) {
             .into_iter()
             .map(|id| dag.get(id).expect("signed block"))
             .collect();
-        let dir = tempdir().expect("tempdir");
-        let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).expect("open");
+        let fixture = TemporaryRepository::new();
+        let repo = fixture.repo();
         for block in &blocks {
             repo.put_block(block).expect("persist signed");
         }
@@ -129,6 +154,7 @@ fn bench_storage(c: &mut Criterion) {
             .expect("signed recovery");
         assert_eq!(checked.dom().len(), n);
         assert_eq!(bonds.len(), 4);
+        group.throughput(Throughput::Elements(n as u64));
         group.bench_function(BenchmarkId::new("recover_signed_history", n), |b| {
             b.iter_batched_ref(
                 Blocklace::new,
@@ -176,10 +202,10 @@ fn bench_storage(c: &mut Criterion) {
                 }
                 (last, removed)
             };
-            let dir = tempdir().expect("preflight directory");
-            let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE).expect("open");
+            let fixture = TemporaryRepository::new();
+            let repo = fixture.repo();
             let mut checked = Blocklace::new();
-            let (checkpoint, removed) = run(&repo, &mut checked);
+            let (checkpoint, removed) = run(repo, &mut checked);
             let last_leader =
                 &layers[(cycles - 1) * 3][if reclaimable { 0 } else { (cycles - 1) % 4 }];
             assert_eq!(checkpoint, Some(last_leader.identity.clone()));
@@ -232,13 +258,8 @@ fn bench_storage(c: &mut Criterion) {
                 ),
                 |b| {
                     b.iter_batched_ref(
-                        || {
-                            let dir = tempdir().expect("directory");
-                            let repo = RSpaceBlocklaceRepository::open(dir.path(), MAP_SIZE)
-                                .expect("open");
-                            (repo, Blocklace::new(), dir)
-                        },
-                        |(repo, dag, _dir)| run(repo, dag),
+                        || (TemporaryRepository::new(), Blocklace::new()),
+                        |(fixture, dag)| run(fixture.repo(), dag),
                         BatchSize::PerIteration,
                     );
                 },

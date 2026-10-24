@@ -391,6 +391,23 @@ not process RSS; CPU may exceed 100% on multiple cores. Pruning RSS is process-w
 and includes allocator retention, fixtures, indexes and saved finalized prefixes.
 LMDB growth checkpoints persist cursors but do not delete historical disk records.
 
+Temporary LMDB write/growth fixtures explicitly close each repository before
+removing its directory. Heed 0.20 retains environments in a process-wide registry;
+dropping an ordinary handle alone does not release those resources. Criterion
+per-iteration batching keeps the close/wait and directory cleanup outside timing.
+The signed recovery throughput is the actual number of recovered blocks, rather
+than the preceding case's workload count.
+
+For resource-lifecycle changes, run the focused regression check and then the full
+LMDB measurement target. A smoke run alone does not exercise repeated environment
+creation during warmup and sampling:
+
+~~~bash
+cargo test -p cordial-f1r3node-adapter --test test_repository explicit_close_releases_environment_and_preserves_persisted_data
+python3 scripts/benchmark.py --package cordial-f1r3node-adapter --bench lmdb_persistence
+~~~
+
+
 Exit status: 0 means all deploys executed successfully and finalized consistently
 on all nodes with resource collection intact; 2 means incomplete/failed workload;
 1 means configuration, readiness, input or other fatal error. Raw records are
