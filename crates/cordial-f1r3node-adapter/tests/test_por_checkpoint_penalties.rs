@@ -330,6 +330,144 @@ fn finalized_penalty_survives_restart_and_ejected_observer_closes_next_round() {
     assert_eq!((entry.reputation, entry.retained_reputation), (0, retained));
 }
 
+/// Export a deterministic, evidence-backed presentation fixture when requested.
+/// Four durable observers independently replay the same finalized source and
+/// complete signed rating batch, then recover the same ejected state.
+#[test]
+fn four_observer_checkpoint_penalty_demo() {
+    let claim = raw(2, 9);
+    let fixture = Fixture::new(vec![carrier(&claim, 1)]);
+    let completed = fixture.complete(&fixture.state, 1, 1);
+    let initial_weights = demo_weights(&fixture.state, &fixture.membership);
+    let rating_count = completed.batch().ratings.len();
+    let authorized = completed
+        .with_finalized_equivocations(&fixture.lace, &fixture.output, &fixture.membership, b"root")
+        .unwrap();
+    assert_eq!(authorized.penalties().unwrap().equivocations.len(), 1);
+
+    let mut observers = Vec::new();
+    let mut penalties_hash = None;
+    for seed in 1..=4u8 {
+        let directory = tempfile::tempdir().unwrap();
+        let mut durable = DurablePorState::open(directory.path(), fixture.state.clone()).unwrap();
+        let first = durable
+            .apply_completed_checkpoint_round(&authorized, &fixture.config, b"root")
+            .unwrap();
+        penalties_hash.get_or_insert(first.block.header.penalties_hash);
+        assert_eq!(penalties_hash, Some(first.block.header.penalties_hash));
+        let first_hash = hex::encode(cordial_por::reputation_block_hash(&first.block).unwrap());
+        let first_weights = demo_weights(durable.state().unwrap(), &fixture.membership);
+        assert_eq!(first_weights["validator-2"], 0);
+        assert_ne!(first_weights["validator-1"], first_weights["validator-3"]);
+        let retained = demo_retained(durable.state().unwrap(), &node(2));
+        assert_eq!(retained, 750);
+        drop(durable);
+
+        let mut recovered =
+            DurablePorState::open(directory.path(), ReputationState::new(99)).unwrap();
+        assert_eq!(recovered.state().unwrap().round(), 1);
+        assert!(recovered.state().unwrap().is_ejected(&node(2)));
+        assert_eq!(
+            demo_weights(recovered.state().unwrap(), &fixture.membership),
+            first_weights
+        );
+        let second = fixture.complete(recovered.state().unwrap(), 2, seed);
+        assert!(
+            second
+                .batch()
+                .ratings
+                .iter()
+                .all(|rating| rating.rater != node(2))
+        );
+        let second = second
+            .with_finalized_equivocations(
+                &fixture.lace,
+                &fixture.output,
+                &fixture.membership,
+                b"root",
+            )
+            .unwrap();
+        assert!(second.penalties().unwrap().equivocations.is_empty());
+        let second = recovered
+            .apply_completed_checkpoint_round(&second, &fixture.config, b"root")
+            .unwrap();
+        assert!(recovered.state().unwrap().is_ejected(&node(2)));
+        assert_eq!(
+            demo_retained(recovered.state().unwrap(), &node(2)),
+            retained
+        );
+        observers.push(serde_json::json!({
+            "observer": format!("observer-{seed}"),
+            "round_1_checkpoint": first_hash,
+            "round_1_weights": first_weights,
+            "round_1_retained": retained,
+            "round_2_checkpoint": hex::encode(cordial_por::reputation_block_hash(&second.block).unwrap()),
+            "round_2_weights": demo_weights(recovered.state().unwrap(), &fixture.membership),
+            "recovered_round": 1,
+            "final_round": recovered.state().unwrap().round(),
+        }));
+    }
+    for observer in &observers[1..] {
+        for key in [
+            "round_1_checkpoint",
+            "round_1_weights",
+            "round_2_checkpoint",
+            "round_2_weights",
+        ] {
+            assert_eq!(observer[key], observers[0][key], "{key} differs");
+        }
+    }
+    if let Ok(path) = std::env::var("POR_DEMO_OUTPUT") {
+        let source =
+            cordial_f1r3node_adapter::por_finality::finalized_prefix_checkpoint(&fixture.output, 1)
+                .unwrap()
+                .unwrap();
+        let output = serde_json::json!({
+            "schema_version": 1,
+            "kind": "deterministic_checkpoint_fixture",
+            "description": "Four independent durable PoR replays of signed checkpoint ratings and one finalized equivocation authorization",
+            "source_round": 1,
+            "source_prefix_len": source.finalized_prefix_len,
+            "source_prefix_hash": hex::encode(source.prefix_hash),
+            "initial_weights": initial_weights,
+            "rating_count": rating_count,
+            "offender": "validator-2",
+            "proof_blocks": claim.blocks.iter().map(|block| hex::encode(block.identity.content_hash)).collect::<Vec<_>>(),
+            "penalties_hash": hex::encode(penalties_hash.unwrap()),
+            "base_penalty_percent": 25,
+            "observers": observers,
+        });
+        fs::write(path, serde_json::to_vec_pretty(&output).unwrap()).unwrap();
+    }
+}
+
+fn demo_weights(
+    state: &ReputationState,
+    membership: &HashMap<NodeId, u64>,
+) -> std::collections::BTreeMap<String, u64> {
+    let authorized = (1..=4u8).map(node).collect::<Vec<_>>();
+    let weights = cordial_por::authorized_validator_weights(
+        state,
+        &membership.keys().cloned().collect::<Vec<_>>(),
+    )
+    .unwrap();
+    authorized
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| (format!("validator-{}", index + 1), weights[&id]))
+        .collect()
+}
+
+fn demo_retained(state: &ReputationState, offender: &NodeId) -> u64 {
+    state
+        .reputation_list()
+        .entries
+        .iter()
+        .find(|entry| &entry.node_id == offender)
+        .unwrap()
+        .retained_reputation
+}
+
 #[test]
 fn checkpoint_admission_requires_complete_set_and_is_order_independent() {
     let first = raw(2, 1);
