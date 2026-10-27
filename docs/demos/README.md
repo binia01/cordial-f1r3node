@@ -15,6 +15,9 @@ network, followed by a guided equivocation replay. It has two evidence sources:
    weights, the offender's zero active weight, retained reputation, and
    exclusion of the ejected rater in the next round.
 
+The four-step system diagram explains the data flow; its labels are not
+additional live telemetry.
+
 The controlled fixture JSON is already checked in. From the repository root,
 serve the dashboard without building Rust:
 
