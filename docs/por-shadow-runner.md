@@ -1,6 +1,8 @@
 # Live PoR shadow runner and four-node smoke tests
 
 This guide covers a single observer and the four-observer checkpoint smoke.
+For a presentation of the live status and a deterministic equivocation replay,
+see the [PoR weighted convergence and equivocation demo](./demos/README.md).
 
 `live_por_shadow` connects to one real f1r3node gRPC endpoint and mirrors its
 blocks into a local Cordial `LiveIngress`. It loads the node's authorized
