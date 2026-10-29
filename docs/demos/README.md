@@ -1,121 +1,101 @@
-# PoR weighted convergence and equivocation demo
+# PoR observatory
 
-The [HTML dashboard](./por-weighted-slashing.html) opens with the live observer
-network, followed by a guided equivocation replay. It has two evidence sources:
+The [dashboard](por-weighted-slashing.html) is a local, buildless simulation
+explorer. It uses no external fonts, chart libraries, analytics, or uploads.
+The interface keeps three evidence sources separate:
 
-1. An optional feed from four **live shadow observers**: the exporter reads the
-   observers' status files, checks the common finalized prefix, active PoR round,
-   checkpoint, exact weight map, and weight commitment, then refreshes a JSON
-   document that the browser polls every 2.5 seconds. The dashboard labels old
-   status files as a saved snapshot, even when the exporter is still running.
-2. A reproducible Rust fixture: four independent durable PoR replays use a
-   complete signed checkpoint rating batch, a finalized carrier containing
-   verified equivocation proof, and a second checkpoint after restart. The test
-   asserts the same checkpoint hashes and weights on all four stores, unequal
-   weights, the offender's zero active weight, retained reputation, and
-   exclusion of the ejected rater in the next round.
+- **Guided example:** the checked-in two-round fixture. It shows exact recorded
+  scores, isolated slashing, retained capital, exclusion, and recovery. It is
+  historical evidence, not a result of the newly added tests.
+- **Imported scenarios:** JSON exported by the multi-round Rust runner. Honest,
+  unequal-start, isolated-fault, and correlated-fault files can be imported
+  together. Empty scenarios never receive invented trajectories.
+- **Live observers:** optional shadow status snapshots. Freshness, agreement,
+  catch-up, and conflicts are reported independently of imported results.
 
-The four-step system diagram explains the data flow; its labels are not
-additional live telemetry.
+## Open locally
 
-The controlled fixture JSON is already checked in. From the repository root,
-serve the dashboard without building Rust:
+From the repository root:
 
-```sh
-python3 -m http.server 8765 --bind 127.0.0.1 --directory docs/demos
-```
+    python3 -m http.server 8765 --bind 127.0.0.1 --directory docs
 
-Open `http://127.0.0.1:8765/por-weighted-slashing.html`. The fixture loads
-automatically.
+Open [the observatory](http://127.0.0.1:8765/demos/por-weighted-slashing.html).
+Serving the docs root also makes the linked run instructions available.
+The dashboard does not launch tests or a cluster.
 
-For a presentation, start on the **live network** panel. The top status and
-source freshness cards say whether the four reports are current, saved, stale,
-or unavailable. Then select **Controlled replay** and use **Play sequence** or
-the step buttons to show signed fork → finalized authorization → penalty →
-restart → next round. When the replay section is on screen, Left/Right arrows
-step through it and Space plays or pauses. The controlled replay is available
-even with no live feed; its banner states that its slashing evidence is a
-fixture. Browser refresh resets the short live trend and activity list.
+If the server runs on a remote host, forward the loopback port from your laptop:
 
-If the server runs on a remote node and your browser runs on your laptop,
-forward it from a **terminal on the laptop**, not a VS Code terminal attached
-to the remote node. Use local port 8876 to avoid a collision with VS Code's own
-port forwarding:
+    ssh -N -o ExitOnForwardFailure=yes -L 8876:127.0.0.1:8765 USER@REMOTE_NODE
 
-```sh
-ssh -N -o ExitOnForwardFailure=yes -L 8876:127.0.0.1:8765 USER@REMOTE_NODE
-```
+Then open http://127.0.0.1:8876/demos/por-weighted-slashing.html.
 
-Then enter `http://127.0.0.1:8876/por-weighted-slashing.html` in the laptop
-browser's address bar. Use the same SSH host or alias you normally use for the
-node. In VS Code Remote SSH, forwarding port 8765 in the **Ports** panel works
-the same way. Copy the exact **Forwarded Address** shown for remote port 8765;
-VS Code may choose a different local port. Add `/por-weighted-slashing.html` to
-that address and use **Open in Browser** from the Ports panel. Opening the HTML
-file in an editor preview can show source without running the JavaScript that
-loads the fixture and live feed. A browser without port forwarding connects to
-its own localhost.
+## Explore a run
 
-Rebuild the fixture only after changing the Rust fixture test:
+1. Choose **Import results** and select one or more JSON files, or drag files into
+   the import dialog. Files stay in memory and are cleared on refresh.
+2. Choose a loaded scenario. Each card shows its number of recorded rounds.
+3. Switch between **Reputation**, **Voting share**, and **Stability**.
+4. Scrub the timeline, click the chart, or play recorded rounds at 1x, 2x, or 5x.
+   **Fault** jumps to the first recorded exclusion. The inspector explains the
+   selected checkpoint; the ledger shows exact values.
+5. Inspect the checkpoint hash and, in the saved example, the signed proof
+   identities and penalty commitment.
 
-```sh
-./docker/scripts/build-por-demo-fixture.sh
-```
+Arrow keys step through rounds and Space toggles playback while the chart is in
+view and an input is not focused. Playback pauses when the tab becomes hidden.
+The layout supports narrow screens; the exact-value table scrolls horizontally
+when necessary.
 
-If opening the HTML directly from disk, use **Load fixture JSON** and select
-`docs/demos/por-weighted-slashing.json`.
+Stability charts divide score and voting-share deltas by the file's acceptance
+bounds. The vertical axis is logarithmic; 1x is the bound and 0 is no change.
+Ranking must also remain stable for the recorded acceptance window.
+A line connects recorded samples; it does not create intermediate observations.
 
-For the live panel, first run the keyed four-node checkpoint smoke described
-in [the shadow runner guide](../por-shadow-runner.md#parallel-keyed-por-smoke).
-Keep its data root. The smoke harness stops its observers when it exits. To
-keep the panel live after the smoke passes, run four observers with the same
-durable directories, keys, and rating exchange in one terminal. Set
-`smoke_root` and `keys_dir` to the values used for the smoke run:
+## Export results (run manually)
 
-```bash
-(
-  pids=()
-  trap 'kill "${pids[@]}" 2>/dev/null' EXIT
-  for i in 1 2 3 4; do
-    node="cordial-validator-$i"
-    port=$((60001 + i * 1000))
-    target/release/live_por_shadow \
-      --grpc-url "http://127.0.0.1:$port" \
-      --bonds-file docker/genesis/cordial-bonds.txt \
-      --data-dir "$smoke_root/observers/$node" \
-      --validator-rating-key-file "$keys_dir/validator-$i.key" \
-      --stage-local-ratings --rating-exchange-dir "$smoke_root/exchange" \
-      --checkpoint-ratings --commit-complete-ratings \
-      --checkpoint-epoch-delay-waves 12 \
-      >>"$smoke_root/observers/$node/runner.log" 2>&1 &
-    pids+=("$!")
-  done
-  wait
-)
-```
+    POR_CONVERGENCE_OUTPUT=/tmp/por-convergence cargo test -j 1 -p cordial-f1r3node-adapter --test test_por_checkpoint_penalties multi_round_ranking_and_slashing_convergence -- --exact
 
-In another terminal, export a continuously refreshed feed:
+Import honest.json, unequal.json, isolated.json, and correlated.json.
+The versioned format has kind "por_convergence_trace", scenario name,
+observer count, thresholds, completion status, and a rounds array.
+Each round includes active weights, checkpoint identity, measured deltas,
+ranking stability, observer agreement, events, and explicitly labeled
+reputation entries. Restart markers identify the first record after recovery.
 
-```sh
-python3 docker/scripts/export-por-demo-live.py \
-  --data-root "$HOME/cordial-por-four-node" \
-  --min-por-round 1 \
-  --watch-seconds 2
-```
+The runner writes a scenario file only after its assertions finish successfully.
+A missing file is not a failure report or a passing result. The UI labels
+completion status as **reported by the file**; importing JSON is not an audit
+or a new test execution.
 
-Use the actual `--data-root` passed to the smoke harness. The browser updates
-without a manual refresh. Stop the exporter with Ctrl+C. For one saved export,
-omit `--watch-seconds`; the page will label it as a saved snapshot when its
-source files are no longer fresh. The exporter reports an explicit stale status
-if an observer stops publishing for 15 seconds, even if the JSON export itself
-continues to refresh. It does not start, stop, or restart validators or
-observers. The live panel reports active weights only; a deferred candidate is
-labeled separately.
+Earlier array-only exports remain readable. If those entries lack validator
+labels, retained balances and exclusions are left unknown rather than guessed
+from public-key order. Files are limited to 5 MB and 10,000 rounds.
 
-The deterministic fixture establishes PoR penalty replay and observer
-convergence under controlled finalized evidence. The live snapshot establishes
-agreement among shadow observers for a running cluster. The current harness
-does not inject equivocation into the running cluster, execute a host-chain
-slash deploy, or prove that the f1r3node validators enforce the PoR weights.
-Those are separate integration gates before claiming live weighted-validator
-convergence under attack.
+To regenerate the historical example after changing its fixture:
+
+    bash docker/scripts/build-por-demo-fixture.sh
+
+See [convergence validation](../por-convergence-validation.md) for the complete
+adapter, ordering, penalty, and restart commands.
+
+## Optional live feed
+
+Start the isolated cluster and keyed shadow observers using the
+[shadow runner guide](../por-shadow-runner.md). The smoke verifier stops its
+observer processes when it exits; keep or restart those observers if you want
+a continuously updating dashboard.
+
+    python3 docker/scripts/export-por-demo-live.py --data-root PATH --min-por-round 4 --watch-seconds 2
+
+Use the actual observer data root. This exports
+docs/demos/por-live-shadow.json; the dashboard polls it every 2.5 seconds.
+The exporter does not start or stop validators.
+
+Different active rounds are labeled **Catching up**. Conflicting finalized
+prefixes or different projections at the same round are labeled **Reports
+conflict**. Old snapshots remain distinguishable from live evidence. The
+progress line only reports an advance after the common finalized prefix
+actually grows during the browser session.
+
+Neither imported reputation traces nor shadow agreement establish live
+f1r3node validator-side weight enforcement or host-chain slash execution.

@@ -1,300 +1,82 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PoR Observatory — Cordial Miners</title>
-  <link rel="stylesheet" href="por-weighted-slashing.css">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#163c35">
+<meta name="description" content="Explore Proof of Reputation: ratings, voting weight, slashing and recovery across finalized checkpoints.">
+<title>PoR Observatory · Cordial Miners</title>
+<link rel="stylesheet" href="por-weighted-slashing.css"><script src="por-weighted-slashing.js" defer></script>
 </head>
 <body>
-<div class="shell">
-  <header class="topbar">
-    <div class="brand"><span class="brand-mark">CM</span><span>Cordial Miners<small>PoR observatory / demo</small></span></div>
-    <div class="top-right"><a class="top-link" href="#live">Live network</a><a class="top-link" href="#scenario">Controlled replay</a><span id="feed-pill" class="feed-pill">Feed unavailable</span></div>
-  </header>
-
-  <section class="hero">
-    <div>
-      <p class="eyebrow">Proof of Reputation / Evidence in motion</p>
-      <h1>Trust becomes <em>weight.</em></h1>
-      <p class="hero-copy">See what four running PoR observers report, then step through the signed fork, verified penalty, key ejection, and restart replay in a controlled evidence run.</p>
-      <div class="hero-actions"><a class="button primary" href="#live">View live network <span aria-hidden="true">↗</span></a><a class="button ghost" href="#scenario">Explore the fault sequence</a></div>
-    </div>
-    <div class="hero-visual" id="hero-visual" aria-label="Live PoR observer agreement status">
-      <span class="hero-status" id="hero-status">Awaiting live observer feed</span>
-      <span class="hero-dot a">01</span><span class="hero-dot b">02</span><span class="hero-dot c">03</span><span class="hero-dot d">04</span>
-      <div class="hero-core"><div><strong id="hero-agreement">0/4</strong><span id="hero-agreement-label">reporting</span></div></div>
-      <span class="hero-caption">Live shadow observers · authorized set stays with Cordial</span>
-    </div>
-  </section>
-
-  <div class="intro-strip" aria-label="Demo evidence summary">
-    <div class="intro-item"><strong id="hero-source">16 <b>blocks</b></strong><span>Controlled fixture · finalized source window</span></div>
-    <div class="intro-item"><strong id="hero-weight">4 <b>stores</b></strong><span>Controlled fixture · exact checkpoint replay</span></div>
-    <div class="intro-item"><strong id="hero-penalty">25<b>%</b></strong><span>Controlled fixture · base penalty and key ejection</span></div>
-  </div>
-
-  <aside class="architecture-strip" aria-label="How Proof of Reputation derives validator weights">
-    <div class="flow-heading"><span>System model</span><strong>From finality to weight.</strong></div>
-    <div class="flow-step"><span>01 / Cordial</span><strong>Finalized blocks</strong><small>Replayable source evidence</small></div>
-    <div class="flow-step"><span>02 / PoR</span><strong>Signed ratings</strong><small>Validator attestations</small></div>
-    <div class="flow-step"><span>03 / PoR</span><strong>Checkpoint</strong><small>Durable reputation state</small></div>
-    <div class="flow-step"><span>04 / Cordial</span><strong>Weight map</strong><small>For the authorized validator set</small></div>
-  </aside>
-
-  <section class="section" id="live">
-    <div class="section-top"><div><div class="section-kicker">01 / Live observer feed</div><h2>One network. Four local views.</h2></div><p>These are real shadow observer status files when a cluster feed is running. The page refreshes the exported JSON every 2.5 seconds and shows when the source stops updating.</p></div>
-    <div class="source-ribbon"><strong>Live shadow data</strong><span>Only the observer reports below can make this panel live. It shows their active weight projection; it does not prove validator-side enforcement.</span></div>
-    <div class="signal-rail" aria-label="Live network signals">
-      <div class="signal-card"><span>Observer agreement</span><strong id="signal-agreement">Waiting for feed</strong><small>Active round, checkpoint, commitment, weights, prefix</small></div>
-      <div class="signal-card"><span>Source freshness</span><strong id="signal-freshness">No source yet</strong><small id="signal-age">Each observer must publish within 15 seconds</small></div>
-      <div class="signal-card"><span>Network progress</span><strong id="signal-progress">—</strong><small>Common finalized hashes across all four observers</small></div>
-    </div>
-    <div class="panel">
-      <div class="live-header"><strong id="live-summary">Waiting for four observer status files</strong><small id="live-updated">No live snapshot loaded</small></div>
-      <div class="live-grid">
-        <div class="network-map" id="network-map">
-          <svg class="network-links" viewBox="0 0 1000 450" preserveAspectRatio="none" aria-hidden="true"><path d="M500 225 L270 90"></path><path d="M500 225 L730 90"></path><path d="M500 225 L270 360"></path><path d="M500 225 L730 360"></path></svg>
-          <div id="map-nodes"></div>
-          <div class="network-center"><div><strong id="map-agreement">0/4</strong><span id="map-label">observers</span></div></div>
-          <span class="map-foot" id="map-foot">Live status feed pending</span>
-        </div>
-        <div class="live-aside">
-          <div class="live-stat-grid">
-            <div class="live-stat"><label>Active PoR round</label><strong id="live-round">—</strong><small>Committed in shadow observers</small></div>
-            <div class="live-stat"><label>Common finalized prefix</label><strong id="live-prefix">—</strong><small>Cordial block hashes</small></div>
-            <div class="live-stat"><label>Finalized wave</label><strong id="live-wave">—</strong><small>Observed by first observer</small></div>
-            <div class="live-stat"><label>Weight commitment</label><strong id="live-commitment">—</strong><small>Exact authorized weight map</small></div>
-          </div>
-          <div class="live-weights"><div class="panel-heading"><h3>Active validator weights</h3><small id="live-chart-caption">Awaiting feed</small></div><div id="live-weight-chart"></div><div id="candidate-note" class="candidate-note"></div></div>
-          <div class="live-trend"><div class="panel-heading"><h3>Finalized prefix growth</h3><small>Current browser session</small></div><svg id="live-trend" viewBox="0 0 300 70" role="img" aria-label="Finalized block count over recent live snapshots"></svg><p id="trend-caption">Progress appears as fresh snapshots arrive.</p></div>
-        </div>
-      </div>
-      <div class="feed-empty" id="feed-instructions">A live feed needs four running shadow observers and the export watch command below. The controlled replay remains available without a cluster.<br><code>python3 docker/scripts/export-por-demo-live.py --data-root PATH --min-por-round 1 --watch-seconds 2</code></div>
-    </div>
-    <div id="observer-strip" class="observer-strip"></div>
-    <div class="activity-feed"><h3>Observed changes</h3><ol id="activity-list"><li>Waiting for the live observer feed.</li></ol></div>
-  </section>
-
-  <section class="section" id="scenario">
-    <div class="section-top"><div><div class="section-kicker">02 / Controlled checkpoint replay</div><h2>Follow the equivocation.</h2></div><p>A deterministic Rust fixture signs conflicting blocks, carries verified authorization into a 16-block checkpoint, and replays the resulting PoR state independently in four durable stores.</p></div>
-    <div class="source-ribbon fixture"><strong>Controlled evidence</strong><span>This sequence replays a checked-in Rust fixture. The signed fork and penalty below are not live cluster events.</span></div>
-    <div class="scenario-controls"><div class="stage-list" id="stage-list"></div><div class="hero-actions" style="margin:0"><button class="button" id="previous-button" type="button" aria-label="Previous evidence step">←</button><button class="button" id="play-button" type="button">▶ Play sequence</button><button class="button" id="next-button" type="button" aria-label="Next evidence step">→</button><label class="button file-button">Load fixture JSON<input id="fixture-file" type="file" accept=".json,application/json" hidden></label></div></div>
-    <div class="stage-progress" role="progressbar" aria-label="Controlled replay progress" aria-valuemin="1" aria-valuemax="5" aria-valuenow="1" id="stage-progress"><span id="stage-progress-fill"></span></div>
-    <div class="panel scenario-main">
-      <div class="evidence-art" id="evidence-art" data-stage="0">
-        <span class="art-tag">Signed blocklace / one offender</span>
-        <svg class="fork-lines" viewBox="0 0 500 300" preserveAspectRatio="none" aria-hidden="true"><path d="M250 48 L125 145 L250 250"></path><path class="red" d="M250 48 L375 145 L250 250"></path></svg>
-        <div class="fork-item origin">Validator 2<small>one signing key</small></div>
-        <div class="fork-item branch-a">Block A<small id="proof-a">—</small></div>
-        <div class="fork-item branch-b">Block B<small id="proof-b">—</small></div>
-        <div class="fork-item final" id="fork-outcome">Conflict<small>two branches</small></div>
-      </div>
-      <div class="stage-details"><span class="stage-number" id="stage-number">STEP 01 / 05</span><h3 id="stage-title">Loading evidence…</h3><p id="stage-description">The controlled fixture is read from the checked-in JSON. No cluster is needed for this sequence.</p><div class="stage-facts" id="stage-facts"></div></div>
-    </div>
-    <div class="scenario-bottom">
-      <div class="panel fixture-chart"><div class="panel-heading"><h3 id="fixture-chart-title">Validator weights</h3><small id="fixture-chart-caption">Controlled fixture</small></div><div id="fixture-weight-chart"></div><p class="proof-note" id="retained-note"></p></div>
-      <div class="panel"><div class="panel-heading"><h3>Four independent durable replays</h3><small id="fixture-agreement">Loading</small></div><div class="commit-grid" id="commit-grid"></div><p class="proof-note" id="fixture-proof-note">Checkpoint and weight equality are asserted in the Rust test, not inferred from the animation.</p></div>
-    </div>
-    <p class="presenter-hint">Presenter controls: ← / → to step through evidence · Space to play or pause while this section is in view.</p>
-  </section>
-
-  <div class="boundary"><strong>What this proves</strong><p>The scenario proves deterministic PoR checkpoint penalty replay and matching durable results under controlled finalized evidence. The live panel proves agreement among shadow observers only when its status feed is present. It does not demonstrate equivocation injected into a live cluster, validator-side PoR weight enforcement, or a host-chain slash deploy.</p></div>
-  <footer><span>Cordial Miners / Proof of Reputation observatory</span><span>Authorized validator membership stays with Cordial · PoR supplies weights</span></footer>
+<a class="skip-link" href="#workspace">Skip to simulation</a>
+<aside class="sidebar">
+<a class="brand" href="#workspace"><span class="brand-symbol" aria-hidden="true">c<span>m</span></span><span>Cordial Miners<small>PROTOCOL RESEARCH</small></span></a>
+<div class="sidebar-body"><p class="nav-label">WORKSPACE</p>
+<nav aria-label="Sections">
+<a class="nav-item selected" href="#workspace"><span aria-hidden="true">◈</span> Simulation explorer</a>
+<a class="nav-item" href="#live"><span aria-hidden="true">◎</span> Live observers <i id="nav-live-dot"></i></a>
+<a class="nav-item" href="#reading-guide"><span aria-hidden="true">≡</span> Reading the results</a>
+</nav>
+<div class="sidebar-note"><span class="small-label">THE QUESTION</span><p>Do independent nodes arrive at the same reputation—and keep making progress after a fault?</p><span class="note-line"></span><small>Agreement, stability, and progress are three different checks.</small></div>
+</div><div class="sidebar-bottom"><span class="status-dot"></span> Local observatory<small>Files stay in this browser.<br>No uploads. No test execution.</small></div>
+</aside>
+<div class="main">
+<header class="topbar"><div class="breadcrumb">Cordial <span>/</span> Proof of Reputation</div><div class="top-actions"><span class="quiet-tag">Research workspace</span><button class="button small" id="import-top">↥ Import results</button></div></header>
+<main id="workspace">
+<section class="page-heading"><div><p class="eyebrow">PoR OBSERVATORY <span>01</span></p><h1>Reputation, round by round.</h1><p class="intro">Follow how ratings become voting weight, what a slash removes,<br class="desktop-break"> and whether the network settles afterward.</p></div><div class="heading-note"><span class="status-dot amber"></span><span id="workspace-status">Example loaded<small>Import a run to inspect new results.</small></span></div></section>
+<section class="scenario-section" aria-labelledby="scenario-heading">
+<div class="section-label"><h2 id="scenario-heading">Choose a scenario</h2><button class="text-button" id="example-button">Open guided example ↗</button></div>
+<div class="scenario-grid" id="scenarios">
+<button class="scenario" data-scenario="honest"><span class="scenario-top"><span class="scenario-icon">01</span><span class="scenario-state">No results</span></span><strong>Honest baseline</strong><span>Equal starting reputation.<br>Observe steady participation.</span></button>
+<button class="scenario" data-scenario="unequal"><span class="scenario-top"><span class="scenario-icon">02</span><span class="scenario-state">No results</span></span><strong>Unequal start</strong><span>Different starting scores.<br>Compare ranking and weight.</span></button>
+<button class="scenario" data-scenario="isolated"><span class="scenario-top"><span class="scenario-icon">03</span><span class="scenario-state">No results</span></span><strong>Isolated fault</strong><span>One equivocating validator.<br>Track ejection and retained capital.</span></button>
+<button class="scenario" data-scenario="correlated"><span class="scenario-top"><span class="scenario-icon">04</span><span class="scenario-state">No results</span></span><strong>Correlated fault</strong><span>Multiple equivocating validators.<br>Follow the full-slash response.</span></button>
+</div></section>
+<div class="source-banner"><span class="source-icon" aria-hidden="true">i</span><div><strong id="source-title">Guided example · saved two-round fixture</strong><p id="source-description">A historical example of isolated slashing. It is not a result from the new convergence tests.</p></div><button class="text-button" id="import-inline">Load your run ↥</button></div>
+<div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+<section class="metrics" aria-label="Selected round metrics">
+<div class="metric"><span>Selected round</span><strong id="metric-round">—</strong><small id="metric-round-note">Finalized PoR checkpoint</small></div>
+<div class="metric"><span>Total active reputation</span><strong id="metric-total">—</strong><small>Retained capital is excluded</small></div>
+<div class="metric"><span>Voting validators</span><strong id="metric-active">—</strong><small id="metric-active-note">Authorized identities remain in the set</small></div>
+<div class="metric"><span>Stability window</span><strong id="metric-stability">—</strong><small id="metric-stability-note">Consecutive rounds within bounds</small></div>
+</section>
+<section class="explorer-grid">
+<div class="panel chart-panel">
+<div class="panel-heading"><div><p class="eyebrow">TRAJECTORY</p><h2 id="chart-title">Active reputation</h2></div><div class="segmented" role="group" aria-label="Chart measure"><button data-measure="reputation" aria-pressed="true">Reputation</button><button data-measure="share" aria-pressed="false">Voting share</button><button data-measure="delta" aria-pressed="false">Stability</button></div></div>
+<p id="chart-description" class="chart-description">Absolute scores at each recorded checkpoint. Select a round to inspect what changed.</p>
+<div class="legend" id="legend"></div>
+<div class="chart-wrap" id="chart-wrap"><svg id="trajectory" viewBox="0 0 820 310" role="img" aria-label="Reputation over recorded rounds"></svg><div class="chart-empty" id="chart-empty" hidden><span class="empty-symbol">↥</span><h3>No results loaded</h3><p>Import the exported JSON for this scenario.<br>The explorer will use the recorded values.</p><button class="button primary" id="empty-import">Import a result file</button></div></div>
+<div class="chart-footnote"><span id="chart-footnote">Only recorded checkpoints are shown; lines connect samples.</span><span id="chart-range">—</span></div>
+<div class="playback"><button class="play-button" id="play" aria-label="Play recorded rounds" title="Play / pause">▶</button><div class="slider-area"><div class="slider-labels"><span id="timeline-start">Round 0</span><strong id="timeline-current">Round 0</strong><span id="timeline-end">Round 2</span></div><input id="round-slider" type="range" min="0" max="2" value="0" step="1" aria-label="Selected recorded round"><div class="event-track" id="event-track"></div></div><label class="speed-label"><span class="sr-only">Playback speed</span><select id="speed"><option value="1100">1×</option><option value="550">2×</option><option value="220">5×</option></select></label></div>
+<div class="jump-bar"><span>JUMP TO</span><button id="jump-start">Start</button><button id="jump-fault">Fault</button><button id="jump-end">Final round</button></div>
 </div>
-<script>
-  const byId = id => document.getElementById(id);
-  const make = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = String(value); return node; };
-  const clear = node => node.replaceChildren();
-  const short = value => typeof value === 'string' && value.length > 15 ? value.slice(0, 8) + '…' + value.slice(-5) : (value ?? '—');
-  let fixtureData = null, stage = 0, playTimer = null, liveData = null, lastLiveState = null, lastTrendStamp = null;
-  const trend = [], activity = [];
-  const stages = [
-    { label:'01 / Signed fork', title:'One key. Two histories.', description:'Validator 2 signs two distinct, incomparable blocks. Their signatures and ancestry are checked before either claim can become a penalty.', outcome:'Conflict', facts:d => [['Offender','Validator 2'],['Branch A',short(d.proof_blocks[0])],['Branch B',short(d.proof_blocks[1])]], weight:'initial_weights', round:'Before checkpoint' },
-    { label:'02 / Finalized intent', title:'The proof enters finality.', description:'A signed authorization carrier appears inside the first 16-block finalized source window. That binds the proof to this exact PoR checkpoint.', outcome:'Authorized', facts:d => [['PoR source round',d.source_round],['Finalized prefix',d.source_prefix_len + ' blocks'],['Prefix hash',short(d.source_prefix_hash)]], weight:'initial_weights', round:'Before checkpoint' },
-    { label:'03 / Penalty', title:'The active weight drops to zero.', description:'All four stores replay the same signed rating batch and authorized penalty. The offender is permanently ejected from the weighted path; the surviving reputation is retained separately.', outcome:'Ejected', facts:d => [['Penalty tier',d.base_penalty_percent + '%'],['Retained',d.observers[0].round_1_retained],['Penalty commitment',short(d.penalties_hash)]], weight:'round_1_weights', round:'Checkpoint round 1' },
-    { label:'04 / Restart', title:'Restart changes nothing.', description:'Each store reopens its persisted PoR state. Round 1, the ejected key, the exact weights, and the checkpoint identity all survive recovery.', outcome:'Recovered', facts:d => [['Recovered round',d.observers[0].recovered_round],['Round 1 checkpoint',short(d.observers[0].round_1_checkpoint)],['Matching stores','4 of 4']], weight:'round_1_weights', round:'Recovered round 1' },
-    { label:'05 / Next round', title:'The ejected key cannot rate.', description:'Checkpoint round 2 closes using only eligible raters. Validator 2 remains in Cordial membership with zero active PoR weight and cannot rejoin under the same key.', outcome:'Excluded', facts:d => [['Final PoR round',d.observers[0].final_round],['Round 2 checkpoint',short(d.observers[0].round_2_checkpoint)],['Ejected rater','Not required']], weight:'round_2_weights', round:'Checkpoint round 2' }
-  ];
-
-  function weightBars(root, weights, keyPrefix) {
-    clear(root);
-    if (!weights) return;
-    const entries = Object.entries(weights);
-    const max = Math.max(1, ...entries.map(entry => Number(entry[1])));
-    entries.forEach((entry,index) => {
-      const row = make('div','weight-row');
-      const name = keyPrefix ? keyPrefix + (index + 1) : entry[0].replace('validator-','V');
-      const track = make('div','weight-track');
-      const fill = make('div','weight-fill' + (Number(entry[1]) === 0 ? ' ejected zero' : ''));
-      fill.style.width = Number(entry[1]) === 0 ? '0%' : Math.max(3, Math.min(100, Number(entry[1]) / max * 100)) + '%';
-      track.append(fill); row.append(make('span','name',name),track,make('span','amount',Number(entry[1]).toLocaleString()));
-      if (keyPrefix) row.title = entry[0];
-      root.append(row);
-    });
-  }
-
-  function showStage(index) {
-    if (!fixtureData) return;
-    stage = index;
-    const item = stages[index], first = fixtureData.observers[0];
-    const progress = byId('stage-progress');
-    progress.setAttribute('aria-valuenow', String(index + 1));
-    byId('stage-progress-fill').style.width = ((index + 1) / stages.length * 100) + '%';
-    byId('previous-button').disabled = index === 0;
-    byId('next-button').disabled = index === stages.length - 1;
-    const art = byId('evidence-art');
-    art.dataset.stage = String(index);
-    art.classList.remove('stage-advance');
-    void art.offsetWidth;
-    art.classList.add('stage-advance');
-    byId('stage-number').textContent = 'STEP 0' + (index + 1) + ' / 05';
-    byId('stage-title').textContent = item.title;
-    byId('stage-description').textContent = item.description;
-    byId('fork-outcome').replaceChildren(document.createTextNode(item.outcome),make('small','',index < 2 ? 'evidence path' : 'PoR state'));
-    const facts = byId('stage-facts'); clear(facts);
-    item.facts(fixtureData).forEach(pair => { const row = make('div','stage-fact'); row.append(make('span','',pair[0]),make('b','',pair[1])); facts.append(row); });
-    weightBars(byId('fixture-weight-chart'), index < 2 ? fixtureData.initial_weights : first[item.weight]);
-    byId('fixture-chart-title').textContent = 'Validator weights · ' + item.round;
-    byId('fixture-chart-caption').textContent = index < 2 ? 'Before penalty' : 'Derived PoR projection';
-    byId('retained-note').textContent = index >= 2 ? 'Validator 2 has zero active weight; ' + first.round_1_retained + ' reputation remains as retained capital. Host-chain transfer is outside this demo.' : 'All four authorized validators start with the fixture’s initial PoR weight.';
-    const commits = byId('commit-grid'); clear(commits);
-    fixtureData.observers.forEach((observer,i) => { const card = make('div','commit-card'); card.append(make('span','', 'Observer 0' + (i+1)),make('b','',index < 2 ? 'Ready to replay' : short(index === 4 ? observer.round_2_checkpoint : observer.round_1_checkpoint))); commits.append(card); });
-    Array.from(byId('stage-list').children).forEach((button,i) => { button.classList.toggle('active',i === index); button.setAttribute('aria-pressed',i === index ? 'true':'false'); });
-  }
-
-  function renderFixture(data) {
-    if (data?.schema_version !== 1 || data.kind !== 'deterministic_checkpoint_fixture' || !Array.isArray(data.observers) || data.observers.length !== 4 || !data.initial_weights || data.proof_blocks?.length !== 2) throw Error('Expected four-observer checkpoint fixture schema v1');
-    const base = data.observers[0];
-    const equal = key => data.observers.every(item => JSON.stringify(item[key]) === JSON.stringify(base[key]));
-    if (!['round_1_checkpoint','round_1_weights','round_2_checkpoint','round_2_weights'].every(equal) || base.round_1_weights['validator-2'] !== 0 || base.round_2_weights['validator-2'] !== 0) throw Error('Fixture evidence did not converge');
-    fixtureData = data;
-    byId('hero-source').replaceChildren(document.createTextNode(data.source_prefix_len + ' '),make('b','', 'blocks'));
-    byId('hero-penalty').replaceChildren(document.createTextNode(data.base_penalty_percent),make('b','', '%'));
-    byId('proof-a').textContent = short(data.proof_blocks[0]);
-    byId('proof-b').textContent = short(data.proof_blocks[1]);
-    byId('fixture-agreement').textContent = '4 / 4 identical checkpoints';
-    byId('fixture-proof-note').textContent = data.rating_count + ' signed checkpoint ratings; both resulting checkpoint hashes match across four independently recovered stores.';
-    showStage(stage);
-  }
-
-  const buttons = byId('stage-list');
-  stages.forEach((item,index) => { const button = make('button','stage-button',item.label); button.type = 'button'; button.addEventListener('click',() => { stopPlaying(); showStage(index); }); buttons.append(button); });
-  function stopPlaying() { if (playTimer) clearInterval(playTimer); playTimer = null; byId('play-button').textContent = '▶ Play sequence'; }
-  function togglePlaying() { if (playTimer) { stopPlaying(); return; } if (!fixtureData) return; if (stage === stages.length - 1) showStage(0); byId('play-button').textContent = 'Ⅱ Pause'; playTimer = setInterval(() => { if (stage === stages.length - 1) { stopPlaying(); return; } showStage(stage + 1); },3400); }
-  byId('play-button').addEventListener('click',togglePlaying);
-  byId('previous-button').addEventListener('click',() => { stopPlaying(); showStage(Math.max(0,stage - 1)); });
-  byId('next-button').addEventListener('click',() => { stopPlaying(); showStage(Math.min(stages.length - 1,stage + 1)); });
-  document.addEventListener('keydown', event => {
-    if (!fixtureData || event.altKey || event.ctrlKey || event.metaKey || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
-    const rect = byId('scenario').getBoundingClientRect();
-    if (rect.top >= window.innerHeight || rect.bottom <= 0) return;
-    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); stopPlaying(); showStage(Math.min(stages.length - 1,Math.max(0,stage + (event.key === 'ArrowRight' ? 1 : -1)))); }
-    if (event.code === 'Space' && document.activeElement === document.body) { event.preventDefault(); togglePlaying(); }
-  });
-  byId('fixture-file').addEventListener('change',async event => { const file = event.target.files?.[0]; if (!file) return; try { renderFixture(JSON.parse(await file.text())); } catch(error) { byId('stage-title').textContent = error.message; } });
-
-  function stableWeights(weights) { return JSON.stringify(Object.entries(weights || {}).sort((a,b) => a[0].localeCompare(b[0]))); }
-  function ageSeconds(timestamp) { const value = Date.parse(timestamp); return Number.isFinite(value) ? Math.max(0,(Date.now() - value)/1000) : Infinity; }
-  function setFeed(text,kind) { const pill=byId('feed-pill'); pill.textContent=text; pill.className='feed-pill ' + kind; }
-  function recordActivity(text) {
-    activity.unshift(text); if (activity.length > 6) activity.pop();
-    const list=byId('activity-list'); clear(list); activity.forEach(item => list.append(make('li','',item)));
-  }
-  function drawTrend(count,stamp,fresh) {
-    if (fresh && stamp && stamp !== lastTrendStamp) {
-      trend.push(count); if (trend.length > 35) trend.shift(); lastTrendStamp=stamp;
-    }
-    const svg=byId('live-trend'); clear(svg);
-    const line=document.createElementNS('http://www.w3.org/2000/svg','line'); line.setAttribute('x1','0'); line.setAttribute('x2','300'); line.setAttribute('y1','59'); line.setAttribute('y2','59'); line.setAttribute('class','baseline'); svg.append(line);
-    if (!trend.length) return;
-    const low=Math.min(...trend), high=Math.max(...trend), span=Math.max(1,high-low);
-    const points=trend.map((value,index) => ((trend.length === 1 ? 150 : index*300/(trend.length-1)).toFixed(1) + ',' + (54-(value-low)/span*45).toFixed(1)));
-    const trace=document.createElementNS('http://www.w3.org/2000/svg','polyline'); trace.setAttribute('points',points.join(' ')); trace.setAttribute('class','trace'); svg.append(trace);
-    const last=points[points.length-1].split(','); const dot=document.createElementNS('http://www.w3.org/2000/svg','circle'); dot.setAttribute('cx',last[0]); dot.setAttribute('cy',last[1]); dot.setAttribute('r','4'); dot.setAttribute('class','point'); svg.append(dot);
-    byId('trend-caption').textContent = trend.length + ' live samples · latest ' + count.toLocaleString() + ' finalized hashes';
-  }
-  function mapNode(index,name,status,health) {
-    const card = make('div','map-node ' + (status ? health : ''));
-    card.append(make('b','', 'Observer 0' + (index+1)),make('small','', status ? 'PoR ' + status.active_por_round + ' · height ' + status.source_height : 'waiting for status'));
-    card.title = name;
-    return card;
-  }
-  function renderLive(data) {
-    if (data?.schema_version !== 1 || data.kind !== 'live_shadow_snapshot' || typeof data.statuses !== 'object') throw Error('Invalid live shadow feed');
-    liveData = data;
-    const names = ['cordial-validator-1','cordial-validator-2','cordial-validator-3','cordial-validator-4'];
-    const statuses = names.map(name => data.statuses[name] || null), available = statuses.filter(Boolean);
-    const first = available[0] || null;
-    const equalProjection = first && available.every(status => status.active_por_round === first.active_por_round && status.active_por_checkpoint === first.active_por_checkpoint && status.weight_commitment === first.weight_commitment && stableWeights(status.weights) === stableWeights(first.weights));
-    const minimum = available.length === 4 ? Math.min(...available.map(status => status.finalized_hashes.length)) : 0;
-    const commonPrefix = first && available.length === 4 && available.every(status => JSON.stringify(status.finalized_hashes.slice(0,minimum)) === JSON.stringify(first.finalized_hashes.slice(0,minimum)));
-    const consistent = available.length === 4 && equalProjection && commonPrefix;
-    const agreement = consistent && !data.error;
-    const freshest = data.generated_at && ageSeconds(data.generated_at) <= 9 && names.every(name => data.status_updated_at?.[name] && ageSeconds(data.status_updated_at[name]) <= 15);
-    const staleSources = typeof data.error === 'string' && data.error.startsWith('stale observer status');
-    const mode = available.length === 4 && !consistent ? 'DIVERGED' : (staleSources ? 'STALE / OBSERVERS' : (agreement ? (freshest ? 'LIVE / AGREED' : 'SAVED / AGREED') : (consistent ? 'ROUND PENDING' : 'WAITING FOR NODES')));
-    setFeed(mode,agreement ? (freshest ? 'live' : 'warn') : (available.length === 4 && !consistent ? 'bad' : 'warn'));
-    byId('hero-status').textContent = mode;
-    byId('hero-agreement').textContent = consistent ? '4/4' : available.length + '/4';
-    byId('hero-agreement-label').textContent = agreement ? (freshest ? 'live agreement' : 'saved agreement') : (consistent ? 'matching reports' : 'reporting');
-    byId('hero-visual').classList.toggle('is-live', Boolean(agreement && freshest));
-    byId('signal-agreement').textContent = consistent ? '4 / 4 match' : available.length + ' / 4 reporting';
-    const oldestSourceAge = Math.max(...names.map(name => ageSeconds(data.status_updated_at?.[name])));
-    byId('signal-freshness').textContent = freshest ? 'Current' : (staleSources ? 'Observers stopped' : (available.length ? 'Saved / pending' : 'No source yet'));
-    byId('signal-age').textContent = Number.isFinite(oldestSourceAge) ? 'Oldest observer update ' + Math.floor(oldestSourceAge) + 's ago' : 'Each observer must publish within 15 seconds';
-    byId('signal-progress').textContent = agreement ? minimum.toLocaleString() + ' hashes' : '—';
-    byId('live-summary').textContent = agreement ? 'All four observers report the same active projection and finalized prefix' : (data.error || 'Observer projections or finalized prefixes differ');
-    byId('live-updated').textContent = data.generated_at ? 'Exported ' + new Date(data.generated_at).toLocaleTimeString() + (freshest ? ' · source current' : ' · source may be stale') : 'No export time';
-    byId('map-agreement').textContent = consistent ? '4/4' : available.length + '/4';
-    byId('map-label').textContent = consistent ? 'consistent' : 'reporting';
-    byId('map-foot').textContent = consistent ? minimum + ' finalized hashes in common' : 'Awaiting common checkpoint';
-    const advanced = Boolean(lastLiveState && agreement && freshest && minimum > lastLiveState.prefix);
-    byId('network-map').classList.toggle('is-live', Boolean(agreement && freshest));
-    const map = byId('map-nodes'); clear(map); names.forEach((name,index) => { const node = mapNode(index,name,statuses[index],agreement && freshest ? 'ok' : (available.length === 4 && !consistent ? 'bad' : '')); if (advanced) node.classList.add('changed'); map.append(node); });
-    byId('live-round').textContent = first?.active_por_round ?? '—';
-    byId('live-prefix').textContent = agreement ? minimum.toLocaleString() : '—';
-    byId('live-wave').textContent = first?.observed_finalized_wave ?? '—';
-    byId('live-commitment').textContent = first ? short(first.weight_commitment) : '—';
-    byId('live-chart-caption').textContent = first ? (agreement ? 'Exact active projection' : 'First available observer') : 'Awaiting feed';
-    weightBars(byId('live-weight-chart'),first?.weights,'V');
-    const candidate = first?.candidate;
-    byId('candidate-note').textContent = candidate ? 'Complete candidate round ' + candidate.por_round + ' is visible; it is not active until committed.' : '';
-    drawTrend(minimum,data.generated_at,agreement && freshest);
-    if (agreement && freshest) {
-      if (!lastLiveState) recordActivity('Connected · four observers agree');
-      else {
-        if (minimum > lastLiveState.prefix) recordActivity('Finalized prefix +' + (minimum-lastLiveState.prefix) + ' → ' + minimum);
-        if (first.active_por_round > lastLiveState.round) recordActivity('PoR round advanced → ' + first.active_por_round);
-        if (first.weight_commitment !== lastLiveState.commitment) recordActivity('Active weight commitment changed');
-      }
-      lastLiveState={prefix:minimum,round:first.active_por_round,commitment:first.weight_commitment};
-    }
-    const strip=byId('observer-strip'); clear(strip);
-    names.forEach((name,index) => { const status=statuses[index], tile=make('div','observer-tile'); tile.append(make('h3','', 'OBSERVER 0' + (index+1))); const list=make('dl'); [['PoR round',status?.active_por_round ?? '—'],['Source height',status?.source_height ?? '—'],['Mirrored blocks',status?.mirrored_blocks ?? '—'],['Finalized hashes',status?.finalized_hashes?.length ?? '—']].forEach(pair => list.append(make('dt','',pair[0]),make('dd','',pair[1]))); tile.append(list); strip.append(tile); });
-    byId('feed-instructions').style.display = agreement && freshest ? 'none' : 'block';
-    const feedHelp = available.length === 4 && !consistent ? 'Observer reports disagree. Inspect the four status files and runner logs. ' : (staleSources ? 'The export is current, but observer status files stopped updating. Inspect the observer runner logs. ' : (agreement ? 'This is a saved snapshot. Restart the export watcher for a current feed. ' : (consistent ? 'The reports agree, but the requested PoR round or finality gate is still pending. ' : 'To show live progress, run four shadow observers and the export watch command. ')));
-    byId('feed-instructions').replaceChildren(document.createTextNode(feedHelp),make('code','', 'python3 docker/scripts/export-por-demo-live.py --data-root PATH --min-por-round 1 --watch-seconds 2'));
-  }
-  async function loadJson(name, handler, optional) {
-    try { const response=await fetch(name + '?t=' + Date.now(),{cache:'no-store'}); if (!response.ok) throw Error('HTTP ' + response.status); handler(await response.json()); }
-    catch(error) {
-      if (!optional) { byId('stage-title').textContent = 'Could not load fixture JSON: ' + error.message; return; }
-      setFeed('FEED UNAVAILABLE','warn');
-      byId('hero-status').textContent = 'FEED UNAVAILABLE';
-      byId('hero-agreement-label').textContent = liveData ? 'last saved reports' : 'reporting';
-      byId('hero-visual').classList.remove('is-live');
-      byId('network-map').classList.remove('is-live');
-      byId('signal-freshness').textContent = 'Disconnected';
-      byId('live-summary').textContent = 'The browser cannot read the live export: ' + error.message;
-      byId('feed-instructions').style.display = 'block';
-      byId('feed-instructions').textContent = 'The live export is unavailable. Check the exporter and the JSON URL. Any values still shown above are from the last successfully loaded snapshot.';
-    }
-  }
-  renderLive({schema_version:1,kind:'live_shadow_snapshot',statuses:{},error:'Waiting for four observer status files'});
-  loadJson('por-weighted-slashing.json',renderFixture,false);
-  loadJson('por-live-shadow.json',renderLive,true);
-  setInterval(() => loadJson('por-live-shadow.json',renderLive,true),2500);
-</script>
-</body>
-</html>
+<aside class="inspector panel">
+<div class="inspector-top"><span class="eyebrow">ROUND INSPECTOR</span><span class="round-chip" id="inspector-round">00</span></div>
+<div class="event-label" id="event-label">Before the fault</div><h2 id="inspector-title">A shared starting point.</h2><p id="inspector-description">Each validator begins with the same active reputation.</p>
+<div class="weight-distribution"><div class="section-label"><h3>Voting power</h3><span id="distribution-total">100%</span></div><div class="distribution-bar" id="distribution"></div><div id="share-list" class="share-list"></div></div>
+<div class="inspector-note"><span class="note-icon" aria-hidden="true">↳</span><p id="inspector-note">Voting share is active reputation divided by the total active reputation.</p></div>
+<div class="checkpoint"><span>Checkpoint identity</span><code id="checkpoint-hash">Not yet created</code><button class="text-button" id="copy-checkpoint" disabled>Copy full hash</button></div><details id="proof-details" class="proof-details"></details>
+</aside>
+</section>
+<section class="detail-grid">
+<div class="panel validator-panel"><div class="panel-heading"><div><p class="eyebrow">STATE AT THIS ROUND</p><h2>Validator ledger</h2></div><span class="subtle-label">Exact recorded values</span></div>
+<div class="table-scroll"><table><thead><tr><th scope="col">Validator</th><th scope="col">Active</th><th scope="col">Change</th><th scope="col">Retained</th><th scope="col">Vote share</th><th scope="col">Status</th></tr></thead><tbody id="validator-rows"></tbody></table></div><p class="table-note">An ejected key keeps zero voting weight. Retained reputation is separate and does not grant re-entry.</p></div>
+<div class="panel checks-panel"><div class="panel-heading"><div><p class="eyebrow">READING THE EVIDENCE</p><h2>What this run tells us</h2></div></div><div id="checks"></div><p class="checks-note" id="checks-note">A saved example explains the mechanism. It does not establish long-run convergence.</p></div>
+</section>
+<section class="live-section" id="live">
+<div class="section-heading"><div><p class="eyebrow">LIVE OBSERVERS</p><h2>Four views of the same network.</h2><p>Current reports from the shadow observers. These are separate from the imported simulation.</p></div><span class="badge" id="live-badge">Feed unavailable</span></div>
+<div class="live-summary" id="live-summary" role="status">No live snapshot is available. The simulation explorer works without a cluster.</div><div class="observer-grid" id="observers"></div>
+<div class="live-bottom"><div><span class="status-dot" id="live-dot"></span><span id="live-detail">Waiting for observer reports</span></div><span id="live-updated">Refreshes every 2.5 seconds</span></div>
+<details class="setup-details"><summary>Connect the live feed</summary><p>Start your isolated cluster and shadow observers, then export their reports. Replace PATH with the smoke harness data root.</p><pre><code>python3 docker/scripts/export-por-demo-live.py --data-root PATH --min-por-round 4 --watch-seconds 2</code></pre><p>Matching reports establish shadow-observer agreement, not validator-side enforcement. A current timestamp alone does not establish forward progress.</p></details>
+</section>
+<section class="reading-guide" id="reading-guide"><div><p class="eyebrow">A SHORT FIELD GUIDE</p><h2>Three things to watch.</h2><p>A stable chart is useful evidence.<br>It is not the whole story.</p></div><article><span class="guide-number">01</span><h3>Reputation & ranking</h3><p>Ratings update each validator’s score. Look for stable scores and ordering over several rounds, not just a flat moment.</p></article><article><span class="guide-number">02</span><h3>Weight & exclusion</h3><p>Consensus uses active reputation. A slash ejects the key; retained capital never appears in its voting share. Remaining shares can rise without scores increasing.</p></article><article><span class="guide-number">03</span><h3>Agreement & progress</h3><p>Nodes should agree at the same checkpoint. After a restart, new blocks must finalize too. Agreement on an old state does not prove recovery.</p></article></section>
+<footer><span><b>Cordial Miners</b> · PoR observatory</span><span>Recorded evidence. Explicit boundaries.</span><a href="../por-convergence-validation.md">Run instructions ↗</a></footer>
+</main></div>
+<dialog id="import-dialog">
+<div class="dialog-heading"><div><p class="eyebrow">LOCAL RESULTS</p><h2>Bring a run into view.</h2></div><button class="icon-button" id="close-import" aria-label="Close import dialog">×</button></div>
+<p>Choose one or more exported scenario files. They stay in your browser and are cleared when you reload this page.</p>
+<label class="drop-zone" id="drop-zone"><span class="upload-icon">↥</span><strong>Choose JSON files</strong><span>or drop them here · up to 5 MB per file</span><input id="result-files" type="file" accept=".json,application/json" multiple></label>
+<p id="import-message" role="status" aria-live="polite"></p>
+<details open><summary>Generate a convergence trace</summary><p>Run this yourself from the repository root in WSL. The dashboard does not execute commands.</p><pre><code>POR_CONVERGENCE_OUTPUT=/tmp/por-convergence cargo test -j 1 -p cordial-f1r3node-adapter --test test_por_checkpoint_penalties multi_round_ranking_and_slashing_convergence -- --exact</code></pre><p>Import <code>honest.json</code>, <code>unequal.json</code>, <code>isolated.json</code>, or <code>correlated.json</code> from the output directory.</p></details>
+</dialog>
+</body></html>
