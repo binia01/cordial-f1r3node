@@ -1,4 +1,4 @@
-//! Durable proposal for one future-only PoR weight epoch.
+//! Durable records and journal for future-only PoR weight epochs.
 //!
 //! This file is deliberately separate from the active-weight marker. Writing
 //! it does not activate weights. Replay checks reconstruct the sealed prefix
@@ -17,7 +17,7 @@ use cordial_miners_core::{
     BlockIdentity, Blocklace, NodeId,
     consensus::{
         WeightedEpochBoundary, WeightedEpochError, depth, wave_of_round,
-        weighted_tau_after_epoch_boundary, weighted_tau_at_leader,
+        weighted_tau_after_verified_epoch_boundary, weighted_tau_at_leader,
     },
     crypto::{Blake2b256Hasher, Hasher},
 };
@@ -188,6 +188,17 @@ impl PorWeightEpochRecord {
         authorized: &[NodeId],
         committed_checkpoint_hash: [u8; 32],
     ) -> Result<OrderedFinalizedOutput, PorWeightEpochRecordError> {
+        self.verify_replay_from_prefix(blocklace, authorized, committed_checkpoint_hash, None, None)
+    }
+
+    fn verify_replay_from_prefix(
+        &self,
+        blocklace: &Blocklace,
+        authorized: &[NodeId],
+        committed_checkpoint_hash: [u8; 32],
+        previous: Option<&OrderedFinalizedOutput>,
+        target: Option<&BlockIdentity>,
+    ) -> Result<OrderedFinalizedOutput, PorWeightEpochRecordError> {
         self.validate_structure()?;
         if self.reputation_checkpoint_hash != committed_checkpoint_hash {
             return Err(PorWeightEpochRecordError::Malformed(
@@ -223,15 +234,26 @@ impl PorWeightEpochRecord {
             let index = usize::try_from(wave).ok()? % authorized.len();
             Some(authorized[index].clone())
         };
-        let sealed = weighted_tau_at_leader(
-            blocklace,
-            &self.sealed_leader,
-            self.wavelength,
-            &old_weights,
-            leader_of_wave,
-        )
-        .map_err(WeightedEpochError::from)
-        .map_err(PorWeightEpochRecordError::Ordering)?;
+        let sealed = if let Some(previous) = previous {
+            if previous.anchor.as_ref() != Some(&self.sealed_leader)
+                || previous.wavelength != self.wavelength
+            {
+                return Err(PorWeightEpochRecordError::Malformed(
+                    "journal boundary changed",
+                ));
+            }
+            previous.blocks.clone()
+        } else {
+            weighted_tau_at_leader(
+                blocklace,
+                &self.sealed_leader,
+                self.wavelength,
+                &old_weights,
+                leader_of_wave,
+            )
+            .map_err(WeightedEpochError::from)
+            .map_err(PorWeightEpochRecordError::Ordering)?
+        };
         if u64::try_from(sealed.len()).ok() != Some(self.sealed_prefix_len)
             || sealed_prefix_hash(&sealed) != self.sealed_prefix_hash
         {
@@ -253,7 +275,7 @@ impl PorWeightEpochRecord {
                 "effective wave changed",
             ));
         }
-        let (blocks, anchor) = weighted_tau_after_epoch_boundary(
+        let (blocks, anchor) = weighted_tau_after_verified_epoch_boundary(
             blocklace,
             self.wavelength,
             &old_weights,
@@ -263,6 +285,7 @@ impl PorWeightEpochRecord {
                 ordered_prefix: &sealed,
                 effective_wave: self.effective_wave,
             },
+            target,
             leader_of_wave,
         )
         .map_err(PorWeightEpochRecordError::Ordering)?;
@@ -327,8 +350,46 @@ impl PorWeightEpochRecord {
     }
 }
 
-/// Atomic single-epoch proposal store. A different proposal cannot replace an
-/// existing record; support for later epochs requires an append-only journal.
+/// Replay a contiguous epoch history, stopping each earlier epoch at the next
+/// recorded boundary. This prevents later weights from rewriting old finality.
+pub fn replay_epoch_journal(
+    records: &[PorWeightEpochRecord],
+    blocklace: &Blocklace,
+    authorized: &[NodeId],
+) -> Result<OrderedFinalizedOutput, PorWeightEpochRecordError> {
+    validate_journal(records)?;
+    let mut output = None;
+    for (index, record) in records.iter().enumerate() {
+        output = Some(record.verify_replay_from_prefix(
+            blocklace,
+            authorized,
+            record.reputation_checkpoint_hash(),
+            output.as_ref(),
+            records.get(index + 1).map(|next| next.sealed_leader()),
+        )?);
+    }
+    output.ok_or(PorWeightEpochRecordError::Malformed("empty epoch journal"))
+}
+
+fn validate_journal(records: &[PorWeightEpochRecord]) -> Result<(), PorWeightEpochRecordError> {
+    for record in records {
+        record.validate_structure()?;
+    }
+    for pair in records.windows(2) {
+        if pair[0].por_round.checked_add(1) != Some(pair[1].por_round)
+            || pair[0].effective_wave >= pair[1].effective_wave
+            || pair[0].wavelength != pair[1].wavelength
+            || pair[0].new_weights != pair[1].old_weights
+            || pair[0].sealed_prefix_len >= pair[1].sealed_prefix_len
+        {
+            return Err(PorWeightEpochRecordError::ConflictingRecord);
+        }
+    }
+    Ok(())
+}
+
+/// Append-only logical epoch history, atomically replaced and fsynced on disk.
+/// Existing single-record files are accepted and upgraded on the next append.
 #[derive(Debug)]
 pub struct PorWeightEpochStore {
     directory: PathBuf,
@@ -355,34 +416,74 @@ impl PorWeightEpochStore {
     }
 
     pub fn restore(&self) -> Result<Option<PorWeightEpochRecord>, PorWeightEpochRecordError> {
+        Ok(self.restore_journal()?.pop())
+    }
+
+    pub fn restore_journal(&self) -> Result<Vec<PorWeightEpochRecord>, PorWeightEpochRecordError> {
         let file = match File::open(&self.record_path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
         let mut encoded = Vec::new();
         file.take((MAX_RECORD_LEN + 1) as u64)
             .read_to_end(&mut encoded)?;
-        decode(&encoded).map(Some)
-    }
-
-    pub fn persist(&self, record: &PorWeightEpochRecord) -> Result<(), PorWeightEpochRecordError> {
-        record.validate_structure()?;
-        let _writer = self
-            .writer
-            .lock()
-            .map_err(|_| PorWeightEpochRecordError::WriterLockPoisoned)?;
-        if let Some(existing) = self.restore()? {
-            return if existing == *record {
-                Ok(())
-            } else {
-                Err(PorWeightEpochRecordError::ConflictingRecord)
-            };
-        }
-        let encoded = encode(record)?;
         if encoded.len() > MAX_RECORD_LEN {
             return Err(PorWeightEpochRecordError::TooLarge);
         }
+        // Legacy v1 record, or a checksummed list of individually checked v1 records.
+        if encoded.starts_with(MAGIC) {
+            return Ok(vec![decode(&encoded)?]);
+        }
+        const JOURNAL: &[u8] = b"por-epoch-journal-v1";
+        if !encoded.starts_with(JOURNAL) || encoded.len() < JOURNAL.len() + CHECKSUM_LEN {
+            return Err(PorWeightEpochRecordError::Malformed("invalid journal"));
+        }
+        let end = encoded.len() - CHECKSUM_LEN;
+        if encoded[end..] != Blake2b256Hasher.hash(&encoded[..end]) {
+            return Err(PorWeightEpochRecordError::ChecksumMismatch);
+        }
+        let mut cursor = JOURNAL.len();
+        let mut records = Vec::new();
+        while cursor < end {
+            if end - cursor < 8 {
+                return Err(PorWeightEpochRecordError::Malformed(
+                    "truncated journal length",
+                ));
+            }
+            let length = u64::from_be_bytes(encoded[cursor..cursor + 8].try_into().unwrap());
+            cursor += 8;
+            let length =
+                usize::try_from(length).map_err(|_| PorWeightEpochRecordError::TooLarge)?;
+            let next = cursor
+                .checked_add(length)
+                .filter(|next| *next <= end)
+                .ok_or(PorWeightEpochRecordError::Malformed(
+                    "truncated journal entry",
+                ))?;
+            records.push(decode(&encoded[cursor..next])?);
+            cursor = next;
+        }
+        validate_journal(&records)?;
+        Ok(records)
+    }
+
+    fn write_journal(
+        &self,
+        records: &[PorWeightEpochRecord],
+    ) -> Result<(), PorWeightEpochRecordError> {
+        validate_journal(records)?;
+        let mut encoded = b"por-epoch-journal-v1".to_vec();
+        for record in records {
+            let entry = encode(record)?;
+            encoded.extend_from_slice(&(entry.len() as u64).to_be_bytes());
+            encoded.extend_from_slice(&entry);
+            if encoded.len() > MAX_RECORD_LEN - CHECKSUM_LEN {
+                return Err(PorWeightEpochRecordError::TooLarge);
+            }
+        }
+        let checksum = Blake2b256Hasher.hash(&encoded);
+        encoded.extend_from_slice(&checksum);
         let mut options = OpenOptions::new();
         options.create(true).truncate(true).write(true);
         #[cfg(unix)]
@@ -399,8 +500,22 @@ impl PorWeightEpochStore {
         Ok(())
     }
 
-    /// Remove only an identical proposal after recovery proves its reputation
-    /// state never committed. A committed epoch must never use this path.
+    pub fn persist(&self, record: &PorWeightEpochRecord) -> Result<(), PorWeightEpochRecordError> {
+        record.validate_structure()?;
+        let _writer = self
+            .writer
+            .lock()
+            .map_err(|_| PorWeightEpochRecordError::WriterLockPoisoned)?;
+        let mut records = self.restore_journal()?;
+        if records.last() == Some(record) {
+            return Ok(());
+        }
+        records.push(record.clone());
+        self.write_journal(&records)
+    }
+
+    /// Remove only the identical tail proven not to have committed. Earlier
+    /// epochs remain available for replay after a crash during the next commit.
     pub fn discard_uncommitted(
         &self,
         record: &PorWeightEpochRecord,
@@ -409,14 +524,12 @@ impl PorWeightEpochStore {
             .writer
             .lock()
             .map_err(|_| PorWeightEpochRecordError::WriterLockPoisoned)?;
-        match self.restore()? {
-            Some(existing) if existing == *record => {
-                fs::remove_file(&self.record_path)?;
-                File::open(&self.directory)?.sync_all()?;
-                Ok(())
-            }
-            _ => Err(PorWeightEpochRecordError::ConflictingRecord),
+        let mut records = self.restore_journal()?;
+        if records.last() != Some(record) {
+            return Err(PorWeightEpochRecordError::ConflictingRecord);
         }
+        records.pop();
+        self.write_journal(&records)
     }
 }
 

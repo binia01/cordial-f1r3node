@@ -316,11 +316,12 @@ committing reputation state. It discards an orphan proposal after a crash
 before that commit. After the commit, it verifies the record against durable
 state and replays the sealed prefix from the retained DAG before publishing
 the new weights and ordered output. A changed checkpoint, validator set, or
-prefix fails closed. The shadow runner exposes this one-epoch path through
+prefix fails closed. The shadow runner exposes this epoch path through
 `--checkpoint-epoch-delay-waves N`. The delay is explicit and must match on
-all observers. This store supports one epoch only; the runner continues
-observing after it and does not commit another checkpoint round. Later rounds
-need an append-only epoch journal.
+all observers. The epoch journal now supports repeated cutovers; see
+[convergence validation](por-convergence-validation.md). The runner continues
+collecting later checkpoint rounds and appends each committed cutover to the
+durable history. Recovery replays historical weight boundaries in order.
 
 The remaining implementation gate is an unequal-weight fixture in which applying the new
 table to the whole DAG changes an old leader, yet epoch-aware ordering leaves

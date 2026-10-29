@@ -14,6 +14,7 @@ use cordial_miners_core::blocklace::Blocklace;
 use cordial_miners_core::consensus::{
     OrderingCache, WeightedEpochBoundary, WeightedEpochError, depth, wave_of_round,
     weighted_final_leader_for_wave, weighted_tau_after_epoch_boundary,
+    weighted_tau_after_verified_epoch_boundary,
 };
 use cordial_miners_core::crypto::CryptoVerifier;
 use cordial_miners_core::types::BlockIdentity;
@@ -384,6 +385,7 @@ pub struct LiveIngress<A> {
     shared_ordered_output: SharedOrderedOutput,
     bonds: HashMap<NodeId, u64>,
     future_epoch: Option<PorWeightEpochRecord>,
+    epoch_history: Vec<PorWeightEpochRecord>,
     shard_conf: CasperShardConf,
     shard_id: String,
     /// Optional deploy tracer. When set, block ingestion and finalized-output
@@ -404,6 +406,7 @@ impl<A> LiveIngress<A> {
             shared_ordered_output: SharedOrderedOutput::new(),
             bonds: HashMap::new(),
             future_epoch: None,
+            epoch_history: Vec::new(),
             shard_conf: CasperShardConf::default(),
             shard_id: String::from("root"),
             deploy_tracer: None,
@@ -427,6 +430,7 @@ impl<A> LiveIngress<A> {
             shared_ordered_output: SharedOrderedOutput::new(),
             bonds,
             future_epoch: None,
+            epoch_history: Vec::new(),
             shard_conf,
             shard_id: shard_id.into(),
             deploy_tracer: None,
@@ -483,6 +487,7 @@ impl<A> LiveIngress<A> {
             shared_ordered_output: SharedOrderedOutput::new(),
             bonds,
             future_epoch: None,
+            epoch_history: Vec::new(),
             shard_conf,
             shard_id: shard_id.into(),
             deploy_tracer: None,
@@ -573,25 +578,43 @@ impl<A> LiveIngress<A> {
                 "committed checkpoint changed".into(),
             ));
         }
-        if let Some(active) = &self.future_epoch {
-            return if active == &record {
-                Ok(())
-            } else {
-                Err(SnapshotError::EpochReplay(
-                    "a different future epoch is active".into(),
-                ))
-            };
+        if self.future_epoch.as_ref() == Some(&record) {
+            return Ok(());
         }
-        if self.bonds != record.old_weights() {
+        let mut records = self.epoch_history.clone();
+        records.push(record);
+        self.install_future_epoch_journal(records)
+    }
+
+    /// Restore all committed epoch boundaries before publishing any output.
+    /// Intermediate epochs are replayed only up to the next recorded boundary.
+    pub fn install_future_epoch_journal(
+        &mut self,
+        records: Vec<PorWeightEpochRecord>,
+    ) -> Result<(), SnapshotError> {
+        let first = records
+            .first()
+            .ok_or_else(|| SnapshotError::EpochReplay("empty epoch journal".into()))?;
+        let last = records.last().unwrap();
+        if !records.starts_with(&self.epoch_history) {
+            return Err(SnapshotError::EpochReplay("epoch history changed".into()));
+        }
+        if self.epoch_history.is_empty() && self.bonds != first.old_weights() {
             return Err(SnapshotError::EpochReplay(
-                "old epoch weights changed".into(),
+                "initial epoch weights changed".into(),
             ));
         }
+        if let Some(active) = &self.future_epoch 
+            && self.bonds != active.new_weights() {
+                return Err(SnapshotError::EpochReplay(
+                    "active epoch weights changed".into(),
+                ));
+            }
         let mut authorized: Vec<_> = self.bonds.keys().cloned().collect();
         authorized.sort();
-        let output = record
-            .verify_replay(self.blocklace(), &authorized, committed_checkpoint_hash)
-            .map_err(|error| SnapshotError::EpochReplay(error.to_string()))?;
+        let output =
+            crate::por::epoch_record::replay_epoch_journal(&records, self.blocklace(), &authorized)
+                .map_err(|error| SnapshotError::EpochReplay(error.to_string()))?;
         if let Some(previous) = self.shared_ordered_output.latest()
             && !output.blocks.starts_with(&previous.blocks)
         {
@@ -600,9 +623,10 @@ impl<A> LiveIngress<A> {
         self.shared_ordered_output
             .update(output)
             .map_err(|_| SnapshotError::OrderedOutputPrefixViolation)?;
-        self.bonds = record.new_weights();
+        self.bonds = last.new_weights();
+        self.future_epoch = Some(last.clone());
+        self.epoch_history = records;
         self.ordering_cache = OrderingCache::default();
-        self.future_epoch = Some(record);
         Ok(())
     }
 
@@ -618,13 +642,12 @@ impl<A> LiveIngress<A> {
         }
         let mut authorized: Vec<_> = self.bonds.keys().cloned().collect();
         authorized.sort();
-        record
-            .verify_replay(
-                self.blocklace(),
-                &authorized,
-                record.reputation_checkpoint_hash(),
-            )
-            .map_err(|error| SnapshotError::EpochReplay(error.to_string()))
+        crate::por::epoch_record::replay_epoch_journal(
+            &self.epoch_history,
+            self.blocklace(),
+            &authorized,
+        )
+        .map_err(|error| SnapshotError::EpochReplay(error.to_string()))
     }
 
     /// Persist the current finalized cursor to LMDB.
@@ -757,19 +780,33 @@ impl<A> LiveIngress<A> {
             let index = usize::try_from(wave).ok()? % validators.len();
             Some(validators[index].clone())
         };
-        let (blocks, anchor) = weighted_tau_after_epoch_boundary(
-            self.blocklace(),
-            published.wavelength,
-            &self.bonds,
-            projected,
-            WeightedEpochBoundary {
-                final_leader: leader,
-                ordered_prefix: &published.blocks,
-                effective_wave,
-            },
-            leader_of_wave,
-        )
-        .map_err(PorWeightActivationError::FutureEpoch)?;
+        let boundary = WeightedEpochBoundary {
+            final_leader: leader,
+            ordered_prefix: &published.blocks,
+            effective_wave,
+        };
+        let result = if self.future_epoch.is_some() {
+            // Published history was reconstructed from the active journal.
+            weighted_tau_after_verified_epoch_boundary(
+                self.blocklace(),
+                published.wavelength,
+                &self.bonds,
+                projected,
+                boundary,
+                None,
+                leader_of_wave,
+            )
+        } else {
+            weighted_tau_after_epoch_boundary(
+                self.blocklace(),
+                published.wavelength,
+                &self.bonds,
+                projected,
+                boundary,
+                leader_of_wave,
+            )
+        };
+        let (blocks, anchor) = result.map_err(PorWeightActivationError::FutureEpoch)?;
         Ok(OrderedFinalizedOutput::new(
             blocks,
             Some(anchor),

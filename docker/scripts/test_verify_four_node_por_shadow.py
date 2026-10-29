@@ -25,6 +25,18 @@ class FourNodePorShadowGateTests(unittest.TestCase):
         }
         return {node: copy.deepcopy(status) for node in NODES}
 
+    def test_recovery_requires_new_finalized_blocks_for_progress(self):
+        before = self.statuses()[NODES[0]]
+        after = copy.deepcopy(before)
+        SCRIPT["check_recovery"](before, after)
+        with self.assertRaisesRegex(ValueError, "post-restart finality"):
+            SCRIPT["check_progress"](before, after)
+        after["finalized_hashes"].append("new-finalized")
+        after["finalized_anchor"] = "new-finalized"
+        SCRIPT["check_progress"](before, after)
+        with self.assertRaisesRegex(ValueError, "post-restart finality"):
+            SCRIPT["check_progress"](before, after, 2)
+
     def test_requires_non_genesis_round_and_same_checkpoint(self):
         statuses = self.statuses()
         self.assertEqual(COMPARE(statuses, 2, 1), 2)

@@ -86,14 +86,16 @@ impl Fixture {
         carriers: Vec<PorEquivocationAuthorization>,
         later: Vec<PorEquivocationAuthorization>,
     ) -> Self {
+        Self::windows(vec![carriers, later])
+    }
+
+    fn windows(windows: Vec<Vec<PorEquivocationAuthorization>>) -> Self {
         let mut lace = Blocklace::new();
         let mut ids: Vec<BlockIdentity> = vec![];
-        for index in 0..32 {
+        for index in 0..(windows.len() as u64 * 16) {
             let payload = CordialBlockPayload {
-                por_authorizations: if index == 8 {
-                    carriers.clone()
-                } else if index == 24 {
-                    later.clone()
+                por_authorizations: if index % 16 == 8 {
+                    windows[(index / 16) as usize].clone()
                 } else {
                     vec![]
                 },
@@ -113,7 +115,7 @@ impl Fixture {
                 .unwrap();
             ids.push(block.identity);
         }
-        let output = OrderedFinalizedOutput::new(ids.clone(), ids.last().cloned(), 3, 32, 32)
+        let output = OrderedFinalizedOutput::new(ids.clone(), ids.last().cloned(), 3, 4, ids.len())
             .with_timestamp(0);
         let mut state = ReputationState::new(0);
         let membership = (1..=4)
@@ -176,7 +178,31 @@ impl Fixture {
                 .is_err()
             );
         }
-        for seed in 1..=4 {
+        // Each observer has its own exchange and delivery schedule. Closure
+        // must wait for the missing peers rather than accepting a local subset.
+        let mut peers: Vec<u8> = (1..=4).collect();
+        peers.rotate_left(usize::from(local - 1));
+        if local.is_multiple_of(2) {
+            peers.reverse();
+        }
+        let authorized = self.membership.keys().cloned().collect();
+        let pending = close_checkpoint_rating_exchange_if_complete(
+            &self.lace,
+            &self.output,
+            &checkpoint,
+            state,
+            &self.config,
+            &key,
+            &authorized,
+            &outbox,
+            &exchange,
+        )
+        .unwrap();
+        assert!(
+            pending.is_none(),
+            "a delayed peer batch must prevent closure"
+        );
+        for seed in peers {
             if seed == local || state.is_ejected(&node(seed)) {
                 continue;
             }
@@ -193,14 +219,17 @@ impl Fixture {
             let publisher = exchange
                 .checkpoint_broadcaster(checkpoint.rating_source(), node(seed))
                 .unwrap();
-            for rating in batch.ratings {
-                publisher
-                    .publish(
-                        &BlockProductionRatingEnvelopeV2::new(checkpoint.rating_source(), rating)
-                            .unwrap()
-                            .encode(),
-                    )
-                    .unwrap();
+            let mut ratings = batch.ratings;
+            if local.is_multiple_of(2) {
+                ratings.reverse();
+            }
+            for rating in ratings {
+                let encoded =
+                    BlockProductionRatingEnvelopeV2::new(checkpoint.rating_source(), rating)
+                        .unwrap()
+                        .encode();
+                publisher.publish(&encoded).unwrap();
+                publisher.publish(&encoded).unwrap();
             }
         }
         // An ejected key can still write a signed file. Such files must not
@@ -350,8 +379,18 @@ fn four_observer_checkpoint_penalty_demo() {
     for seed in 1..=4u8 {
         let directory = tempfile::tempdir().unwrap();
         let mut durable = DurablePorState::open(directory.path(), fixture.state.clone()).unwrap();
+        let independently_authorized = fixture
+            .complete(&fixture.state, 1, seed)
+            .with_finalized_equivocations(
+                &fixture.lace,
+                &fixture.output,
+                &fixture.membership,
+                b"root",
+            )
+            .unwrap();
+        assert_eq!(independently_authorized, authorized);
         let first = durable
-            .apply_completed_checkpoint_round(&authorized, &fixture.config, b"root")
+            .apply_completed_checkpoint_round(&independently_authorized, &fixture.config, b"root")
             .unwrap();
         penalties_hash.get_or_insert(first.block.header.penalties_hash);
         assert_eq!(penalties_hash, Some(first.block.header.penalties_hash));
@@ -854,4 +893,476 @@ fn zero_weight_active_offender_is_ejected_and_classification_is_state_bound() {
         .apply_completed_checkpoint_round(&admitted, &fixture.config, b"root")
         .unwrap();
     assert!(durable.state().unwrap().is_ejected(&node(2)));
+}
+
+/// Stationary production, an evidence-backed shock, independently collected
+/// observer batches, and recovery over a sustained window. Fixed-point scores
+/// use scale 1000; one unit is the explicitly selected convergence tolerance.
+#[test]
+#[ignore = "long-running convergence simulation; run explicitly"]
+fn multi_round_ranking_and_slashing_convergence() {
+    const ROUNDS: usize = 128;
+    const SHOCK: usize = 32;
+    for (name, offenders, initial) in [
+        ("honest", vec![], [1000, 1000, 1000, 1000]),
+        ("unequal", vec![], [500, 1000, 500, 1000]),
+        ("isolated", vec![2], [1000, 1000, 1000, 1000]),
+        ("correlated", vec![2, 3], [1000, 1000, 1000, 1000]),
+    ] {
+        let mut windows = vec![vec![]; ROUNDS];
+        windows[SHOCK - 1] = offenders
+            .iter()
+            .map(|&seed| carrier(&raw(seed, 9), SHOCK as u64))
+            .collect();
+        let mut fixture = Fixture::windows(windows);
+        for (index, weight) in initial.into_iter().enumerate() {
+            fixture.state.set_reputation(node(index as u8 + 1), weight);
+        }
+        let dirs: Vec<_> = (0..4).map(|_| tempfile::tempdir().unwrap()).collect();
+        let mut stores: Vec<_> = dirs
+            .iter()
+            .map(|dir| DurablePorState::open(dir.path(), fixture.state.clone()).unwrap())
+            .collect();
+        let mut previous = demo_weights(&fixture.state, &fixture.membership);
+        let mut stable = 0;
+        let mut trace = Vec::new();
+        for round in 1..=ROUNDS {
+            let mut checkpoint = None;
+            let pre_shock = stores[0].state().unwrap().clone();
+            for (index, store) in stores.iter_mut().enumerate() {
+                let complete = fixture
+                    .complete(store.state().unwrap(), round as u64, index as u8 + 1)
+                    .with_finalized_equivocations(
+                        &fixture.lace,
+                        &fixture.output,
+                        &fixture.membership,
+                        b"root",
+                    )
+                    .unwrap();
+                let result = store
+                    .apply_completed_checkpoint_round(&complete, &fixture.config, b"root")
+                    .unwrap();
+                let hash = cordial_por::reputation_block_hash(&result.block).unwrap();
+                assert_eq!(
+                    *checkpoint.get_or_insert(hash),
+                    hash,
+                    "{name}, round {round}"
+                );
+            }
+            let weights = demo_weights(stores[0].state().unwrap(), &fixture.membership);
+            let delta = weights
+                .iter()
+                .map(|(id, weight)| weight.abs_diff(previous[id]))
+                .max()
+                .unwrap();
+            let total: u64 = weights.values().sum();
+            assert!(total > 0, "{name}: active weight collapsed");
+            let previous_total: u64 = previous.values().sum();
+            let share_delta = weights
+                .iter()
+                .map(|(id, weight)| {
+                    let current = u128::from(*weight) * 1_000_000 / u128::from(total);
+                    let prior = u128::from(previous[id]) * 1_000_000 / u128::from(previous_total);
+                    current.abs_diff(prior)
+                })
+                .max()
+                .unwrap();
+            let ranking = |values: &std::collections::BTreeMap<String, u64>| {
+                let mut rows: Vec<_> = values
+                    .iter()
+                    .map(|(id, weight)| (id.clone(), *weight))
+                    .collect();
+                rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>()
+            };
+            let rank_stable = ranking(&weights) == ranking(&previous);
+            stable = if round > SHOCK && delta <= 1 && share_delta <= 1000 && rank_stable {
+                stable + 1
+            } else {
+                0
+            };
+            for store in &stores {
+                assert_eq!(store.state().unwrap(), stores[0].state().unwrap());
+                for &offender in &offenders {
+                    if round >= SHOCK {
+                        assert!(store.state().unwrap().is_ejected(&node(offender)));
+                        assert_eq!(weights[&format!("validator-{offender}")], 0);
+                        if round == SHOCK {
+                            let prior = pre_shock
+                                .reputation_list()
+                                .entries
+                                .iter()
+                                .find(|entry| entry.node_id == node(offender))
+                                .unwrap()
+                                .reputation;
+                            // The actual tier is derived from the pre-shock snapshot.
+                            let offending: u64 = pre_shock
+                                .reputation_list()
+                                .entries
+                                .iter()
+                                .filter(|entry| {
+                                    offenders.iter().any(|id| node(*id) == entry.node_id)
+                                })
+                                .map(|entry| entry.reputation)
+                                .sum();
+                            let total: u64 = pre_shock
+                                .reputation_list()
+                                .entries
+                                .iter()
+                                .filter(|entry| !entry.is_excluded)
+                                .map(|entry| entry.reputation)
+                                .sum();
+                            let penalty = cordial_por::compute_slash_penalty(
+                                offending,
+                                total,
+                                &fixture.config,
+                            )
+                            .unwrap();
+                            assert_eq!(
+                                penalty,
+                                if name == "correlated" {
+                                    fixture.config.scale
+                                } else {
+                                    fixture.config.base_slash_penalty
+                                },
+                                "{name}: scenario must exercise the intended tier",
+                            );
+                            let expected = cordial_por::apply_slash_to_reputation(
+                                prior,
+                                penalty,
+                                &fixture.config,
+                            )
+                            .unwrap();
+                            assert_eq!(
+                                demo_retained(store.state().unwrap(), &node(offender)),
+                                expected
+                            );
+                        }
+                    }
+                }
+            }
+            let mut trace_events = Vec::new();
+            if round == SHOCK && !offenders.is_empty() {
+                trace_events.push("slash");
+            }
+            // These records follow the restart after the preceding checkpoint.
+            if round == SHOCK + 1 || round == SHOCK + 2 {
+                trace_events.push("restart");
+            }
+            trace.push(serde_json::json!({
+                "scenario": name, "round": round, "weights": weights,
+                "checkpoint": hex::encode(checkpoint.unwrap()), "max_delta": delta,
+                "share_delta_ppm": share_delta, "rank_stable": rank_stable,
+                "total_weight": total, "stable_rounds": stable,
+                "observer_agreement": true,
+                "events": trace_events,
+                "entries": stores[0].state().unwrap().reputation_list().entries.iter().map(|entry|
+                    serde_json::json!({
+                        "node": hex::encode(&entry.node_id.0),
+                        "validator": format!("validator-{}", (1..=4u8).find(|seed| node(*seed) == entry.node_id).unwrap()),
+                        "reputation": entry.reputation,
+                        "retained_reputation": entry.retained_reputation,
+                        "excluded": entry.is_excluded,
+                    })
+                ).collect::<Vec<_>>(),
+            }));
+            previous = weights;
+            if round == SHOCK || round == SHOCK + 1 {
+                // Recover every observer, not just the first one.
+                let expected: Vec<_> = stores
+                    .iter()
+                    .map(|store| store.state().unwrap().clone())
+                    .collect();
+                drop(stores);
+                stores = dirs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, dir)| {
+                        let recovered =
+                            DurablePorState::open(dir.path(), ReputationState::new(999)).unwrap();
+                        assert_eq!(recovered.state().unwrap(), &expected[index]);
+                        recovered
+                    })
+                    .collect();
+            }
+        }
+        assert!(
+            stable >= 8,
+            "{name}: no sustained convergence by round {ROUNDS}"
+        );
+        if let Ok(directory) = std::env::var("POR_CONVERGENCE_OUTPUT") {
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                std::path::Path::new(&directory).join(format!("{name}.json")),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "schema_version": 1,
+                    "kind": "por_convergence_trace",
+                    "scenario": name,
+                    "observer_count": 4,
+                    "scale": fixture.config.scale,
+                    "thresholds": {
+                        "score_delta": 1,
+                        "share_delta_ppm": 1000,
+                        "stable_rounds": 8,
+                    },
+                    "result": { "status": "passed", "completed_rounds": ROUNDS },
+                    "rounds": trace,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn four_observer_slash_threshold_boundaries() {
+    for (offending_weight, expected_retained) in [(299, 224), (300, 225), (301, 0)] {
+        let mut fixture = Fixture::new(vec![carrier(&raw(2, 9), 1)]);
+        for (seed, weight) in [
+            (1, 400),
+            (2, offending_weight),
+            (3, 100),
+            (4, 500 - offending_weight),
+        ] {
+            fixture.state.set_reputation(node(seed), weight);
+            fixture.membership.insert(node(seed), weight);
+        }
+        let mut expected = None;
+        for observer in 1..=4 {
+            let complete = fixture
+                .complete(&fixture.state, 1, observer)
+                .with_finalized_equivocations(
+                    &fixture.lace,
+                    &fixture.output,
+                    &fixture.membership,
+                    b"root",
+                )
+                .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = DurablePorState::open(dir.path(), fixture.state.clone()).unwrap();
+            let result = store
+                .apply_completed_checkpoint_round(&complete, &fixture.config, b"root")
+                .unwrap();
+            let hash = cordial_por::reputation_block_hash(&result.block).unwrap();
+            assert_eq!(*expected.get_or_insert(hash), hash);
+            assert!(store.state().unwrap().is_ejected(&node(2)));
+            assert_eq!(
+                demo_retained(store.state().unwrap(), &node(2)),
+                expected_retained
+            );
+            assert_eq!(
+                demo_weights(store.state().unwrap(), &fixture.membership)["validator-2"],
+                0
+            );
+        }
+    }
+}
+
+/// Real LiveIngress finality and PorRuntime cutover, with independent durable
+/// observers, four consecutive epochs, a slash in checkpoint two, and restart.
+/// This exercises the adapter boundary; it is not a host-chain slash deploy.
+#[test]
+fn four_runtime_epochs_preserve_finality_through_slash_and_restart() {
+    use cordial_f1r3node_adapter::{
+        grpc_ingest::BlocklaceAdapter,
+        live_ingress::{LiveIngress, PorWeightActivationError},
+        por::{
+            PorRuntime, PorRuntimeError, PorWeightEpochPolicy, PorWeightEpochRecordError,
+            PorWeightEpochStore,
+        },
+        shard_conf::CasperShardConf,
+        snapshot::CORDIAL_WAVELENGTH,
+    };
+    struct AcceptBlocks;
+    impl BlocklaceAdapter<BlockIdentity> for AcceptBlocks {
+        fn on_block(&mut self, _: Block) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+    let dirs: Vec<_> = (0..4).map(|_| tempfile::tempdir().unwrap()).collect();
+    let mut initial = ReputationState::new(0);
+    let membership: HashMap<_, _> = (1..=4)
+        .map(|seed| {
+            initial.set_reputation(node(seed), 200);
+            (node(seed), 200)
+        })
+        .collect();
+    let config = PorConfig::new(1000, 200);
+    let open = |index: usize| {
+        PorRuntime::open(
+            dirs[index].path(),
+            initial.clone(),
+            LiveIngress::with_consensus_view(
+                AcceptBlocks,
+                membership.clone(),
+                CasperShardConf::default(),
+                "root",
+            ),
+            config.clone(),
+            b"root",
+            CORDIAL_WAVELENGTH,
+        )
+        .unwrap()
+    };
+    let mut runtimes: Vec<_> = (0..4).map(&open).collect();
+    let mut history: Vec<Vec<Block>> = Vec::new();
+    let mut predecessors = HashSet::new();
+    let policy = PorWeightEpochPolicy::new(3).unwrap();
+    let claim = raw(2, 77);
+    let mut prior_prefix = Vec::new();
+    let mut restart_prefix = None;
+    let mut activated = 0;
+    let mut saw_deferred = false;
+    for layer_index in 0..120u64 {
+        let layer: Vec<_> = (1..=4)
+            .map(|seed| {
+                let payload = CordialBlockPayload {
+                    // The same valid claim is present in the source window of
+                    // checkpoint two. Other checkpoint windows ignore this intent.
+                    por_authorizations: vec![carrier(&claim, 2)],
+                    state: BlockState {
+                        pre_state_hash: vec![],
+                        post_state_hash: vec![],
+                        bonds: vec![],
+                        block_number: layer_index,
+                    },
+                    deploys: vec![],
+                    rejected_deploys: vec![],
+                    system_deploys: vec![],
+                }
+                .to_bytes();
+                signed(seed, payload, predecessors.clone())
+            })
+            .collect();
+        predecessors = layer.iter().map(|block| block.identity.clone()).collect();
+        history.push(layer.clone());
+        let mut outputs = Vec::new();
+        for (index, runtime) in runtimes.iter_mut().enumerate() {
+            let mut delivery = layer.clone();
+            delivery.rotate_left(index);
+            if index % 2 != 0 {
+                delivery.reverse();
+            }
+            for block in delivery {
+                runtime.ingress_mut().ingest_trusted_block(block).unwrap();
+            }
+            outputs.push(runtime.publish_finalized_output().unwrap());
+        }
+        for output in &outputs {
+            assert_eq!(output.blocks, outputs[0].blocks);
+            assert!(output.blocks.starts_with(&prior_prefix));
+        }
+        prior_prefix = outputs[0].blocks.clone();
+        if activated == 4 {
+            if prior_prefix.len() > restart_prefix.unwrap() {
+                break;
+            }
+            continue;
+        }
+        let round = activated + 1;
+        if finalized_prefix_checkpoint(&outputs[0], round)
+            .unwrap()
+            .is_none()
+        {
+            continue;
+        }
+        let mut committed = Vec::new();
+        for (index, runtime) in runtimes.iter_mut().enumerate() {
+            let mut lace = Blocklace::new();
+            for block in history.iter().flatten() {
+                lace.insert(block.clone(), &crypto::Secp256k1Scheme)
+                    .unwrap();
+            }
+            let fixture = Fixture {
+                lace,
+                output: outputs[index].clone(),
+                state: runtime.state().state().unwrap().clone(),
+                // Key loading uses initial authorized membership. Runtime
+                // admission independently uses its current activated weights.
+                membership: membership.clone(),
+                config: config.clone(),
+            };
+            let complete = fixture.complete(&fixture.state, round, index as u8 + 1);
+            let authorized = runtime
+                .authorize_checkpoint_equivocations(complete)
+                .unwrap();
+            match runtime.commit_completed_checkpoint_round_with_epoch(&authorized, policy) {
+                Ok(_) => committed.push(true),
+                Err(PorRuntimeError::FutureEpoch(PorWeightEpochRecordError::Preview(
+                    PorWeightActivationError::EpochBoundaryWavePending { .. },
+                ))) => {
+                    saw_deferred = true;
+                    committed.push(false);
+                }
+                Err(error) => panic!("round {round}: {error}"),
+            }
+        }
+        assert!(committed.iter().all(|value| *value == committed[0]));
+        if !committed[0] {
+            continue;
+        }
+        activated = round;
+        let state = runtimes[0].state().state().unwrap().clone();
+        let weights = runtimes[0].ingress().bonds().clone();
+        for runtime in &mut runtimes {
+            assert_eq!(runtime.state().state().unwrap(), &state);
+            assert_eq!(runtime.ingress().bonds(), &weights);
+            assert_eq!(runtime.active_future_epoch().unwrap().por_round(), round);
+            assert!(
+                runtime
+                    .publish_finalized_output()
+                    .unwrap()
+                    .blocks
+                    .starts_with(&prior_prefix)
+            );
+            if round >= 2 {
+                assert!(runtime.state().state().unwrap().is_ejected(&node(2)));
+                assert_eq!(runtime.ingress().bonds()[&node(2)], 0);
+            }
+        }
+        for dir in &dirs {
+            assert_eq!(
+                PorWeightEpochStore::open(dir.path())
+                    .unwrap()
+                    .restore_journal()
+                    .unwrap()
+                    .len(),
+                round as usize
+            );
+        }
+        // Empty-ingress recovery must not publish until retained DAG replay.
+        drop(runtimes);
+        runtimes = (0..4).map(&open).collect();
+        for runtime in &mut runtimes {
+            assert!(runtime.publish_finalized_output().is_err());
+            for layer in &history {
+                for block in layer {
+                    runtime
+                        .ingress_mut()
+                        .ingest_trusted_block(block.clone())
+                        .unwrap();
+                }
+            }
+            let recovered = runtime.publish_finalized_output().unwrap();
+            assert!(recovered.blocks.starts_with(&prior_prefix));
+            assert_eq!(runtime.state().state().unwrap(), &state);
+            assert_eq!(runtime.ingress().bonds(), &weights);
+        }
+        if activated == 4 {
+            restart_prefix = Some(prior_prefix.len());
+        }
+    }
+    assert!(
+        saw_deferred,
+        "exercise pending activation before the fixed boundary"
+    );
+    assert_eq!(
+        activated, 4,
+        "all four epochs must activate within the horizon"
+    );
+    assert!(
+        prior_prefix.len() > restart_prefix.unwrap(),
+        "finality must advance after restart"
+    );
 }

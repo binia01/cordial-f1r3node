@@ -156,9 +156,15 @@ for the finalized wave immediately before it, then seals the old-weight
 prefix and commits the checkpoint. A late proposal is rejected; choose `N`
 large enough for all four rating exchanges to finish before that boundary.
 The proposal and reputation state recover together after observer restart.
-This PoC stores one epoch, so observers keep mirroring blocks after round 1
-without committing round 2. The four-observer check still measures observer
-agreement and local Cordial ordering; it does not prove node-side enforcement.
+The durable epoch journal retains every committed cutover. Observers continue
+collecting and committing subsequent checkpoint rounds, using the same configured
+source-to-cutover delay. Replay reconstructs each historical boundary under its
+own weights before activating the latest projection. An uncommitted tail proposal
+is discarded on recovery without losing earlier epochs. Existing single-epoch
+files remain readable and are upgraded on append. The four-observer check still
+measures observer agreement and local Cordial ordering; it does not prove
+node-side enforcement. A late checkpoint remains an error: the runner never
+moves an agreed cutover to accommodate a slow observer.
 
 The current single-table activation guard can defer a valid checkpoint when
 its new weights would change an already published Cordial leader. To verify
@@ -455,3 +461,15 @@ retain the genesis reputation round. A keyed exchange can derive later
 candidates and, with `--commit-complete-ratings`, activate them locally.
 Agreement in the default harness tests deterministic observation and durable
 recovery, not enforcement of PoR weights by f1r3node.
+
+## Convergence and restart progress gates
+
+The smoke verifier requires at least one new finalized block on every observer
+after each restart, in addition to prefix preservation and projection agreement.
+Use `--min-new-finalized-blocks N` to increase that requirement; the existing
+timeout bounds the wait. To require repeated PoR activation, use
+`--min-por-round 4` with committed checkpoint ratings and a common epoch delay.
+Candidate agreement is still a separate gate and does not count as activation.
+
+The deterministic multi-round and four-runtime scenarios, metrics, and commands
+are documented in [PoR convergence validation](por-convergence-validation.md).
