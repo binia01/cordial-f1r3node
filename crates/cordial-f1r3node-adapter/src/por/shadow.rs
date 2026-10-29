@@ -528,9 +528,9 @@ pub async fn run_shadow(config: ShadowConfig) -> Result<()> {
         if let Some(published) = read_status(&path)? {
             published.validate_recovered(&status)?;
         }
-        // This PoC store holds one epoch. Continue observing after round one;
-        // a later checkpoint needs the append-only epoch journal.
-        if config.checkpoint_ratings && runtime.active_future_epoch().is_none() {
+        // Every checkpoint may append a future-only epoch. The runtime keeps
+        // historical boundaries so later weights cannot rewrite finality.
+        if config.checkpoint_ratings {
             let key = rating_key
                 .as_ref()
                 .context("checkpoint rating key disappeared")?;

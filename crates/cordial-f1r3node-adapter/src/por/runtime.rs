@@ -76,7 +76,7 @@ pub enum PorRuntimeError {
     #[error("PoR future epoch record does not match the committed reputation state")]
     FutureEpochStateMismatch,
 
-    #[error("a future-only PoR epoch is already recorded; later epochs require a journal")]
+    #[error("future-only PoR epochs are active; use the epoch commit path")]
     FutureEpochAlreadyRecorded,
 }
 
@@ -146,25 +146,36 @@ impl<A> PorRuntime<A> {
                     .ok_or(PorRuntimeError::FutureEpochStateMismatch)?
             {
                 epoch_store.discard_uncommitted(record)?;
-                epoch_record = None;
-            } else if record.por_round() != committed_round {
+                epoch_record = epoch_store.restore()?;
+            }
+        }
+        if let Some(record) = &epoch_record {
+            if record.wavelength() != wavelength {
                 return Err(PorRuntimeError::FutureEpochStateMismatch);
-            } else {
-                if record.wavelength() != wavelength {
+            }
+            Self::verify_epoch_state(&state, record)?;
+            for historical in epoch_store.restore_journal()? {
+                let block = state
+                    .history()
+                    .load(historical.por_round())
+                    .map_err(DurablePorStateError::History)?
+                    .ok_or(PorRuntimeError::FutureEpochStateMismatch)?;
+                if reputation_block_hash(&block).map_err(PorRuntimeError::CheckpointTransition)?
+                    != historical.reputation_checkpoint_hash()
+                {
                     return Err(PorRuntimeError::FutureEpochStateMismatch);
                 }
-                Self::verify_epoch_state(&state, record)?;
             }
         }
         let restored_activation = state.restore_activated_weights(&mut ingress)?;
         // The shadow host replays blocks after opening the runtime. Never
         // publish old-table ordering for an already committed epoch.
-        if let Some(record) = &epoch_record {
+        if epoch_record.is_some() {
             let startup_activation =
                 restored_activation.ok_or(PorRuntimeError::FutureEpochStateMismatch)?;
             if !ingress.blocklace().dom().is_empty() {
                 ingress
-                    .install_future_epoch(record.clone(), record.reputation_checkpoint_hash())
+                    .install_future_epoch_journal(epoch_store.restore_journal()?)
                     .map_err(PorRuntimeError::FinalizedOutput)?;
             }
             return Ok(Self {
@@ -241,8 +252,8 @@ impl<A> PorRuntime<A> {
     }
 
     pub fn has_unactivated_committed_round(&self) -> Result<bool, PorRuntimeError> {
-        if self.active_future_epoch().is_some() {
-            Ok(false)
+        if let Some(active) = self.active_future_epoch() {
+            Ok(active.por_round() != self.state.state()?.round())
         } else {
             Ok(self.state.has_unactivated_committed_round()?)
         }
@@ -262,11 +273,10 @@ impl<A> PorRuntime<A> {
 
     /// Recompute and publish Cordial's latest finalized view.
     pub fn publish_finalized_output(&mut self) -> Result<OrderedFinalizedOutput, PorRuntimeError> {
-        if let Some(record) = self.epoch_record.clone()
-            && self.ingress.future_epoch().is_none()
+        if self.epoch_record.is_some() && self.ingress.future_epoch() != self.epoch_record.as_ref()
         {
             self.ingress
-                .install_future_epoch(record.clone(), record.reputation_checkpoint_hash())
+                .install_future_epoch_journal(self.epoch_store.restore_journal()?)
                 .map_err(PorRuntimeError::FinalizedOutput)?;
         }
         let output = self
@@ -410,9 +420,6 @@ impl<A> PorRuntime<A> {
         completed: &CompletedCheckpointRatingRound,
         policy: PorWeightEpochPolicy,
     ) -> Result<AppliedPorReputationRound, PorRuntimeError> {
-        if self.epoch_record.is_some() {
-            return Err(PorRuntimeError::FutureEpochAlreadyRecorded);
-        }
         if self.has_unactivated_committed_round()? {
             return Err(PorRuntimeError::PendingActivation);
         }

@@ -782,18 +782,91 @@ where
         return Err(WeightedEpochError::PrefixMismatch);
     }
 
-    let Some(latest_leader) =
-        latest_weighted_final_leader(blocklace, wavelength, new_bonds, leader_selection)
-    else {
-        return Ok((old_prefix, boundary.final_leader.clone()));
+    weighted_tau_after_verified_epoch_boundary(
+        blocklace,
+        wavelength,
+        old_bonds,
+        new_bonds,
+        boundary,
+        None,
+        leader_selection,
+    )
+}
+
+/// Extend an already replay-verified prefix across a weight cutover.
+///
+/// The caller MUST verify the entire prefix under its historical weight epochs.
+/// Unlike the single-epoch wrapper, this does not re-evaluate historical blocks
+/// using the last weight table. It still checks membership, boundary finality,
+/// and ancestry. A target leader bounds replay when verifying a later epoch.
+pub fn weighted_tau_after_verified_epoch_boundary<F>(
+    blocklace: &Blocklace,
+    wavelength: u64,
+    old_bonds: &HashMap<NodeId, u64>,
+    new_bonds: &HashMap<NodeId, u64>,
+    boundary: WeightedEpochBoundary<'_>,
+    target: Option<&BlockIdentity>,
+    leader_selection: F,
+) -> Result<(Vec<BlockIdentity>, BlockIdentity), WeightedEpochError>
+where
+    F: Fn(u64) -> Option<NodeId> + Copy,
+{
+    if old_bonds.len() != new_bonds.len() || !old_bonds.keys().all(|id| new_bonds.contains_key(id))
+    {
+        return Err(WeightedEpochError::ValidatorSetMismatch);
+    }
+    let boundary_wave = depth(blocklace, boundary.final_leader)
+        .and_then(|round| wave_of_round(round, wavelength))
+        .ok_or(WeightedEpochError::InvalidBoundary)?;
+    if boundary.effective_wave <= boundary_wave {
+        return Err(WeightedEpochError::InvalidBoundary);
+    }
+    if !weighted_final_leader_for_wave(
+        blocklace,
+        boundary_wave,
+        wavelength,
+        old_bonds,
+        leader_selection,
+    )
+    .is_some_and(|leader| leader.same_consensus_identity(boundary.final_leader))
+    {
+        return Err(WeightedEpochError::BoundaryNotFinal);
+    }
+    let old_prefix = boundary.ordered_prefix.to_vec();
+    let latest_leader = match target {
+        Some(leader) => {
+            let wave = depth(blocklace, leader)
+                .and_then(|round| wave_of_round(round, wavelength))
+                .ok_or(WeightedEpochError::LeaderOutsideBoundary)?;
+            if !weighted_final_leader_for_wave(
+                blocklace,
+                wave,
+                wavelength,
+                new_bonds,
+                leader_selection,
+            )
+            .is_some_and(|actual| actual.same_consensus_identity(leader))
+            {
+                return Err(WeightedEpochError::BoundaryNotFinal);
+            }
+            leader.clone()
+        }
+        None => {
+            match latest_weighted_final_leader(blocklace, wavelength, new_bonds, leader_selection) {
+                Some(leader) => leader,
+                None => return Ok((old_prefix, boundary.final_leader.clone())),
+            }
+        }
     };
     let latest_wave = depth(blocklace, &latest_leader)
         .and_then(|round| wave_of_round(round, wavelength))
         .ok_or(WeightedEpochError::LeaderOutsideBoundary)?;
     if latest_wave < boundary.effective_wave {
+        if target.is_some() {
+            return Err(WeightedEpochError::LeaderOutsideBoundary);
+        }
         return Ok((old_prefix, boundary.final_leader.clone()));
     }
-
     let mut state = TauState {
         emitted: old_prefix.iter().cloned().collect(),
         ordered: old_prefix,
