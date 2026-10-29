@@ -200,3 +200,118 @@ fn epoch_store_rejects_conflicting_record_and_corrupt_bytes() {
         Err(PorWeightEpochRecordError::ChecksumMismatch)
     ));
 }
+
+#[test]
+fn journal_preserves_two_epochs_and_discards_only_uncommitted_tail() {
+    let (mut ingress, first, first_hash) = fixture();
+    let directory = tempdir().unwrap();
+    let store = PorWeightEpochStore::open(directory.path()).unwrap();
+    store.persist(&first).unwrap();
+    ingress
+        .install_future_epoch(first.clone(), first_hash)
+        .unwrap();
+    let mut predecessor = ingress
+        .blocklace()
+        .dom()
+        .into_iter()
+        .cloned()
+        .max_by_key(|id| depth(ingress.blocklace(), id))
+        .unwrap();
+    let mut added = Vec::new();
+    for index in 30..60u8 {
+        let mut hash = [0; 32];
+        hash[0] = index + 1;
+        let block = Block {
+            identity: BlockIdentity {
+                content_hash: hash,
+                creator: NodeId(vec![1]),
+                signature: Vec::new(),
+            },
+            content: BlockContent {
+                payload: Vec::new(),
+                predecessors: HashSet::from([predecessor.clone()]),
+            },
+        };
+        predecessor = block.identity.clone();
+        ingress.ingest_trusted_block(block.clone()).unwrap();
+        added.push(block);
+    }
+    let before = ingress.latest_finalized_ordered_output(3).unwrap();
+    let source = finalized_prefix_checkpoint(&before, 2).unwrap().unwrap();
+    let source_wave = wave_of_round(
+        depth(ingress.blocklace(), &source.terminal_block).unwrap(),
+        3,
+    )
+    .unwrap();
+    let boundary = wave_of_round(
+        depth(ingress.blocklace(), before.anchor.as_ref().unwrap()).unwrap(),
+        3,
+    )
+    .unwrap();
+    let second = PorWeightEpochRecord::prepare(
+        &ingress,
+        &source,
+        [43; 32],
+        &HashMap::from([(NodeId(vec![1]), 30)]),
+        PorWeightEpochPolicy::new(boundary + 1 - source_wave).unwrap(),
+    )
+    .unwrap();
+    store.persist(&second).unwrap();
+    store.persist(&second).unwrap();
+    assert_eq!(
+        store.restore_journal().unwrap(),
+        vec![first.clone(), second.clone()]
+    );
+    assert!(store.discard_uncommitted(&first).is_err());
+    store.discard_uncommitted(&second).unwrap();
+    assert_eq!(store.restore_journal().unwrap(), vec![first.clone()]);
+    store.persist(&second).unwrap();
+    ingress
+        .install_future_epoch(second.clone(), [43; 32])
+        .unwrap();
+    let expected = ingress.latest_finalized_ordered_output(3).unwrap();
+
+    let (mut recovered, _, _) = fixture();
+    for block in added {
+        recovered.ingest_trusted_block(block).unwrap();
+    }
+    recovered
+        .install_future_epoch_journal(store.restore_journal().unwrap())
+        .unwrap();
+    let actual = recovered.latest_finalized_ordered_output(3).unwrap();
+    assert_eq!(actual.blocks, expected.blocks);
+    assert_eq!(actual.anchor, expected.anchor);
+    assert_eq!(recovered.bonds(), &second.new_weights());
+    assert!(actual.blocks.starts_with(&before.blocks));
+    assert!(
+        recovered
+            .install_future_epoch_journal(vec![second])
+            .is_err()
+    );
+}
+
+#[test]
+fn legacy_single_epoch_record_is_read_and_upgraded() {
+    let (_, record, _) = fixture();
+    let directory = tempdir().unwrap();
+    let store = PorWeightEpochStore::open(directory.path()).unwrap();
+    store.persist(&record).unwrap();
+    let journal = std::fs::read(store.record_path()).unwrap();
+    let offset = b"por-epoch-journal-v1".len();
+    let length = u64::from_be_bytes(journal[offset..offset + 8].try_into().unwrap()) as usize;
+    // The nested record uses the original v1 wire representation.
+    std::fs::write(
+        store.record_path(),
+        &journal[offset + 8..offset + 8 + length],
+    )
+    .unwrap();
+    assert_eq!(store.restore_journal().unwrap(), vec![record.clone()]);
+    store.discard_uncommitted(&record).unwrap();
+    assert!(store.restore().unwrap().is_none());
+    store.persist(&record).unwrap();
+    assert!(
+        std::fs::read(store.record_path())
+            .unwrap()
+            .starts_with(b"por-epoch-journal-v1")
+    );
+}

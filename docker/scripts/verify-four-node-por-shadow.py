@@ -62,6 +62,14 @@ def compare_statuses(statuses, min_finalized, min_por_round=0, min_candidate_rou
     return minimum
 
 
+def check_progress(before, after, minimum_new_blocks=1):
+    """State preservation alone is not evidence that consensus resumed."""
+    check_recovery(before, after)
+    growth = len(after["finalized_hashes"]) - len(before["finalized_hashes"])
+    if growth < minimum_new_blocks:
+        raise ValueError(f"waiting for post-restart finality ({growth}/{minimum_new_blocks} new blocks)")
+
+
 def check_recovery(before, after):
     if after["active_por_round"] < before["active_por_round"]:
         raise ValueError("PoR round regressed after restart")
@@ -85,7 +93,7 @@ def check_recovery(before, after):
 
 
 def wait_for_statuses(root, markers, runners, timeout, min_finalized, min_por_round,
-                      min_candidate_round):
+                      min_candidate_round, progress_before=None, minimum_new_blocks=1):
     deadline = time.monotonic() + timeout
     last_error = "waiting for status files"
     while time.monotonic() < deadline:
@@ -97,6 +105,9 @@ def wait_for_statuses(root, markers, runners, timeout, min_finalized, min_por_ro
             try:
                 count = compare_statuses(statuses, min_finalized, min_por_round,
                                          min_candidate_round)
+                if progress_before is not None:
+                    for node in NODES:
+                        check_progress(progress_before[node], statuses[node], minimum_new_blocks)
                 return statuses, count
             except (KeyError, TypeError, ValueError) as error:
                 last_error = str(error)
@@ -122,6 +133,8 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--min-finalized-blocks", type=int, default=2)
     parser.add_argument("--min-por-round", type=int, default=0)
+    parser.add_argument("--min-new-finalized-blocks", type=int, default=1,
+                        help="required finalized growth on every observer after each restart")
     parser.add_argument("--min-candidate-round", type=int, default=0,
                         help="accept an agreed complete checkpoint candidate before activation")
     parser.add_argument("--grpc-ports", type=int, nargs=4, default=PORTS)
@@ -137,7 +150,8 @@ def main():
     parser.add_argument("--skip-node-restart", action="store_true", help="only check runner recovery")
     args = parser.parse_args()
     if (args.timeout_seconds <= 0 or args.min_finalized_blocks <= 0 or
-            args.min_por_round < 0 or args.min_candidate_round < 0):
+            args.min_por_round < 0 or args.min_candidate_round < 0 or
+            args.min_new_finalized_blocks < 1):
         parser.error("timeouts and minimum finalized blocks must be positive; minimum PoR rounds must be nonnegative")
     if len(set(args.grpc_ports)) != 4 or any(port < 1 or port > 65535 for port in args.grpc_ports):
         parser.error("--grpc-ports needs four distinct valid TCP ports")
@@ -220,18 +234,21 @@ def main():
 
         node = NODES[0]
         before = statuses[node]
+        progress_before = statuses
         stop_runner(runners[node])
         markers = {name: 0 for name in NODES}
         markers[node] = status_path(root, node).stat().st_mtime_ns
         launch(node, args.grpc_ports[0], 1)
         statuses, count = wait_for_statuses(root, markers, runners, args.timeout_seconds,
                                             args.min_finalized_blocks, args.min_por_round,
-                                            args.min_candidate_round)
-        check_recovery(before, statuses[node])
+                                            args.min_candidate_round,
+                                            progress_before, args.min_new_finalized_blocks)
+        check_progress(before, statuses[node], args.min_new_finalized_blocks)
         print(f"PASS: {node} shadow recovered its PoR projection and {count}-hash prefix")
 
         if not args.skip_node_restart:
             before = statuses[node]
+            progress_before = statuses
             command = ["docker", "compose"]
             env_file = REPO / "docker/.env"
             if env_file.is_file():
@@ -247,8 +264,9 @@ def main():
             markers[node] = status_path(root, node).stat().st_mtime_ns
             statuses, count = wait_for_statuses(root, markers, runners, args.timeout_seconds,
                                                 args.min_finalized_blocks, args.min_por_round,
-                                                args.min_candidate_round)
-            check_recovery(before, statuses[node])
+                                                args.min_candidate_round,
+                                                progress_before, args.min_new_finalized_blocks)
+            check_progress(before, statuses[node], args.min_new_finalized_blocks)
             print(f"PASS: {node} node restarted; four shadows still agree on {count} finalized hashes")
     finally:
         for process in runners.values():

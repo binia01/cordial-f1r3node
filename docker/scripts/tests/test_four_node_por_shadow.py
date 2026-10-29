@@ -78,8 +78,15 @@ if '--checkpoint-ratings' in sys.argv:
         'weight_commitment': 'candidate-weights',
         'weights': {'validator': 180000000},
     }
+saved = directory / 'shadow-status.json'
+if saved.exists():
+    status['finalized_hashes'] = json.loads(saved.read_text())['finalized_hashes']
 while True:
-    (directory / 'shadow-status.json').write_text(json.dumps(status))
+    status['finalized_hashes'].append('progress-' + str(len(status['finalized_hashes'])))
+    status['finalized_anchor'] = status['finalized_hashes'][-1]
+    temporary_status = saved.with_suffix('.tmp')
+    temporary_status.write_text(json.dumps(status))
+    temporary_status.replace(saved)
     time.sleep(0.05)
 """)
             fake_runner.chmod(0o755)
