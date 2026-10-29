@@ -179,7 +179,8 @@ impl Fixture {
             );
         }
         // Each observer has its own exchange and delivery schedule. Closure
-        // must wait for the missing peers rather than accepting a local subset.
+        // must wait for missing required ratings, but empty peer batches are
+        // already complete under the checkpoint collector contract.
         let mut peers: Vec<u8> = (1..=4).collect();
         peers.rotate_left(usize::from(local - 1));
         if local.is_multiple_of(2) {
@@ -198,9 +199,26 @@ impl Fixture {
             &exchange,
         )
         .unwrap();
-        assert!(
+        let mut missing_peer_ratings = false;
+        for &seed in &peers {
+            if seed == local || state.is_ejected(&node(seed)) {
+                continue;
+            }
+            let required = cordial_f1r3node_adapter::por::interactions::
+                admit_checkpoint_block_production_interactions(
+                    &self.lace,
+                    &self.output,
+                    &checkpoint,
+                    &node(seed),
+                    state,
+                )
+                .unwrap();
+            missing_peer_ratings |= !required.is_empty();
+        }
+        assert_eq!(
             pending.is_none(),
-            "a delayed peer batch must prevent closure"
+            missing_peer_ratings,
+            "round {round}, observer {local}: closure must wait exactly when peers have required ratings"
         );
         for seed in peers {
             if seed == local || state.is_ejected(&node(seed)) {
